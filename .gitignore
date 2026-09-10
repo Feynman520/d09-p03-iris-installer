@@ -1,0 +1,5 @@
+_build/
+node_modules/
+*.log
+tests/_tmp/
+.superpowers/
