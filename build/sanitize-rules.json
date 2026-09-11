@@ -1,0 +1,11 @@
+{
+  "forbiddenNames": ["**/.env", "**/secrets/**", "**/auth.json", "**/teamclaude.json", "**/*.token", "**/credentials*", "**/.git/**"],
+  "forbiddenStrings": [],
+  "forbiddenRegex": [
+    "iris:[a-z0-9]{8}",
+    { "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[a-z]{2,}", "skipUnder": ["node_modules/"] },
+    "C:[\\\\/]IRIS"
+  ],
+  "allowFiles": ["**/LICENSE*", "**/node_modules/**/*.md"],
+  "maxBytes": 629145600
+}
