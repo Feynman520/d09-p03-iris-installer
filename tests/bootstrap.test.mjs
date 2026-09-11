@@ -131,6 +131,41 @@ test('bootstrap.ps1 verifies the stale pid is our bundled node before stopping i
   assert.match(ps1Text, /not our bundled Node server\. Leaving it alone\./);
 });
 
+// Re-review residual (2026-09-12): an unreadable/absent $staleProc.Path used
+// to leave $isOurs at the name-only result, so an unrelated node.exe this
+// user cannot query was still stopped BY NAME -- exactly what the global rule
+// forbids. Unknown identity must mean "not ours".
+test('bootstrap.ps1: an unreadable stale-pid Path means "not ours" (never stop by name alone)', () => {
+  // $isOurs starts false and the ONLY thing that can make it true is the
+  // image-path equality, reached only when the name matches AND the path was
+  // readable.
+  assert.match(ps1Text, /\$isOurs = \$false/, '$isOurs must start out false');
+  const trueAssignments = (ps1Text.match(/\$isOurs\s*=\s*[^\r\n]+/g) ?? [])
+    .filter((line) => line !== '$isOurs = $false');
+  assert.deepEqual(
+    trueAssignments, ['$isOurs = ($stalePath -eq $nodeExe)'],
+    'the bundled-path comparison must be the only assignment that can set $isOurs true',
+  );
+  assert.match(
+    ps1Text,
+    /if \(\(\$staleProc\.ProcessName -eq 'node'\) -and \$stalePath\) \{\r?\n\s*\$isOurs = \(\$stalePath -eq \$nodeExe\)/,
+    'the path comparison must be guarded by BOTH the node name and a readable path',
+  );
+  // ...and the unknown-identity case is logged and skipped.
+  assert.match(ps1Text, /elseif \(-not \$stalePath\) \{/, 'missing the unreadable-path branch');
+  assert.match(ps1Text, /stale pid \$\{stalePid\}: identity unknown, not stopping\./);
+});
+
+test('bootstrap.ps1: Stop-Process is unreachable unless $isOurs is true', () => {
+  const stops = ps1Text.match(/^[^\r\n]*Stop-Process[^\r\n]*$/gm) ?? [];
+  assert.equal(stops.length, 1, `expected exactly one Stop-Process line, found ${stops.length}`);
+  // Everything between "if ($isOurs) {" and its closing brace is the only
+  // place that line may live.
+  const guarded = ps1Text.match(/if \(\$isOurs\) \{([\s\S]*?)\n {6}\} elseif/);
+  assert.ok(guarded, 'the Stop-Process branch is not the body of an "if ($isOurs)" gate');
+  assert.ok(guarded[1].includes(stops[0].trim()), 'Stop-Process lives outside the $isOurs gate');
+});
+
 test('bootstrap.ps1 declares the bundled node paths exactly once (hoisted above the stale-pid stage)', () => {
   const nodeDirDecls = ps1Text.match(/^\$nodeDir = /gm) ?? [];
   const nodeExeDecls = ps1Text.match(/^\$nodeExe = /gm) ?? [];

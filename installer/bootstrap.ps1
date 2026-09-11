@@ -125,24 +125,30 @@ if (Test-Path -LiteralPath $pidFile) {
   if ($stalePid) {
     $staleProc = Get-Process -Id $stalePid -ErrorAction SilentlyContinue
     if ($staleProc) {
-      # A pid is only ours to stop if it still looks like the server we
+      # A pid is only ours to stop if it still PROVES it is the server we
       # started: pids are recycled, and server.pid can outlive its process by
-      # days, so "the file says 3456" is not evidence. Two gates:
-      #   - the image must be node (never a shell, an editor, an agent);
-      #   - when the image path is readable, it must be the bundled
-      #     node.exe under %LOCALAPPDATA%\IRIS-Installer\node -- some other
-      #     node process (a dev server, a relay, an agent session) is never
-      #     touched. Path can throw/return nothing for a process this user
-      #     may not query; in that case the name check alone decides.
+      # days, so "the file says 3456" is not evidence. Proof needs both:
+      #   - the image is node (never a shell, an editor, an agent), AND
+      #   - the image path is readable AND equals the bundled node.exe under
+      #     %LOCALAPPDATA%\IRIS-Installer\node.
+      # An unreadable or absent Path (a process this user may not query, a
+      # process exiting right now) is NOT a free pass: identity unknown means
+      # not ours, so nothing is stopped -- otherwise an unrelated node.exe
+      # (a dev server, a relay, an agent session) would still be killed by
+      # name alone. The stale pid file is removed either way and a fresh
+      # server is started; the health probe above already handled the case
+      # where our own server is alive and answering.
       $stalePath = $null
       try { $stalePath = $staleProc.Path } catch { $stalePath = $null }
-      $isOurs = ($staleProc.ProcessName -eq 'node')
-      if ($isOurs -and $stalePath) {
+      $isOurs = $false
+      if (($staleProc.ProcessName -eq 'node') -and $stalePath) {
         $isOurs = ($stalePath -eq $nodeExe)
       }
       if ($isOurs) {
         Log "Stopping stale server process (pid $stalePid)."
         Stop-Process -Id $stalePid -Force -ErrorAction SilentlyContinue
+      } elseif (-not $stalePath) {
+        Log "stale pid ${stalePid}: identity unknown, not stopping."
       } else {
         Log "server.pid names pid $stalePid, but that process is not our bundled Node server. Leaving it alone."
       }
