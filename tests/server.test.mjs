@@ -135,14 +135,151 @@ test('POST /api/name: a rejected name leaves state.step on precheck (no soul sav
 test('unimplemented routes for later tasks answer 501 with a task number', async () => {
   const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state2.json') });
   try {
-    const login = await fetch(`${url}/api/login`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
-    assert.deepEqual(await login.json(), { ok: false, reason: 'not_implemented', task: 13 });
-
-    const loginStatus = await fetch(`${url}/api/login/status`);
-    assert.deepEqual(await loginStatus.json(), { ok: false, reason: 'not_implemented', task: 13 });
-
     const handoff = await fetch(`${url}/api/handoff`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
     assert.deepEqual(await handoff.json(), { ok: false, reason: 'not_implemented', task: 14 });
+  } finally {
+    await close();
+  }
+});
+
+// Task 13 wiring: POST /api/login validates the provider, snapshots
+// accountsBefore, ensures the proxy, and starts the CLI login -- all via
+// injected fns so this test never spawns a process or touches a real
+// TeamClaude config. GET /api/login/status then drives stage 1 (cli) ->
+// stage 2 (relay) per provider and flips state.step to 'handoff' once every
+// chosen subscription is fully done.
+test('login: POST /api/login + GET /api/login/status advance cli -> relay -> handoff per provider', async () => {
+  const stateFile8 = path.join(tmp, 'state8.json');
+  const zr8 = path.join(tmp, 'zip-login');
+  fs.mkdirSync(path.join(zr8, 'payload'), { recursive: true });
+  fs.writeFileSync(
+    path.join(zr8, 'payload', 'manifest.json'),
+    JSON.stringify({ schema: 1, package: { name: 'IRIS', version: '1.0.0' }, parts: {} }),
+    'utf8',
+  );
+  const cliStatusByProvider = { claude: 'pending', chatgpt: 'pending' };
+  const relayStatusByProvider = { claude: 'pending', chatgpt: 'pending' };
+  const ensureProxyCalls = [];
+  const startCliLoginCalls = [];
+  const relayImportCalls = [];
+
+  // Login only ever runs after install finishes (state.step -> 'login') --
+  // an injected no-op installFn advances that without writing anything.
+  const installFn = async ({ onProgress }) => {
+    onProgress({ part: 'node', pct: 100, status: 'done' });
+    return { steps: { copy: 'done' } };
+  };
+
+  const { url, close } = await startServer({
+    port: 0,
+    zipRoot: zr8,
+    nodeDir,
+    stateFile: stateFile8,
+    installFn,
+    ensureProxyFn: async (opts) => { ensureProxyCalls.push(opts); return { alive: true, started: false }; },
+    startCliLoginFn: (opts) => { startCliLoginCalls.push(opts); return { pid: 4242 }; },
+    cliLoginStatusFn: ({ provider }) => cliStatusByProvider[provider],
+    relayImportFn: async (opts) => { relayImportCalls.push(opts); return { ok: true, method: 'import' }; },
+    relayStatusFn: async ({ provider }) => relayStatusByProvider[provider],
+    countProviderAccountsFn: async () => 0,
+    teamclaudeConfigPath: path.join(tmp, 'fake-teamclaude.json'),
+  });
+  try {
+    await fetch(`${url}/api/name`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'NOVA-LOGIN-TEST' }),
+    });
+    await fetch(`${url}/api/choice`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscriptions: ['claude', 'chatgpt'] }),
+    });
+    await fetch(`${url}/api/install`, { method: 'POST' });
+    for (let i = 0; i < 50; i++) {
+      const s = await (await fetch(`${url}/api/state`)).json();
+      if (s.step === 'login') break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    const badProvider = await fetch(`${url}/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'bogus' }),
+    });
+    assert.deepEqual(await badProvider.json(), { ok: false, reason: 'bad_provider' });
+
+    const loginClaude = await fetch(`${url}/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'claude' }),
+    });
+    assert.equal(loginClaude.status, 200);
+    assert.deepEqual(await loginClaude.json(), { ok: true, alive: true, started: false, pid: 4242 });
+
+    const loginChatgpt = await fetch(`${url}/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'chatgpt' }),
+    });
+    assert.equal(loginChatgpt.status, 200);
+
+    assert.equal(ensureProxyCalls.length, 2);
+    assert.equal(startCliLoginCalls.length, 2);
+    assert.equal(startCliLoginCalls[0].provider, 'claude');
+    assert.equal(startCliLoginCalls[1].provider, 'chatgpt');
+
+    let statusBody = await (await fetch(`${url}/api/login/status`)).json();
+    assert.equal(statusBody.step, 'login');
+    assert.equal(statusBody.providers.claude.cli, 'pending');
+    assert.equal(statusBody.providers.chatgpt.cli, 'pending');
+    assert.equal(relayImportCalls.length, 0);
+
+    // Flip claude's CLI login to done -> the next poll starts stage 2
+    // (relayImport) for claude only.
+    cliStatusByProvider.claude = 'done';
+    statusBody = await (await fetch(`${url}/api/login/status`)).json();
+    assert.equal(statusBody.providers.claude.cli, 'done');
+    assert.equal(statusBody.providers.chatgpt.cli, 'pending');
+
+    // The route fires relayImport without awaiting it -- poll until it lands.
+    for (let i = 0; i < 50 && relayImportCalls.length < 1; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(relayImportCalls.length, 1);
+    assert.equal(relayImportCalls[0].provider, 'claude');
+
+    statusBody = await (await fetch(`${url}/api/login/status`)).json();
+    assert.equal(statusBody.providers.claude.relayMethod, 'import');
+    assert.equal(statusBody.providers.claude.relay, 'pending');
+    assert.equal(statusBody.step, 'login');
+
+    // Finish both providers.
+    cliStatusByProvider.chatgpt = 'done';
+    relayStatusByProvider.claude = 'done';
+    await fetch(`${url}/api/login/status`);
+    for (let i = 0; i < 50 && relayImportCalls.length < 2; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    relayStatusByProvider.chatgpt = 'done';
+
+    let finalBody;
+    for (let i = 0; i < 50; i++) {
+      finalBody = await (await fetch(`${url}/api/login/status`)).json();
+      if (finalBody.step === 'handoff') break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(finalBody.step, 'handoff');
+    assert.equal(finalBody.providers.claude.relay, 'done');
+    assert.equal(finalBody.providers.chatgpt.relay, 'done');
+
+    const state = await (await fetch(`${url}/api/state`)).json();
+    assert.equal(state.step, 'handoff');
+  } finally {
+    await close();
+  }
+});
+
+test('login: POST /api/login before a soul root is chosen -> 409', async () => {
+  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state9.json') });
+  try {
+    const res = await fetch(`${url}/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'claude' }),
+    });
+    assert.equal(res.status, 409);
+    assert.deepEqual(await res.json(), { ok: false, reason: 'no_soul' });
   } finally {
     await close();
   }

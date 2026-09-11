@@ -1,0 +1,82 @@
+// TeamClaude proxy (127.0.0.1:3456) liveness + start, modeled on the shipped
+// dashboard/Face helper (_build/stage/dir/dash/ensure-proxy.mjs): probe first,
+// and only run the manage script's `start` action when nothing answers.
+// NEVER kill or restart an already-running proxy -- an already-alive proxy is
+// left completely untouched (task-13-brief.md, binding rehearsal rule).
+import { spawn } from 'node:child_process';
+import http from 'node:http';
+import path from 'node:path';
+
+const DEFAULT_PORT = 3456;
+
+// Any HTTP response counts as "alive" -- this deliberately probes the bare
+// root (not /teamclaude/status specifically) per the brief's rehearsal rule
+// ("probing http://127.0.0.1:3456/ -- any HTTP response = alive"), so the
+// check works even before any TeamClaude-specific route is known.
+export function defaultProbe(port, { timeoutMs = 1500 } = {}) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(true);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+export function defaultRunManage(managePs1, args, { timeoutMs = 90000 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', managePs1, ...args], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    const t = setTimeout(() => child.kill(), timeoutMs);
+    child.on('close', (code) => { clearTimeout(t); resolve({ code, out: out.trim(), err: err.trim() }); });
+    child.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out: '', err: e.message }); });
+  });
+}
+
+export function manageScriptPath(root) {
+  return path.join(root, '_agent', 'shared', 'tools', 'teamclaude', 'teamclaude-manage.ps1');
+}
+
+export function teamclaudeEntryPath(root) {
+  return path.join(
+    root, '_agent', 'shared', 'tools', 'teamclaude',
+    'node_modules', '@karpeleslab', 'teamclaude', 'src', 'index.js',
+  );
+}
+
+/**
+ * Ensure the TeamClaude proxy is reachable, starting it only if nothing
+ * answers on `port` yet.
+ *
+ * @returns {Promise<{alive: boolean, started: boolean}>}
+ *   alive   = true if the proxy answers by the time this returns
+ *   started = true only if this call actually ran the manage script's
+ *             `start` action (never true when the proxy was already alive)
+ */
+export async function ensureProxy({
+  root,
+  nodeDir,
+  port = DEFAULT_PORT,
+  probe = defaultProbe,
+  runManage = defaultRunManage,
+} = {}) {
+  if (await probe(port)) {
+    return { alive: true, started: false };
+  }
+
+  const managePs1 = manageScriptPath(root);
+  const nodeExe = path.join(nodeDir, 'node.exe');
+  const entryPath = teamclaudeEntryPath(root);
+
+  await runManage(managePs1, ['-Action', 'start', '-NodePath', nodeExe, '-EntryPath', entryPath]);
+
+  const alive = await probe(port);
+  return { alive, started: true };
+}

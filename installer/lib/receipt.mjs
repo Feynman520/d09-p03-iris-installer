@@ -72,7 +72,10 @@ export function setInstalled(receipt, name, info) {
   return receipt;
 }
 
-export function setLogin(receipt, provider, done) {
-  receipt.login[provider] = { done, at: new Date().toISOString() };
+// Shape = task-13-brief.md: login.<provider> = {cli, relay, relayMethod, at}.
+// `cli`/`relay` are booleans (never secrets); `relayMethod` is 'import' or
+// 'login' (which mechanism registered the account with TeamClaude).
+export function setLogin(receipt, provider, { cli, relay, relayMethod }) {
+  receipt.login[provider] = { cli, relay, relayMethod, at: new Date().toISOString() };
   return receipt;
 }

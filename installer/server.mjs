@@ -14,6 +14,18 @@ import { initialState, loadState, saveState } from './lib/state.mjs';
 import { precheck } from './lib/precheck.mjs';
 import { validateSoulName, detectExisting } from './lib/soulname.mjs';
 import { install as defaultInstall } from './lib/install.mjs';
+import { ensureProxy as defaultEnsureProxy } from './lib/proxy.mjs';
+import {
+  startCliLogin as defaultStartCliLogin,
+  cliLoginStatus as defaultCliLoginStatus,
+  relayImport as defaultRelayImport,
+  relayStatus as defaultRelayStatus,
+  resolveTeamclaudeConfigPath,
+  countProviderAccounts as defaultCountProviderAccounts,
+} from './lib/login.mjs';
+import {
+  readReceipt, writeReceipt, setLogin as setReceiptLogin, markStep as markReceiptStep,
+} from './lib/receipt.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -176,7 +188,21 @@ function readLock(zipRoot) {
   return null;
 }
 
-export function startServer({ port = 3460, zipRoot, nodeDir, stateFile, onQuit, installFn = defaultInstall } = {}) {
+export function startServer({
+  port = 3460,
+  zipRoot,
+  nodeDir,
+  stateFile,
+  onQuit,
+  installFn = defaultInstall,
+  ensureProxyFn = defaultEnsureProxy,
+  startCliLoginFn = defaultStartCliLogin,
+  cliLoginStatusFn = defaultCliLoginStatus,
+  relayImportFn = defaultRelayImport,
+  relayStatusFn = defaultRelayStatus,
+  countProviderAccountsFn = defaultCountProviderAccounts,
+  teamclaudeConfigPath,
+} = {}) {
   const uiDir = path.join(HERE, 'ui');
   const version = readPackageVersion(zipRoot);
 
@@ -335,15 +361,130 @@ export function startServer({ port = 3460, zipRoot, nodeDir, stateFile, onQuit, 
     req.on('close', () => { sseClients.delete(res); });
   });
 
-  // TODO Task 13: CLI self-login flow (spawn claude/codex login in a
-  // proxy-free console, detect the resulting auth file, hand off to
-  // TeamClaude) + status polling.
+  // --- login step ----------------------------------------------------------
+  // Two-stage flow (task-13-brief.md): ① startCliLogin opens the CLI's own
+  // OAuth in a proxy-free console; ② once that credential file exists,
+  // relayImport hands it to TeamClaude and relayStatus polls the config
+  // file's per-provider account count. GET /api/login/status is what the
+  // screen polls every 2s -- it also advances stage ①→② and, once every
+  // chosen subscription is fully done, flips the receipt/state to handoff.
+  const relayImportInFlight = new Set();
+
+  function getTeamclaudeConfigPath() {
+    return teamclaudeConfigPath ?? resolveTeamclaudeConfigPath();
+  }
+
   routes.set('POST /api/login', withBody(async (body, req, res) => {
-    sendJson(res, 501, { ok: false, reason: 'not_implemented', task: 13 });
+    const provider = body?.provider;
+    if (provider !== 'claude' && provider !== 'chatgpt') {
+      sendJson(res, 200, { ok: false, reason: 'bad_provider' });
+      return;
+    }
+    if (!state.soul?.root) {
+      sendJson(res, 409, { ok: false, reason: 'no_soul' });
+      return;
+    }
+    const root = state.soul.root;
+    const configPath = getTeamclaudeConfigPath();
+    const [proxyResult, accountsBefore] = await Promise.all([
+      ensureProxyFn({ root, nodeDir: state.nodeDir }),
+      countProviderAccountsFn({ teamclaudeConfigPath: configPath, provider }).catch(() => 0),
+    ]);
+    const { pid } = startCliLoginFn({ root, nodeDir: state.nodeDir, provider });
+
+    state.login = state.login ?? {};
+    state.login[provider] = {
+      startedAt: new Date().toISOString(),
+      accountsBefore,
+      cli: 'pending',
+      relay: 'pending',
+      relayMethod: null,
+      pid,
+    };
+
+    // Record which TeamClaude config path is in play (brief: receipt
+    // env.teamclaudeConfig). Only meaningful once the receipt exists
+    // (created by install's copy step, which always runs before login).
+    const receipt = readReceipt(root);
+    if (receipt) {
+      receipt.env = receipt.env ?? {};
+      receipt.env.teamclaudeConfig = configPath;
+      writeReceipt(root, receipt);
+    }
+
+    saveState(stateFile, state);
+    sendJson(res, 200, { ok: true, alive: proxyResult.alive, started: proxyResult.started, pid });
   }));
 
   routes.set('GET /api/login/status', async (req, res) => {
-    sendJson(res, 501, { ok: false, reason: 'not_implemented', task: 13 });
+    const root = state.soul?.root;
+    const subs = state.choice?.subscriptions ?? [];
+    if (!root || !state.login || subs.length === 0) {
+      sendJson(res, 200, { ok: true, step: state.step, providers: {} });
+      return;
+    }
+    const configPath = getTeamclaudeConfigPath();
+
+    for (const provider of subs) {
+      const entry = state.login[provider];
+      if (!entry) continue;
+
+      if (entry.cli !== 'done') {
+        entry.cli = cliLoginStatusFn({ provider, root });
+      }
+
+      // Stage ①→② handoff: kick off relayImport exactly once per provider,
+      // and never run two at the same time for the same provider (this
+      // route is polled every 2s and relayImport can be slow -- a real
+      // spawn/CLI call).
+      if (entry.cli === 'done' && entry.relayMethod == null && !relayImportInFlight.has(provider)) {
+        relayImportInFlight.add(provider);
+        relayImportFn({ provider, root, nodeDir: state.nodeDir, teamclaudeConfigPath: configPath })
+          .then((r) => {
+            entry.relayMethod = r.method;
+            saveState(stateFile, state);
+          })
+          .catch(() => { /* leave relayMethod null -- retried on next poll */ })
+          .finally(() => { relayImportInFlight.delete(provider); });
+      }
+
+      if (entry.relayMethod != null && entry.relay !== 'done') {
+        entry.relay = await relayStatusFn({
+          teamclaudeConfigPath: configPath, provider, accountsBefore: entry.accountsBefore,
+        });
+      }
+    }
+    saveState(stateFile, state);
+
+    const allDone = subs.every((p) => state.login[p]?.cli === 'done' && state.login[p]?.relay === 'done');
+    if (allDone && state.step !== 'handoff') {
+      const receipt = readReceipt(root);
+      if (receipt) {
+        for (const provider of subs) {
+          setReceiptLogin(receipt, provider, { cli: true, relay: true, relayMethod: state.login[provider].relayMethod });
+        }
+        markReceiptStep(receipt, 'login', 'done');
+        writeReceipt(root, receipt);
+      }
+      state.step = 'handoff';
+      saveState(stateFile, state);
+    }
+
+    const now = Date.now();
+    const REOPEN_AFTER_MS = 60 * 60 * 1000; // 60 minutes, per the brief's "다시 열기" affordance
+    const providers = {};
+    for (const provider of subs) {
+      const entry = state.login[provider];
+      if (!entry) continue;
+      const elapsedMs = now - Date.parse(entry.startedAt);
+      providers[provider] = {
+        cli: entry.cli,
+        relay: entry.relay,
+        relayMethod: entry.relayMethod,
+        reopenAvailable: entry.cli !== 'done' && elapsedMs > REOPEN_AFTER_MS,
+      };
+    }
+    sendJson(res, 200, { ok: true, step: state.step, providers });
   });
 
   // TODO Task 14: launch Face (launch.mjs --first-session), confirm the
