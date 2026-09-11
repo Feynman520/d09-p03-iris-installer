@@ -3,10 +3,12 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { verifyManifest } from '../lib/manifest.mjs';
 import { extractZip } from '../lib/zip.mjs';
 import { sanitize } from '../build/sanitize.mjs';
 import { loadRules } from '../build/rules.mjs';
+import { agentShim } from '../installer/lib/shims.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -169,9 +171,31 @@ async function main() {
     }
     record('⑤ node-pty native binary in shipped zip', ptyOk, ptyDetail);
 
-    // ⑥ placeholder -- the shim-template cross-check (P02 wake() vs P03
-    // shims.mjs) only becomes checkable once Task 17 writes both templates.
-    console.log('⑥ skipped (shim template check arrives with Task 17)');
+    // ⑥ shim template parity -- P02 daemon/wake.mjs re-implements P03
+    // installer/lib/shims.mjs's agentShim() byte-for-byte (it cannot import
+    // it: P02/P03 are separate deployed units -- see wake.mjs's header
+    // comment). Resolve P02's location the same way check ④ and collect.mjs
+    // do: lock.parts.face.source, resolved against ROOT_DIR.
+    {
+      const faceSource = path.resolve(ROOT_DIR, lock.parts.face.source);
+      const wakePath = path.join(faceSource, 'daemon', 'wake.mjs');
+      if (!fs.existsSync(wakePath)) {
+        record('⑥ shim template parity (P02 wake() vs P03 shims.mjs)', false, `P02 not found: ${wakePath} does not exist`);
+      } else {
+        const { agentShimText } = await import(pathToFileURL(wakePath).href);
+        const mismatches = [];
+        for (const agent of ['claude', 'codex']) {
+          const a = agentShim(agent);
+          const b = agentShimText(agent);
+          if (a !== b) mismatches.push(agent);
+        }
+        record(
+          '⑥ shim template parity (P02 wake() vs P03 shims.mjs)',
+          mismatches.length === 0,
+          mismatches.length === 0 ? 'claude + codex identical' : `differ for: ${mismatches.join(', ')}`,
+        );
+      }
+    }
 
     // ⑦ (C2) the gate must also scan the repo's own tracked files -- not
     // just build output -- so personal strings committed into a tracked

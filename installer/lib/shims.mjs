@@ -43,7 +43,11 @@ function nodeShim() {
   ]);
 }
 
-function agentShim(agent) {
+// Exported (not just used internally by writeShims below) so verify/static.mjs
+// check ⑥ can byte-compare this template against its P02 daemon/wake.mjs
+// sibling copy (agentShimText()) -- the two must never drift (see that file's
+// header comment for the provenance/duplication rationale).
+export function agentShim(agent) {
   const { envName, envDir, tool } = AGENT_SHIMS[agent];
   return crlf([
     '@echo off',
