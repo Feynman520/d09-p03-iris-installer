@@ -27,7 +27,7 @@ fs.mkdirSync(nodeDir, { recursive: true });
 const stateFile = path.join(tmp, 'state.json');
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
-test('health 200 with name:iris-installer; POST /api/name reserved stub; POST /api/quit closes the server', async () => {
+test('health 200 with name:iris-installer; POST /api/name validation; POST /api/quit closes the server', async () => {
   let closedByQuit = false;
   const { url, close } = await startServer({
     port: 0,
@@ -47,13 +47,25 @@ test('health 200 with name:iris-installer; POST /api/name reserved stub; POST /a
   assert.equal(healthBody.step, 'precheck');
   assert.equal(typeof healthBody.version, 'string');
 
-  const reserved = await fetch(`${url}/api/name`, {
+  // 'Windows' collides with the real top-level system folder -> soulname's
+  // 'system' reason (the old Task 10 stub's narrower 'reserved' vocabulary
+  // is gone -- soulname.mjs is now the single source of truth).
+  const systemName = await fetch(`${url}/api/name`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'Windows' }),
   });
-  assert.equal(reserved.status, 200);
-  assert.deepEqual(await reserved.json(), { ok: false, reason: 'reserved' });
+  assert.equal(systemName.status, 200);
+  assert.deepEqual(await systemName.json(), { ok: false, reason: 'system' });
+
+  // 'CON' is a reserved MS-DOS device name -- distinct reason from 'system'.
+  const deviceName = await fetch(`${url}/api/name`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'CON' }),
+  });
+  assert.equal(deviceName.status, 200);
+  assert.deepEqual(await deviceName.json(), { ok: false, reason: 'reserved' });
 
   const okName = await fetch(`${url}/api/name`, {
     method: 'POST',
@@ -72,13 +84,57 @@ test('health 200 with name:iris-installer; POST /api/name reserved stub; POST /a
   await assert.rejects(fetch(`${url}/api/health`), 'server should have stopped listening after quit');
 });
 
+test('POST /api/precheck runs the real precheck and advances state.step to name', async () => {
+  const stateFile6 = path.join(tmp, 'state6.json');
+  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFile6 });
+  try {
+    const res = await fetch(`${url}/api/precheck`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(typeof body.os.ok, 'boolean');
+    assert.equal(body.arch.value, 'x64');
+    assert.equal(typeof body.allOk, 'boolean');
+    assert.equal(typeof body.canProceedOffline, 'boolean');
+
+    const state = await (await fetch(`${url}/api/state`)).json();
+    assert.equal(state.step, 'name');
+    assert.deepEqual(state.precheck, body);
+  } finally {
+    await close();
+  }
+});
+
+test('POST /api/name: a rejected name leaves state.step on precheck (no soul saved); state.step only advances to choice on ok:true', async () => {
+  const stateFile7 = path.join(tmp, 'state7.json');
+  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFile7 });
+  try {
+    const badName = await fetch(`${url}/api/name`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '' }),
+    });
+    assert.deepEqual(await badName.json(), { ok: false, reason: 'empty' });
+    const afterBad = await (await fetch(`${url}/api/state`)).json();
+    assert.equal(afterBad.step, 'precheck');
+    assert.equal(afterBad.soul, undefined);
+
+    const goodName = await fetch(`${url}/api/name`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'NOVA7' }),
+    });
+    assert.deepEqual(await goodName.json(), { ok: true, path: 'C:\\NOVA7', existing: 'none' });
+    const afterGood = await (await fetch(`${url}/api/state`)).json();
+    assert.equal(afterGood.step, 'choice');
+    assert.deepEqual(afterGood.soul, { name: 'NOVA7', root: 'C:\\NOVA7', existing: 'none' });
+  } finally {
+    await close();
+  }
+});
+
 test('unimplemented routes for later tasks answer 501 with a task number', async () => {
   const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state2.json') });
   try {
-    const precheck = await fetch(`${url}/api/precheck`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
-    assert.equal(precheck.status, 501);
-    assert.deepEqual(await precheck.json(), { ok: false, reason: 'not_implemented', task: 11 });
-
     const login = await fetch(`${url}/api/login`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
     assert.deepEqual(await login.json(), { ok: false, reason: 'not_implemented', task: 13 });
 

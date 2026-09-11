@@ -11,37 +11,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { initialState, loadState, saveState } from './lib/state.mjs';
+import { precheck } from './lib/precheck.mjs';
+import { validateSoulName, detectExisting } from './lib/soulname.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
-
-// ---------------------------------------------------------------------------
-// name-stub validation (Task 11 replaces this with the real precheck: guide
-// 2-1 rules, existing-soul detection via soul-state.json, NTFS/reparse
-// checks). For now this only screens out names that would collide with a
-// well-known Windows system folder or contain characters/trailing
-// dot-or-space Windows itself forbids in a path segment.
-// ---------------------------------------------------------------------------
-const RESERVED_NAMES = new Set([
-  'windows',
-  'users',
-  'program files',
-  'program files (x86)',
-  'programdata',
-  'system volume information',
-]);
-const FORBIDDEN_CHARS = /[<>:"/\\|?*]/;
-
-// TODO Task 11: real precheck (existing soul detection, guide 2-1 full rule
-// set, NTFS/reparse-point checks) -- this stub only rejects a fixed list of
-// reserved Windows names plus the characters Windows forbids outright.
-export function isReservedName(name) {
-  if (typeof name !== 'string' || name.length === 0) return true;
-  if (RESERVED_NAMES.has(name.toLowerCase())) return true;
-  if (FORBIDDEN_CHARS.test(name)) return true;
-  if (/[. ]$/.test(name)) return true; // trailing dot or space
-  return false;
-}
 
 // ---------------------------------------------------------------------------
 // small http helpers
@@ -204,22 +178,30 @@ export function startServer({ port = 3460, zipRoot, nodeDir, stateFile, onQuit }
     sendJson(res, 200, state);
   });
 
-  // TODO Task 11: real precheck (OS version, 64-bit, free disk space,
-  // claude.ai/chatgpt.com reachability, default browser present).
   routes.set('POST /api/precheck', withBody(async (body, req, res) => {
-    sendJson(res, 501, { ok: false, reason: 'not_implemented', task: 11 });
+    const result = await precheck();
+    state.precheck = result;
+    state.step = 'name';
+    saveState(stateFile, state);
+    sendJson(res, 200, result);
   }));
 
-  // TODO Task 11: real name check (guide 2-1 full rule set, existing-soul
-  // detection via soul-state.json -> existing:'soul', occupied-non-soul
-  // folder -> existing:'conflict').
   routes.set('POST /api/name', withBody(async (body, req, res) => {
     const name = body?.name;
-    if (isReservedName(name)) {
-      sendJson(res, 200, { ok: false, reason: 'reserved' });
+    const validation = validateSoulName(name);
+    if (!validation.ok) {
+      sendJson(res, 200, { ok: false, reason: validation.reason });
       return;
     }
-    sendJson(res, 200, { ok: true, path: `C:\\${name}`, existing: 'none' });
+    const existing = detectExisting(validation.path);
+    if (existing === 'conflict') {
+      sendJson(res, 200, { ok: false, reason: 'conflict' });
+      return;
+    }
+    state.soul = { name, root: validation.path, existing };
+    state.step = 'choice';
+    saveState(stateFile, state);
+    sendJson(res, 200, { ok: true, path: validation.path, existing });
   }));
 
   // Decision rule = docs/설계.md D7/§3-3 ⓒ: choosing both subscriptions has
