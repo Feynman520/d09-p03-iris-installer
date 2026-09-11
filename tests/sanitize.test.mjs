@@ -81,6 +81,16 @@ test('(d) a binary file whose bytes happen to contain a forbidden string produce
   assert.deepEqual(r.hits, []);
 });
 
+test('allowFiles never exempts a file from forbiddenNames (only from string/regex checks)', async () => {
+  const root = mkroot('allow-vs-name');
+  // secrets/LICENSE matches both forbiddenNames ("**/secrets/**") and
+  // allowFiles ("**/LICENSE*"). allowFiles must not suppress the name hit.
+  writeFile(root, 'secrets/LICENSE', 'MIT License\n');
+
+  const r = await sanitize(root, RULES);
+  assert.deepEqual(r.hits, [{ file: 'secrets/LICENSE', rule: 'name:**/secrets/**' }]);
+});
+
 test('(e) maxBytes overage produces a warning, not a hit, and ok stays true', async () => {
   const root = mkroot('maxbytes-case');
   writeFile(root, 'big.txt', 'x'.repeat(20));
