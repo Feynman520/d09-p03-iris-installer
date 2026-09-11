@@ -68,20 +68,8 @@
     "face": {
       "kind": "dir",
       "source": "../P02-IRIS 페이스(IRIS-Face) 〖Local App〗",
-      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", "AGENTS.md", "CLAUDE.md", "scripts"],
+      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts"],
       "npmCi": true,
-      "redact": [
-        {
-          "file": "daemon/folders.mjs",
-          "findRegex": "C:[\\\\/]+Users[\\\\/]+User[\\\\/]+AppData[\\\\/]+Local[\\\\/]+Programs[\\\\/]+Python[\\\\/]+Python312[\\\\/]+python\\.exe",
-          "replace": "python"
-        },
-        {
-          "file": "daemon/voice.mjs",
-          "findRegex": "C:[\\\\/]+Users[\\\\/]+User[\\\\/]+AppData[\\\\/]+Local[\\\\/]+Programs[\\\\/]+Python[\\\\/]+Python312[\\\\/]+python\\.exe",
-          "replace": "python"
-        }
-      ],
       "file": "face/iris-face.zip",
       "license": "MIT"
     },
