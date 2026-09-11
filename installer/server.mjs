@@ -26,6 +26,14 @@ import {
 import {
   readReceipt, writeReceipt, setLogin as setReceiptLogin, markStep as markReceiptStep,
 } from './lib/receipt.mjs';
+import {
+  writeFirstRequest as defaultWriteFirstRequest,
+  writeFaceLauncher as defaultWriteFaceLauncher,
+  writeFirstSessionSpec as defaultWriteFirstSessionSpec,
+  launchFace as defaultLaunchFace,
+  waitFaceReady as defaultWaitFaceReady,
+  finish as defaultFinish,
+} from './lib/handoff.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -137,6 +145,36 @@ function readPackageVersion(zipRoot) {
   }
 }
 
+// --no-user-env / IRIS_INSTALLER_NO_USER_ENV=1: a userpath implementation
+// that records what install() *would* have written to HKCU\Environment and
+// writes nothing. The receipt still gets the same env values (that is what
+// the setting-up agent reads), only the registry is left alone. Exists for
+// rehearsals on a machine that is already a working IRIS soul -- a live
+// install there would repoint CLAUDE_CONFIG_DIR / CODEX_HOME /
+// ANTHROPIC_BASE_URL and the user Path at the rehearsal folder.
+export function recordingUserpath(record = []) {
+  return {
+    record,
+    addUserPath: async (dir) => {
+      record.push({ op: 'addUserPath', dir });
+      return { changed: false, before: '', after: '', recorded: true };
+    },
+    removeUserPath: async (dir) => {
+      record.push({ op: 'removeUserPath', dir });
+      return { changed: false, before: '', after: '', recorded: true };
+    },
+    setUserEnv: async (name, value) => {
+      record.push({ op: 'setUserEnv', name, value });
+      return { changed: false, previous: null, recorded: true };
+    },
+    removeUserEnv: async (name) => {
+      record.push({ op: 'removeUserEnv', name });
+      return { changed: false, previous: null, recorded: true };
+    },
+    readUserEnv: async () => ({ exists: false, type: null, value: null }),
+  };
+}
+
 function withBody(handler) {
   return async (req, res, url) => {
     let body;
@@ -202,9 +240,34 @@ export function startServer({
   relayStatusFn = defaultRelayStatus,
   countProviderAccountsFn = defaultCountProviderAccounts,
   teamclaudeConfigPath,
+  writeFirstRequestFn = defaultWriteFirstRequest,
+  writeFaceLauncherFn = defaultWriteFaceLauncher,
+  writeFirstSessionSpecFn = defaultWriteFirstSessionSpec,
+  launchFaceFn = defaultLaunchFace,
+  waitFaceReadyFn = defaultWaitFaceReady,
+  finishFn = defaultFinish,
+  facePort,
+  faceDir,
+  faceNodeExe,
+  faceExtraArgs,
+  faceEnv,
+  faceSpecOverrides,
+  desktopDir,
+  workDir,
+  noUserEnv = false,
 } = {}) {
   const uiDir = path.join(HERE, 'ui');
   const version = readPackageVersion(zipRoot);
+  const userEnvSkipped = noUserEnv || process.env.IRIS_INSTALLER_NO_USER_ENV === '1';
+  const userEnvRecord = [];
+  if (userEnvSkipped) {
+    console.log('================================================================');
+    console.log('[iris-installer] --no-user-env ACTIVE: HKCU\\Environment will NOT');
+    console.log('[iris-installer] be touched (no PATH, no CLAUDE_CONFIG_DIR, no');
+    console.log('[iris-installer] CODEX_HOME, no ANTHROPIC_BASE_URL). Rehearsal only --');
+    console.log('[iris-installer] the resulting soul is NOT a usable install.');
+    console.log('================================================================');
+  }
 
   // Restore prior progress (refresh / re-run) but always take this run's
   // zipRoot/nodeDir -- the invocation just told us where those actually are
@@ -322,6 +385,7 @@ export function startServer({
     installEvents.length = 0;
     state.step = 'install';
     state.install = { parts: {} };
+    state.userEnvSkipped = userEnvSkipped;
     saveState(stateFile, state);
     sendJson(res, 202, { ok: true });
 
@@ -335,6 +399,7 @@ export function startServer({
       manifest,
       lock,
       choice: state.choice ?? { subscriptions: [], leadAgent: 'claude', guideEdition: 'claude' },
+      ...(userEnvSkipped ? { userpath: recordingUserpath(userEnvRecord) } : {}),
       onProgress: (e) => pushEvent({ part: null, pct: null, done: false, error: null, ...e }),
     }).then(() => {
       state.step = 'login';
@@ -504,10 +569,121 @@ export function startServer({
     sendJson(res, 200, { ok: true, step: state.step, providers });
   });
 
-  // TODO Task 14: launch Face (launch.mjs --first-session), confirm the
-  // daemon + one session, mark receipt steps.handoff=done, then quit.
+  // --- handoff step (ⓕ) -----------------------------------------------------
+  // 설계 4-2/4-3: write the first request + the Face session spec, drop the
+  // `<이름> Face.cmd` launcher (+ desktop shortcut), start Face, and only
+  // call it done once the daemon answers /api/health with one live session.
+  // Each stage reports its own `where` so the screen can say which one broke.
+  let handoffRunning = false;
+
+  function handoffLog(root, line) {
+    const file = path.join(root, '_agent', 'setup', 'package-install.log');
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.appendFileSync(file, `${new Date().toISOString()} handoff ${line}\n`, 'utf8');
+    } catch { /* logging must never break the handoff */ }
+    return file;
+  }
+
   routes.set('POST /api/handoff', withBody(async (body, req, res) => {
-    sendJson(res, 501, { ok: false, reason: 'not_implemented', task: 14 });
+    const root = state.soul?.root;
+    if (!root) {
+      sendJson(res, 409, { ok: false, reason: 'no_soul' });
+      return;
+    }
+    if (handoffRunning) {
+      sendJson(res, 202, { ok: true, running: true });
+      return;
+    }
+    handoffRunning = true;
+    const logFile = path.join(root, '_agent', 'setup', 'package-install.log');
+    const fail = (where, err, extra = {}) => {
+      const detail = String(err?.message ?? err);
+      handoffLog(root, `${where} failed: ${detail}`);
+      sendJson(res, 200, { ok: false, where, detail, log: logFile, ...extra });
+    };
+
+    try {
+      const manifest = readPayloadManifest(state.zipRoot);
+      const edition = state.choice?.guideEdition ?? 'claude';
+      const leadAgent = state.choice?.leadAgent ?? 'claude';
+
+      // ① 첫 요청문 + ② 첫 세션 spec
+      let first;
+      let spec;
+      try {
+        first = writeFirstRequestFn(root, { edition, manifest });
+        spec = writeFirstSessionSpecFn(root, {
+          leadAgent, promptFile: first.path, ...(faceSpecOverrides ?? {}),
+        });
+        handoffLog(root, `first-request guide=${first.guide?.basename} agent=${spec.spec.agent} model=${spec.spec.model}`);
+      } catch (err) { fail('first-request', err); return; }
+
+      // ③ 소환기 + 바탕화면 바로가기 (바로가기 실패는 치명적이지 않다)
+      let launcher;
+      try {
+        launcher = await writeFaceLauncherFn(root, state.soul.name, { desktopDir });
+        handoffLog(root, `launcher ${launcher.cmdPath} shortcut=${launcher.shortcut?.ok === true}`);
+      } catch (err) { fail('launcher', err); return; }
+
+      // ④ Face 실행
+      let launched;
+      try {
+        launched = launchFaceFn({
+          root,
+          nodeDir: state.nodeDir,
+          nodeExe: faceNodeExe,
+          faceDir,
+          spec: spec.path,
+          ...(facePort ? { port: facePort } : {}),
+          ...(faceExtraArgs ? { extraArgs: faceExtraArgs } : {}),
+          ...(faceEnv ? { env: faceEnv } : {}),
+        });
+        handoffLog(root, `launch pid=${launched.pid}`);
+      } catch (err) { fail('launch', err); return; }
+
+      // ⑤ 준비 확인: /api/health 200 + 세션 1개 이상
+      const ready = await waitFaceReadyFn({ port: facePort ?? 3458 });
+      if (!ready.ok) {
+        handoffLog(root, `ready failed after ${ready.tries} tries`);
+        sendJson(res, 200, {
+          ok: false, where: 'ready', pid: launched.pid, tries: ready.tries,
+          detail: ready.error ?? 'face daemon did not report a live session',
+          log: logFile, faceLog: launched.logFile ?? null,
+        });
+        return;
+      }
+
+      // ⑥ 마무리: 영수증 · state · 캐시 · 자기 서버 종료
+      let finished;
+      try {
+        const receipt = readReceipt(root);
+        finished = finishFn({
+          root,
+          receipt,
+          ...(workDir ? { workDir } : {}),
+          setStep: (s) => { state.step = s; saveState(stateFile, state); },
+          quit: () => {
+            setTimeout(() => { if (onQuit) onQuit(); else process.exit(0); }, 1500);
+          },
+        });
+      } catch (err) { fail('finish', err); return; }
+
+      handoffLog(root, `done sessions=${ready.health?.sessions} faceVersion=${ready.health?.version ?? 'unknown'}`);
+      sendJson(res, 200, {
+        ok: true,
+        pid: launched.pid,
+        sessions: ready.health?.sessions ?? null,
+        faceVersion: ready.health?.version ?? null,
+        launcher: launcher.cmdPath,
+        shortcut: launcher.lnkPath,
+        firstRequest: first.path,
+        cacheRemoved: finished?.cacheRemoved ?? false,
+        log: logFile,
+      });
+    } finally {
+      handoffRunning = false;
+    }
   }));
 
   routes.set('POST /api/quit', async (req, res) => {
@@ -567,6 +743,9 @@ function parseArgs(argv) {
     if (a === '--zip-root') args.zipRoot = argv[++i];
     else if (a === '--port') args.port = Number(argv[++i]);
     else if (a === '--node-dir') args.nodeDir = argv[++i];
+    // Rehearsal switch (also IRIS_INSTALLER_NO_USER_ENV=1): run the real
+    // install but record the HKCU\Environment writes instead of making them.
+    else if (a === '--no-user-env') args.noUserEnv = true;
     else throw new Error(`unknown arg: ${a}`);
   }
   return args;

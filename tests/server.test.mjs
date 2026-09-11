@@ -132,11 +132,16 @@ test('POST /api/name: a rejected name leaves state.step on precheck (no soul sav
   }
 });
 
-test('unimplemented routes for later tasks answer 501 with a task number', async () => {
+// Task 14 replaced the last 501 stub (/api/handoff) with the real handoff.
+// What stays true: a route that needs a soul root refuses before one exists,
+// and nothing answers 501 any more. (The handoff's own happy/sad paths live
+// in tests/handoff.test.mjs.)
+test('no route answers 501 any more; /api/handoff needs a soul root first', async () => {
   const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state2.json') });
   try {
     const handoff = await fetch(`${url}/api/handoff`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
-    assert.deepEqual(await handoff.json(), { ok: false, reason: 'not_implemented', task: 14 });
+    assert.equal(handoff.status, 409);
+    assert.deepEqual(await handoff.json(), { ok: false, reason: 'no_soul' });
   } finally {
     await close();
   }
@@ -285,11 +290,13 @@ test('login: POST /api/login before a soul root is chosen -> 409', async () => {
   }
 });
 
-test('GET / 404s until Task 14 adds ui/index.html; no-store on every response', async () => {
+test('GET / serves the Task 14 wizard from installer/ui; no-store on every response', async () => {
   const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state3.json') });
   try {
     const root = await fetch(`${url}/`);
-    assert.equal(root.status, 404);
+    assert.equal(root.status, 200);
+    assert.match(root.headers.get('content-type') ?? '', /text\/html/);
+    assert.ok((await root.text()).includes('IRIS'));
     assert.equal(root.headers.get('cache-control'), 'no-store');
 
     const health = await fetch(`${url}/api/health`);
