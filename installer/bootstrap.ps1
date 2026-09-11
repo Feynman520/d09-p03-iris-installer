@@ -90,6 +90,12 @@ Log 'Integrity check passed.'
 # *our* server (some other program could be bound to 3460) -- Task 10's
 # server.mjs contract includes a "name":"iris-installer" field in the
 # /api/health JSON body for exactly this reason.
+# Bundled Node paths are resolved here (before the stale-server stage) because
+# the stale-pid identity check below compares a recorded pid's image path
+# against this exact node.exe. The Node *unpack* stage still happens later.
+$nodeDir = Join-Path $work 'node'
+$nodeExe = Join-Path $nodeDir 'node.exe'
+
 $pidFile = Join-Path $work 'server.pid'
 $alreadyRunning = $false
 try {
@@ -119,8 +125,27 @@ if (Test-Path -LiteralPath $pidFile) {
   if ($stalePid) {
     $staleProc = Get-Process -Id $stalePid -ErrorAction SilentlyContinue
     if ($staleProc) {
-      Log "Stopping stale server process (pid $stalePid)."
-      Stop-Process -Id $stalePid -Force -ErrorAction SilentlyContinue
+      # A pid is only ours to stop if it still looks like the server we
+      # started: pids are recycled, and server.pid can outlive its process by
+      # days, so "the file says 3456" is not evidence. Two gates:
+      #   - the image must be node (never a shell, an editor, an agent);
+      #   - when the image path is readable, it must be the bundled
+      #     node.exe under %LOCALAPPDATA%\IRIS-Installer\node -- some other
+      #     node process (a dev server, a relay, an agent session) is never
+      #     touched. Path can throw/return nothing for a process this user
+      #     may not query; in that case the name check alone decides.
+      $stalePath = $null
+      try { $stalePath = $staleProc.Path } catch { $stalePath = $null }
+      $isOurs = ($staleProc.ProcessName -eq 'node')
+      if ($isOurs -and $stalePath) {
+        $isOurs = ($stalePath -eq $nodeExe)
+      }
+      if ($isOurs) {
+        Log "Stopping stale server process (pid $stalePid)."
+        Stop-Process -Id $stalePid -Force -ErrorAction SilentlyContinue
+      } else {
+        Log "server.pid names pid $stalePid, but that process is not our bundled Node server. Leaving it alone."
+      }
     } else {
       Log "server.pid names pid $stalePid, which is not running. Nothing to stop."
     }
@@ -135,8 +160,6 @@ if (Test-Path -LiteralPath $pidFile) {
 # later run (re-running the installer, or the server relaunching it, must
 # not re-extract Node every time).
 $nodeZip = Join-Path $ZipRoot ('payload\' + $mf.parts.node.file)
-$nodeDir = Join-Path $work 'node'
-$nodeExe = Join-Path $nodeDir 'node.exe'
 if (Test-Path -LiteralPath $nodeExe) {
   Log 'Node already present, reusing.'
 } else {

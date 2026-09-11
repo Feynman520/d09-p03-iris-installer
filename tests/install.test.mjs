@@ -9,6 +9,9 @@ import {
 import { writeShims } from '../installer/lib/shims.mjs';
 import { writeMinimalSoulState } from '../installer/lib/soulstate.mjs';
 import { readReceipt } from '../installer/lib/receipt.mjs';
+import {
+  portableTeamclaudeConfigDir, portableTeamclaudeConfigPath, resolveTeamclaudeConfigPath,
+} from '../installer/lib/login.mjs';
 import { run } from '../lib/run.mjs';
 
 const TAR = 'C:\\Windows\\System32\\tar.exe';
@@ -486,9 +489,50 @@ test('install with a recording userpath (--no-user-env): receipt.env.applied=fal
   assert.equal(receipt.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:3456');
   assert.equal(readReceipt(root).env.applied, false);
   // ...and every write that a real run would have made was seen, not made.
+  // (I2, 2026-09-12) TEAMCLAUDE_CONFIG is now one of them -- recorded here,
+  // written for real on a normal install, so the relay's account file lives
+  // in the soul instead of %USERPROFILE%\.config.
   assert.deepEqual(record.map((r) => r.op + ':' + (r.name ?? 'Path')), [
-    'addUserPath:Path', 'setUserEnv:CLAUDE_CONFIG_DIR', 'setUserEnv:CODEX_HOME', 'setUserEnv:ANTHROPIC_BASE_URL',
+    'addUserPath:Path', 'setUserEnv:CLAUDE_CONFIG_DIR', 'setUserEnv:CODEX_HOME',
+    'setUserEnv:ANTHROPIC_BASE_URL', 'setUserEnv:TEAMCLAUDE_CONFIG',
   ]);
+  const teamclaudeConfig = portableTeamclaudeConfigPath(root);
+  assert.equal(record.find((r) => r.name === 'TEAMCLAUDE_CONFIG').value, teamclaudeConfig);
+  assert.equal(receipt.env.TEAMCLAUDE_CONFIG, teamclaudeConfig);
+  assert.equal(receipt.env.teamclaudeConfig, teamclaudeConfig);
+  // The folder itself is created even on a rehearsal -- the login step's
+  // first spawn points at it before anything writes the file.
+  assert.ok(fs.existsSync(portableTeamclaudeConfigDir(root)), 'portable-state/teamclaude dir was not created');
+  // ...and login.mjs reads the path back out of the receipt on this PC,
+  // where %USERPROFILE%\.config\teamclaude.json is a real, live file.
+  assert.equal(resolveTeamclaudeConfigPath({ root, env: {}, homedir: () => 'X:\\fake-home' }), teamclaudeConfig);
+});
+
+// I2: the same on a normal (non-rehearsal) install -- the previous value of
+// an existing TEAMCLAUDE_CONFIG is kept in receipt.env.previous so a later
+// uninstall can put it back.
+test('install: TEAMCLAUDE_CONFIG is set and its previous value recorded', async () => {
+  const work = path.join(tmp, 'case-teamclaude-config');
+  const { zipRoot, manifest, lock } = await makeFakePayload(work);
+  const root = path.join(work, 'NOVA');
+  const events = [];
+  const deps = fakeDeps(events);
+  deps.userpath = {
+    addUserPath: async (dir) => ({ changed: true, before: '', after: dir }),
+    setUserEnv: async (name) => ({
+      changed: true,
+      previous: name === 'TEAMCLAUDE_CONFIG' ? 'X:\\fake-home\\.config\\teamclaude.json' : null,
+    }),
+  };
+
+  const receipt = await install({
+    root, name: 'NOVA', zipRoot, manifest, lock, choice: CHOICE, existing: 'none', ...deps,
+  });
+
+  assert.equal(receipt.env.applied, true);
+  assert.equal(receipt.env.teamclaudeConfig, portableTeamclaudeConfigPath(root));
+  assert.equal(receipt.env.previous.TEAMCLAUDE_CONFIG, 'X:\\fake-home\\.config\\teamclaude.json');
+  assert.equal(readReceipt(root).env.teamclaudeConfig, portableTeamclaudeConfigPath(root));
 });
 
 test('writeMinimalSoulState returns written=false when a soul already lives there', () => {

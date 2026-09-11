@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { pack } from '../build/pack.mjs';
+import { pack, renderNotices } from '../build/pack.mjs';
 import { sha256File } from '../lib/manifest.mjs';
 import { extractZip } from '../lib/zip.mjs';
 
@@ -115,6 +115,114 @@ test('pack: ships patches/teamclaude/rules.json into installer/, and nothing els
   const bareDir = path.join(tmp, 'extracted-bare');
   await extractZip(bare, bareDir);
   assert.ok(!fs.existsSync(path.join(bareDir, 'installer', 'patches')));
+});
+
+// 2026-09-12 final review C1/C2: the shipped zip must carry the shared
+// helpers installer/lib/*.mjs import as `../../lib/<file>.mjs` AND the
+// lock.json that server.mjs's readLock() reads. Without either, every user
+// PC failed -- ERR_MODULE_NOT_FOUND at startup (bootstrap exit 13), or 500
+// payload_unreadable on POST /api/install.
+test('pack: ships lib/{run,zip}.mjs and lock.json at the zip root', async () => {
+  const installerDir = path.join(tmp, 'fake-installer-lib');
+  fs.mkdirSync(installerDir, { recursive: true });
+  fs.writeFileSync(path.join(installerDir, 'IRIS-설치.cmd'), '@echo off\r\n');
+
+  const libDir = path.join(tmp, 'fake-lib');
+  fs.mkdirSync(libDir, { recursive: true });
+  fs.writeFileSync(path.join(libDir, 'run.mjs'), 'export const run = () => {};\n', 'utf8');
+  fs.writeFileSync(path.join(libDir, 'zip.mjs'), 'export const zipDir = () => {};\n', 'utf8');
+  fs.writeFileSync(path.join(libDir, 'glob.mjs'), 'export const globMatch = () => {};\n', 'utf8');
+
+  const lockFile = path.join(tmp, 'fake-lock.json');
+  const lock = {
+    package: { version: '0.0.9' },
+    parts: {
+      node: { version: '24.17.0', license: 'MIT', url: 'https://example.invalid/node.zip', file: 'node/n.zip' },
+      codex: { version: '0.154.0', license: 'Apache-2.0', npm: '@openai/codex', file: 'agents/c.zip' },
+      claude: { version: '2.1.267', license: 'Proprietary', npm: '@anthropic-ai/claude-code', redistribute: 'download', file: 'agents/cc.zip' },
+    },
+  };
+  fs.writeFileSync(lockFile, JSON.stringify(lock), 'utf8');
+
+  const stageDir = path.join(tmp, 'stage-lib');
+  fs.mkdirSync(path.join(stageDir, 'payload'), { recursive: true });
+  fs.writeFileSync(path.join(stageDir, 'payload', 'manifest.json'), '{}');
+
+  const { zipPath } = await pack({
+    stageDir, outDir: path.join(tmp, 'out-lib'), manifest: { package: { version: '0.0.9' } },
+    installerDir, libDir, lockFile, patchRulesFile: null,
+  });
+  const extractDir = path.join(tmp, 'extracted-lib');
+  await extractZip(zipPath, extractDir);
+
+  assert.ok(fs.existsSync(path.join(extractDir, 'lib', 'run.mjs')), 'zip missing lib/run.mjs');
+  assert.ok(fs.existsSync(path.join(extractDir, 'lib', 'zip.mjs')), 'zip missing lib/zip.mjs');
+  // Deliberately minimal: only what installer/ actually imports travels.
+  assert.deepEqual(fs.readdirSync(path.join(extractDir, 'lib')).sort(), ['run.mjs', 'zip.mjs']);
+
+  assert.ok(fs.existsSync(path.join(extractDir, 'lock.json')), 'zip missing lock.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(extractDir, 'lock.json'), 'utf8')), lock);
+
+  // installer/lib/*.mjs resolve `../../lib/run.mjs` to exactly this file.
+  const resolved = path.resolve(path.join(extractDir, 'installer', 'lib'), '..', '..', 'lib', 'run.mjs');
+  assert.equal(resolved, path.join(extractDir, 'lib', 'run.mjs'));
+
+  // I4: per-part notices generated from the lock.
+  const notices = fs.readFileSync(path.join(extractDir, 'payload', 'licenses', 'NOTICES.md'), 'utf8');
+  assert.match(notices, /\| node \| 24\.17\.0 \| MIT \| https:\/\/example\.invalid\/node\.zip \|/);
+  assert.match(notices, /\| codex \| 0\.154\.0 \| Apache-2\.0 \| https:\/\/www\.npmjs\.com\/package\/@openai\/codex \|/);
+  assert.match(notices, /claude: NOT bundled/);
+});
+
+test('pack: fails loudly when a required lib file or lock.json is missing', async () => {
+  const installerDir = path.join(tmp, 'fake-installer-lib2');
+  fs.mkdirSync(installerDir, { recursive: true });
+  fs.writeFileSync(path.join(installerDir, 'IRIS-설치.cmd'), '@echo off\r\n');
+  const stageDir = path.join(tmp, 'stage-lib2');
+  fs.mkdirSync(path.join(stageDir, 'payload'), { recursive: true });
+  fs.writeFileSync(path.join(stageDir, 'payload', 'manifest.json'), '{}');
+
+  const emptyLib = path.join(tmp, 'empty-lib');
+  fs.mkdirSync(emptyLib, { recursive: true });
+  await assert.rejects(
+    pack({
+      stageDir, outDir: path.join(tmp, 'out-lib2'), manifest: { package: { version: '0.0.9' } },
+      installerDir, libDir: emptyLib,
+    }),
+    /required lib file not found/,
+  );
+
+  await assert.rejects(
+    pack({
+      stageDir, outDir: path.join(tmp, 'out-lib3'), manifest: { package: { version: '0.0.9' } },
+      installerDir, lockFile: path.join(tmp, 'no-such-lock.json'),
+    }),
+    /lock\.json not found/,
+  );
+});
+
+test('renderNotices: one row per lock part, generated (not hand-written)', () => {
+  const lock = {
+    package: { version: '1.0.0', guideVersion: '10' },
+    parts: {
+      git: { version: '2.54.0.windows.1', license: 'GPL-2.0-only', url: 'https://example.invalid/mingit.zip' },
+      face: { license: 'MIT' },
+      guides: { license: 'MIT' },
+      manage: { license: 'MIT' },
+      nolicense: {},
+    },
+  };
+  const md = renderNotices(lock, { parts: { face: { version: '2.46.0' } } });
+  assert.match(md, /Do not edit by hand/);
+  assert.match(md, /\| git \| 2\.54\.0\.windows\.1 \| GPL-2\.0-only \|/);
+  // face has no lock version -- the manifest is the only place it exists.
+  assert.match(md, /\| face \| 2\.46\.0 \| MIT \|/);
+  // guides is versioned package-wide...
+  assert.match(md, /\| guides \| 10 \| MIT \|/);
+  // ...and a part with no version anywhere says so, instead of borrowing
+  // the guide version (which is what the first cut of this wrongly did).
+  assert.match(md, /\| manage \| - \| MIT \| IRIS/);
+  assert.match(md, /\| nolicense \| - \| \(미기재/);
 });
 
 test('pack: falls back to manifest.package.version when version is omitted', async () => {

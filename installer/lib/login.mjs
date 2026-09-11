@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { run } from '../../lib/run.mjs';
+import { readReceipt } from './receipt.mjs';
 
 const COMSPEC = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
 const DEFAULT_PORT = 3456;
@@ -67,7 +68,9 @@ function accountMatchesProvider(account, provider) {
  * anything and opens no window -- used by tests and by the rehearsal on a
  * machine where a real login must not be started.
  */
-export function startCliLogin({ provider, root, nodeDir, spawnFn = spawn, dryRun = false } = {}) {
+export function startCliLogin({
+  provider, root, nodeDir, teamclaudeConfigPath, spawnFn = spawn, dryRun = false,
+} = {}) {
   const tools = toolsDir(root);
   const cmdPath = provider === 'claude'
     ? path.join(tools, 'claude', 'claude.cmd')
@@ -76,6 +79,12 @@ export function startCliLogin({ provider, root, nodeDir, spawnFn = spawn, dryRun
   const env = { ...process.env };
   delete env.ANTHROPIC_BASE_URL;
   env.PATH = `${nodeDir};${env.PATH ?? ''}`;
+  // I2: every console this module opens carries the soul's own TeamClaude
+  // config path. This one runs the CLI's own OAuth (not TeamClaude), but the
+  // window stays open afterwards and the installer's process does not have
+  // the freshly-written user variable yet -- so anything the person runs in
+  // it must not fall back to %USERPROFILE%\.config either.
+  env.TEAMCLAUDE_CONFIG = teamclaudeConfigPath ?? resolveTeamclaudeConfigPath({ root });
   if (provider === 'claude') {
     env.CLAUDE_CONFIG_DIR = path.join(root, '_agent', 'claude');
   } else {
@@ -129,10 +138,37 @@ export function cliLoginStatus({ provider, root, existsSync = fs.existsSync } = 
 // Stage 2: hand the login to TeamClaude.
 // ---------------------------------------------------------------------------
 
-// Mirrors patches/teamclaude/teamclaude-manage.ps1's own resolution: prefer
-// $env:TEAMCLAUDE_CONFIG (the portable-soul path a future install step may
-// set it to) and only fall back to the OS default when that isn't set.
-export function resolveTeamclaudeConfigPath({ env = process.env, homedir = os.homedir } = {}) {
+// docs/설계.md 2-2 + 10 #4: the soul-local ("portable") TeamClaude config.
+// install() creates this folder and points the user's TEAMCLAUDE_CONFIG at
+// the file, so the relay's account list travels with the soul folder instead
+// of living in %USERPROFILE%\.config.
+export function portableTeamclaudeConfigDir(root) {
+  return path.join(root, '_agent', 'shared', 'portable-state', 'teamclaude');
+}
+
+export function portableTeamclaudeConfigPath(root) {
+  return path.join(portableTeamclaudeConfigDir(root), 'teamclaude.json');
+}
+
+// Resolution order (2026-09-12 final review I2):
+//   1. the receipt of the soul being installed -- install() records the path
+//      it actually set the user variable to, and that is authoritative even
+//      though the *installer's own process* never sees the new user env var
+//      (a process only picks up HKCU\Environment at creation time);
+//   2. $env:TEAMCLAUDE_CONFIG, for a shell that already has it;
+//   3. the OS default, matching both TeamClaude's own getConfigPath() and
+//      patches/teamclaude/teamclaude-manage.ps1.
+// Step 1 is what keeps a real ⓔ click on a machine that is already an IRIS
+// soul out of the developer's live %USERPROFILE%\.config\teamclaude.json.
+export function resolveTeamclaudeConfigPath({
+  root, env = process.env, homedir = os.homedir, readReceiptFn = readReceipt,
+} = {}) {
+  if (root) {
+    try {
+      const recorded = readReceiptFn(root)?.env?.teamclaudeConfig;
+      if (typeof recorded === 'string' && recorded.length > 0) return recorded;
+    } catch { /* unreadable receipt -> fall through to the env/OS default */ }
+  }
   if (env.TEAMCLAUDE_CONFIG) return env.TEAMCLAUDE_CONFIG;
   return path.join(homedir(), '.config', 'teamclaude.json');
 }
@@ -233,7 +269,7 @@ export async function relayImport({
   fetchFn = fetch,
   reloadFn,
 } = {}) {
-  const configPath = teamclaudeConfigPath ?? resolveTeamclaudeConfigPath();
+  const configPath = teamclaudeConfigPath ?? resolveTeamclaudeConfigPath({ root });
   const nodeExe = path.join(nodeDir, 'node.exe');
   const entryPath = teamclaudeEntryPath(root);
   const doReload = reloadFn ?? ((p) => reloadRunningServer(p, fetchFn));
@@ -313,8 +349,8 @@ export async function countProviderAccounts({ teamclaudeConfigPath, provider } =
  *
  * @returns {Promise<'pending'|'done'>}
  */
-export async function relayStatus({ teamclaudeConfigPath, provider, accountsBefore = 0 } = {}) {
-  const configPath = teamclaudeConfigPath ?? resolveTeamclaudeConfigPath();
+export async function relayStatus({ teamclaudeConfigPath, root, provider, accountsBefore = 0 } = {}) {
+  const configPath = teamclaudeConfigPath ?? resolveTeamclaudeConfigPath({ root });
   const count = await countProviderAccounts({ teamclaudeConfigPath: configPath, provider });
   return count > accountsBefore ? 'done' : 'pending';
 }

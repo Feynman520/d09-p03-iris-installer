@@ -6,6 +6,7 @@
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import path from 'node:path';
+import { resolveTeamclaudeConfigPath } from './login.mjs';
 
 const DEFAULT_PORT = 3456;
 
@@ -24,11 +25,12 @@ export function defaultProbe(port, { timeoutMs = 1500 } = {}) {
   });
 }
 
-export function defaultRunManage(managePs1, args, { timeoutMs = 90000 } = {}) {
+export function defaultRunManage(managePs1, args, { timeoutMs = 90000, env = process.env } = {}) {
   return new Promise((resolve) => {
     const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', managePs1, ...args], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env,
     });
     let out = '';
     let err = '';
@@ -64,6 +66,7 @@ export async function ensureProxy({
   root,
   nodeDir,
   port = DEFAULT_PORT,
+  teamclaudeConfigPath,
   probe = defaultProbe,
   runManage = defaultRunManage,
 } = {}) {
@@ -74,8 +77,16 @@ export async function ensureProxy({
   const managePs1 = manageScriptPath(root);
   const nodeExe = path.join(nodeDir, 'node.exe');
   const entryPath = teamclaudeEntryPath(root);
+  // I2: the manage script resolves its config from $env:TEAMCLAUDE_CONFIG
+  // (patches/teamclaude/teamclaude-manage.ps1 line 3) and falls back to
+  // %USERPROFILE%\.config otherwise. The installer's own process does not
+  // carry the user variable install() just wrote, so pass it explicitly --
+  // otherwise the relay this starts would serve the wrong account file.
+  const configPath = teamclaudeConfigPath ?? resolveTeamclaudeConfigPath({ root });
 
-  await runManage(managePs1, ['-Action', 'start', '-NodePath', nodeExe, '-EntryPath', entryPath]);
+  await runManage(managePs1, ['-Action', 'start', '-NodePath', nodeExe, '-EntryPath', entryPath], {
+    env: { ...process.env, TEAMCLAUDE_CONFIG: configPath },
+  });
 
   const alive = await probe(port);
   return { alive, started: true };

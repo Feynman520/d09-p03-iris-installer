@@ -117,6 +117,16 @@ function copyTree(src, dest, exclude = []) {
   });
 }
 
+// (2026-09-12 final review I5) A `dir`/`file`/`glob` part's source directory,
+// with an env override per part name: IRIS_DASH_SOURCE, IRIS_FACE_SOURCE,
+// IRIS_GUIDES_SOURCE. lock.json's dash/guides sources are absolute paths to
+// this development PC's own folders, so a second machine (fresh clone, CI,
+// another checkout) has to be able to point at its own copy without editing
+// a tracked file. Unset (the normal case) = exactly the lock value.
+export function partSource(name, p) {
+  return process.env[`IRIS_${name.toUpperCase()}_SOURCE`] || p.source;
+}
+
 function globMatch(name, pattern) {
   const esc = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
   return new RegExp(`^${esc}$`).test(name);
@@ -170,7 +180,7 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log, skipDown
       await zipDir(prefix, dest, log);
     } else if (p.kind === 'dir') {
       const work = path.join(stageDir, 'dir', name);
-      copyTree(p.source, work, p.exclude ?? []);
+      copyTree(partSource(name, p), work, p.exclude ?? []);
       if (p.redact) applyRedactions(work, p.redact, log);
       if (p.npmCi) {
         const r = await run(nodeExe, [npmCli, 'ci', '--no-fund', '--no-audit', ...(skipDownload ? ['--offline'] : [])], { cwd: work, env: npmEnv });
@@ -182,20 +192,21 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log, skipDown
       }
       await zipDir(work, dest, log);
     } else if (p.kind === 'file') {
-      fs.copyFileSync(p.source, dest);
+      fs.copyFileSync(partSource(name, p), dest);
     } else if (isGlob) {
       fs.mkdirSync(dest, { recursive: true });
       // {guideVersion} is expanded from lock.package.guideVersion -- the
       // single source of truth for the guide version (lock-only version
       // bump, no separate per-part `version` field to drift out of sync).
       const pattern = (p.pattern ?? '').split('{guideVersion}').join(lock.package.guideVersion ?? '');
-      const files = fs.readdirSync(p.source).filter((f) => globMatch(f, pattern));
+      const globSource = partSource(name, p);
+      const files = fs.readdirSync(globSource).filter((f) => globMatch(f, pattern));
       if (typeof p.minCount === 'number' && files.length < p.minCount) {
         throw new Error(`glob part ${name} matched ${files.length} < minCount ${p.minCount}`);
       }
       for (const f of files) {
         const destFile = path.join(dest, f);
-        fs.copyFileSync(path.join(p.source, f), destFile);
+        fs.copyFileSync(path.join(globSource, f), destFile);
         // Unlike the `dir`-kind redact (which names one specific file),
         // a glob part fans out into several same-shaped files (e.g. the
         // Claude/Codex guide editions), so each redact entry here has no

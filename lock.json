@@ -18,7 +18,7 @@
       "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
       "sha256Source": "computed 2026-09-11 from official URL",
       "file": "python/python-3.12.10-embed-amd64.zip",
-      "license": "PSF"
+      "license": "PSF-2.0"
     },
     "pyyaml": {
       "kind": "url",
@@ -36,7 +36,7 @@
       "sha256": "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668",
       "sha256Source": "vendor",
       "file": "git/MinGit-2.54.0-64-bit.zip",
-      "license": "GPL-2.0"
+      "license": "GPL-2.0-only"
     },
     "claude": {
       "kind": "npm-prefix",
@@ -44,7 +44,7 @@
       "version": "2.1.267",
       "file": "agents/claude-code-2.1.267.zip",
       "redistribute": "download",
-      "license": "SEE LICENSE IN README.md (LICENSE.md: © Anthropic PBC. All rights reserved)",
+      "license": "Proprietary (SEE LICENSE IN README.md -- LICENSE.md: (c) Anthropic PBC. All rights reserved)",
       "bin": "bin/claude.exe"
     },
     "codex": {
@@ -109,7 +109,8 @@
           "replace": "기존 설치는 먼저 카드·도구·지침을 확인한다."
         }
       ],
-      "file": "guides/"
+      "file": "guides/",
+      "license": "MIT"
     }
   }
 }

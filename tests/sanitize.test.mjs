@@ -134,3 +134,57 @@ test('(e) maxBytes overage produces a warning, not a hit, and ok stays true', as
   assert.equal(r.warnings.length, 1);
   assert.match(r.warnings[0], /big\.txt/);
 });
+
+// ---------------------------------------------------------------------------
+// I7 (2026-09-12 final review): a missing local rule file must be loud.
+// ---------------------------------------------------------------------------
+// build/sanitize-local.json is gitignored and holds the only personal-string
+// rules there are. Without it the gate still printed "sanitize: ok (0 hits)"
+// while checking nothing personal at all -- indistinguishable, in the log,
+// from a real pass. Now: a warning always, and a hard failure for release
+// builds (build/build.mjs --require-local / IRIS_BUILD_REQUIRE_LOCAL=1).
+test('loadRules: warns loudly when the local rule file is missing', () => {
+  const warnings = [];
+  const rules = loadRules({
+    baseFile: path.join(HERE, '../build/sanitize-rules.json'),
+    localFile: path.join(HERE, 'no-such-sanitize-local.json'),
+    warn: (m) => warnings.push(m),
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /WARNING/);
+  assert.match(warnings[0], /base rules ONLY/);
+  assert.match(warnings[0], /--require-local/);
+  assert.ok(Array.isArray(rules.forbiddenRegex), 'base rules should still be returned');
+});
+
+test('loadRules: --require-local turns a missing local rule file into a build failure', () => {
+  assert.throws(
+    () => loadRules({
+      baseFile: path.join(HERE, '../build/sanitize-rules.json'),
+      localFile: path.join(HERE, 'no-such-sanitize-local.json'),
+      requireLocal: true,
+      warn: () => {},
+    }),
+    /local rule file is required but missing/,
+  );
+});
+
+test('loadRules: no warning when the local rule file is present', () => {
+  const warnings = [];
+  loadRules({
+    baseFile: path.join(HERE, '../build/sanitize-rules.json'),
+    localFile: path.join(HERE, '../build/sanitize-local.example.json'),
+    requireLocal: true,
+    warn: (m) => warnings.push(m),
+  });
+  assert.deepEqual(warnings, []);
+});
+
+// build.mjs must actually expose the switch (and the env form) -- the doc in
+// docs/검증기록.md tells the release procedure to use it.
+test('build.mjs accepts --require-local and honours IRIS_BUILD_REQUIRE_LOCAL=1', () => {
+  const buildText = fs.readFileSync(path.join(HERE, '../build/build.mjs'), 'utf8');
+  assert.match(buildText, /'--require-local'/);
+  assert.match(buildText, /IRIS_BUILD_REQUIRE_LOCAL/);
+  assert.match(buildText, /requireLocal: opts\.requireLocal/);
+});

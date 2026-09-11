@@ -21,13 +21,20 @@ const DEFAULTS = {
 };
 
 function parseArgs(argv) {
-  const opts = { out: DEFAULTS.out, cache: DEFAULTS.cache, stage: DEFAULTS.stage, skipDownload: false };
+  const opts = {
+    out: DEFAULTS.out, cache: DEFAULTS.cache, stage: DEFAULTS.stage, skipDownload: false,
+    // I7: release builds must fail rather than silently scan with the
+    // generic base rules only. Env form exists so a CI/release script can
+    // enforce it without editing every call site.
+    requireLocal: process.env.IRIS_BUILD_REQUIRE_LOCAL === '1',
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--out') opts.out = argv[++i];
     else if (a === '--cache') opts.cache = argv[++i];
     else if (a === '--stage') opts.stage = argv[++i];
     else if (a === '--skip-download') opts.skipDownload = true;
+    else if (a === '--require-local') opts.requireLocal = true;
     else throw new Error(`unknown arg: ${a}`);
   }
   return opts;
@@ -62,7 +69,7 @@ async function main() {
     fs.appendFileSync(logPath, `${line}\n`);
   };
 
-  log(`build start out=${outDir} cache=${cacheDir} stage=${stageDir} skipDownload=${opts.skipDownload}`);
+  log(`build start out=${outDir} cache=${cacheDir} stage=${stageDir} skipDownload=${opts.skipDownload} requireLocal=${opts.requireLocal}`);
   const startedAt = Date.now();
 
   try {
@@ -79,7 +86,12 @@ async function main() {
     log(`collect: done (skipped=${skipped.join(',') || 'none'})`);
 
     log('sanitize: start (payload dir only)');
-    const rules = loadRules({ baseFile: path.join(ROOT_DIR, 'build', 'sanitize-rules.json'), localFile: path.join(ROOT_DIR, 'build', 'sanitize-local.json') });
+    const rules = loadRules({
+      baseFile: path.join(ROOT_DIR, 'build', 'sanitize-rules.json'),
+      localFile: path.join(ROOT_DIR, 'build', 'sanitize-local.json'),
+      requireLocal: opts.requireLocal,
+      warn: log,
+    });
     const sanitizeResult = await sanitize(payloadDir, rules);
     for (const w of sanitizeResult.warnings) log(`sanitize warning: ${w}`);
     if (!sanitizeResult.ok) {

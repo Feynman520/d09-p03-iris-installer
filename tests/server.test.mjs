@@ -1,5 +1,6 @@
 import { test, after } from 'node:test'; import assert from 'node:assert/strict';
 import fs from 'node:fs'; import path from 'node:path'; import os from 'node:os'; import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { startServer } from '../installer/server.mjs';
 
 // Sends a raw HTTP request with `rawPath` used verbatim as the request-target
@@ -75,7 +76,7 @@ test('health 200 with name:iris-installer; POST /api/name validation; POST /api/
   assert.equal(okName.status, 200);
   assert.deepEqual(await okName.json(), { ok: true, path: 'C:\\NOVA', existing: 'none' });
 
-  const quit = await fetch(`${url}/api/quit`, { method: 'POST' });
+  const quit = await fetch(`${url}/api/quit`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   assert.equal(quit.status, 200);
   assert.deepEqual(await quit.json(), { ok: true });
 
@@ -198,7 +199,7 @@ test('login: POST /api/login + GET /api/login/status advance cli -> relay -> han
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subscriptions: ['claude', 'chatgpt'] }),
     });
-    await fetch(`${url}/api/install`, { method: 'POST' });
+    await fetch(`${url}/api/install`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     for (let i = 0; i < 50; i++) {
       const s = await (await fetch(`${url}/api/state`)).json();
       if (s.step === 'login') break;
@@ -413,7 +414,7 @@ test('install: 202 + SSE progress frames, replayed for a late subscriber, step -
       body: JSON.stringify({ subscriptions: ['claude'] }),
     });
 
-    const started = await fetch(`${url}/api/install`, { method: 'POST' });
+    const started = await fetch(`${url}/api/install`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     assert.equal(started.status, 202);
     assert.deepEqual(await started.json(), { ok: true });
     assert.deepEqual(seen, [String.raw`C:\NOVA-SSE-TEST`]);
@@ -466,4 +467,93 @@ test('install: 202 + SSE progress frames, replayed for a late subscriber, step -
   } finally {
     await close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// I3 (2026-09-12 final review): local-origin / CSRF guard.
+// ---------------------------------------------------------------------------
+// The server binds 127.0.0.1, but any page open in the same browser can still
+// POST to it. Two gates: a foreign Origin is refused outright, and every /api
+// POST must be application/json (which a plain cross-site <form> cannot send
+// without a preflight the Origin gate then refuses).
+test('/api guard: foreign Origin is 403 bad_origin, own origin and no Origin pass', async () => {
+  const stateFileO = path.join(tmp, 'state-origin.json');
+  const { url, port, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFileO });
+  try {
+    const evil = await fetch(`${url}/api/health`, { headers: { Origin: 'http://evil.example' } });
+    assert.equal(evil.status, 403);
+    assert.deepEqual(await evil.json(), { ok: false, reason: 'bad_origin' });
+
+    const evilPost = await fetch(`${url}/api/name`, {
+      method: 'POST',
+      headers: { Origin: 'http://evil.example', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'NOVA' }),
+    });
+    assert.equal(evilPost.status, 403);
+    assert.deepEqual(await evilPost.json(), { ok: false, reason: 'bad_origin' });
+
+    // An unknown /api path is guarded too (no hole for future routes).
+    const evilUnknown = await fetch(`${url}/api/nope`, { headers: { Origin: 'http://evil.example' } });
+    assert.equal(evilUnknown.status, 403);
+
+    for (const origin of [`http://127.0.0.1:${port}`, `http://localhost:${port}`]) {
+      const ok = await fetch(`${url}/api/health`, { headers: { Origin: origin } });
+      assert.equal(ok.status, 200, `origin ${origin} should be allowed`);
+      assert.equal((await ok.json()).name, 'iris-installer');
+    }
+
+    // No Origin at all (bootstrap.ps1's probe, verify/static.mjs's ⑨ smoke,
+    // same-origin GET/EventSource) stays allowed.
+    const bare = await fetch(`${url}/api/health`);
+    assert.equal(bare.status, 200);
+
+    // Static files are not /api and keep working with any Origin.
+    const staticRes = await fetch(`${url}/nope.html`, { headers: { Origin: 'http://evil.example' } });
+    assert.equal(staticRes.status, 404);
+    assert.deepEqual(await staticRes.json(), { ok: false, reason: 'not_found' });
+  } finally {
+    await close();
+  }
+});
+
+test('/api guard: a POST that is not application/json is 415', async () => {
+  const stateFileC = path.join(tmp, 'state-ctype.json');
+  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFileC });
+  try {
+    const form = await fetch(`${url}/api/name`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'name=NOVA',
+    });
+    assert.equal(form.status, 415);
+    assert.deepEqual(await form.json(), { ok: false, reason: 'unsupported_media_type' });
+
+    const none = await fetch(`${url}/api/quit`, { method: 'POST' });
+    assert.equal(none.status, 415);
+
+    // charset suffix is fine -- the UI's fetch sends bare application/json,
+    // but a proxy or a future client may append one.
+    const withCharset = await fetch(`${url}/api/name`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ name: '' }),
+    });
+    assert.equal(withCharset.status, 200);
+    assert.deepEqual(await withCharset.json(), { ok: false, reason: 'empty' });
+  } finally {
+    await close();
+  }
+});
+
+// The screen must actually speak the protocol the guard now enforces.
+test('installer UI sends Content-Type: application/json on every POST it makes', () => {
+  const uiPath = path.resolve(fileURLToPath(new URL('..', import.meta.url)), 'installer', 'ui', 'index.html');
+  const html = fs.readFileSync(uiPath, 'utf8');
+  const posts = html.match(/method:\s*'POST'/g) ?? [];
+  assert.ok(posts.length > 0, 'no POST found in the UI at all -- did the api() helper change?');
+  const jsonHeaders = html.match(/'Content-Type':\s*'application\/json'/g) ?? [];
+  assert.equal(
+    jsonHeaders.length, posts.length,
+    'every POST in installer/ui/index.html must carry a JSON Content-Type header',
+  );
 });

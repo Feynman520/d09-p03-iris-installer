@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { verifyManifest } from '../lib/manifest.mjs';
 import { extractZip } from '../lib/zip.mjs';
@@ -56,6 +56,108 @@ function extractRootBlock(css) {
   return null;
 }
 
+// (I5) Where a `dir`-kind part's source lives. lock.json is the default, but
+// lock.parts.dash.source is an absolute path to this development PC's own
+// dashboard folder, so any other machine (a fresh clone, a second checkout)
+// needs a way to say where its copy is without editing a tracked file. The
+// env var wins when set; it is the same name build/collect.mjs honours.
+export function sourceEnvVar(name) {
+  return `IRIS_${name.toUpperCase()}_SOURCE`;
+}
+
+export function partSource(lock, name) {
+  const override = process.env[sourceEnvVar(name)];
+  const value = override || lock?.parts?.[name]?.source;
+  return value ? path.resolve(ROOT_DIR, value) : '';
+}
+
+// ⑨ (2026-09-12 final review C1/C2) Smoke-start the server that actually
+// shipped, out of the extracted zip, and prove it answers /api/health with
+// the iris-installer contract. This is the check that would have caught the
+// missing lib/ + lock.json: every earlier rehearsal ran server.mjs from the
+// repo checkout, where `../../lib/run.mjs` and `../lock.json` resolve by
+// accident.
+//
+// Rules this deliberately obeys:
+//   - port 0 -> the OS picks a free port (never 3456/3458/3459/3460/3466);
+//     the child prints the real one, which is what we then talk to;
+//   - LOCALAPPDATA is redirected into a scratch dir, so the child's
+//     state.json / bootstrap work dir never touch this PC's real
+//     %LOCALAPPDATA%\IRIS-Installer;
+//   - only the child THIS function spawned is ever waited on or signalled.
+function waitForExit(child, ms) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) { resolve(true); return; }
+    const t = setTimeout(() => resolve(false), ms);
+    child.once('exit', () => { clearTimeout(t); resolve(true); });
+  });
+}
+
+async function smokePackedServer(zipRootDir, scratchDir) {
+  const serverPath = path.join(zipRootDir, 'installer', 'server.mjs');
+  if (!fs.existsSync(serverPath)) return { ok: false, detail: `zip has no installer/server.mjs (${serverPath})` };
+
+  const appData = path.join(scratchDir, 'localappdata');
+  fs.mkdirSync(appData, { recursive: true });
+
+  const child = spawn(process.execPath, [serverPath, '--zip-root', zipRootDir, '--port', '0'], {
+    cwd: zipRootDir,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, LOCALAPPDATA: appData },
+  });
+  let out = '';
+  let err = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { err += d; });
+
+  const fail = async (detail) => {
+    try { child.kill(); } catch { /* already gone */ }
+    await waitForExit(child, 3000);
+    return { ok: false, detail: `${detail}${err.trim() ? ` | stderr: ${err.trim().slice(0, 800)}` : ''}` };
+  };
+
+  // Wait for the "listening on 127.0.0.1:<port>" line (or an early death).
+  const deadline = Date.now() + 30000;
+  let port = null;
+  while (Date.now() < deadline) {
+    const m = /listening on 127\.0\.0\.1:(\d+)/.exec(out);
+    if (m) { port = Number(m[1]); break; }
+    if (child.exitCode !== null) {
+      return { ok: false, detail: `server exited early with code ${child.exitCode} | stderr: ${err.trim().slice(0, 800)}` };
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (!port) return fail('server never printed its listening port within 30s');
+
+  // Poll /api/health until it answers the iris-installer contract.
+  let health = null;
+  const healthDeadline = Date.now() + 20000;
+  while (Date.now() < healthDeadline && health === null) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+      if (res.ok) health = await res.json();
+    } catch { /* not up yet */ }
+    if (health === null) await new Promise((r) => setTimeout(r, 200));
+  }
+  if (health === null) return fail(`/api/health never answered on 127.0.0.1:${port}`);
+  if (health.name !== 'iris-installer') return fail(`/api/health answered without name:"iris-installer" (${JSON.stringify(health)})`);
+
+  // Shut it down the way the UI does, then wait for OUR child to exit.
+  try {
+    await fetch(`http://127.0.0.1:${port}/api/quit`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+  } catch { /* the server may close the socket as it exits */ }
+  const exited = await waitForExit(child, 15000);
+  if (!exited) return fail('server did not exit after POST /api/quit');
+
+  return {
+    ok: true,
+    detail: `packed server started on 127.0.0.1:${port}, /api/health name=iris-installer version=${health.version}, quit cleanly`,
+  };
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const outDir = path.resolve(ROOT_DIR, opts.out);
@@ -101,11 +203,14 @@ async function main() {
     const mv = await verifyManifest(payloadDir, manifest);
     record('① manifest verify', mv.ok, mv.ok ? `${Object.keys(manifest.parts).length} part(s) match` : JSON.stringify(mv.mismatches));
 
-    // ② sanitize the extracted payload once more (independent of build.mjs's
-    // own pre-pack sanitize pass) -- this is what actually shipped.
+    // ② sanitize the WHOLE extracted zip (I1) -- not just payload/. The
+    // build's own pre-pack pass only ever sees the staged payload, so
+    // installer code, ui/index.html, bootstrap.ps1, the packed
+    // patches/rules.json, lib/ and lock.json used to ship without any
+    // personal-string gate at all. This is what actually shipped, all of it.
     const rules = loadRules({ baseFile: path.join(ROOT_DIR, 'build', 'sanitize-rules.json'), localFile: path.join(ROOT_DIR, 'build', 'sanitize-local.json') });
-    const sanitizeResult = await sanitize(payloadDir, rules);
-    record('② sanitize (payload in zip)', sanitizeResult.ok, sanitizeResult.ok ? '0 hits' : JSON.stringify(sanitizeResult.hits));
+    const sanitizeResult = await sanitize(tmpDir, rules);
+    record('② sanitize (whole zip root)', sanitizeResult.ok, sanitizeResult.ok ? '0 hits' : JSON.stringify(sanitizeResult.hits));
 
     // ③ every lock part except redistribute:'download' ones is present in
     // the manifest. Glob parts (e.g. guides) fan out into "name:basename"
@@ -130,12 +235,24 @@ async function main() {
     // same block in installer/ui/index.html -- but the installer UI doesn't
     // exist until Task 14, so this check is a no-op (not a failure) until
     // then.
+    //
+    // (I5) A missing sibling source must be REPORTED, never thrown: an
+    // unhandled throw here aborted the whole run and silently skipped checks
+    // ⑤-⑨. Both sibling-reading checks (④ and ⑥) resolve their source the
+    // same way -- lock value, overridable by env (see partSource below).
     const uiIndexPath = path.join(ROOT_DIR, 'installer', 'ui', 'index.html');
+    const faceSource = partSource(lock, 'face');
+    const faceCssPath = path.join(faceSource, 'app', 'style.css');
     if (!fs.existsSync(uiIndexPath)) {
       console.log('④ skipped (installer UI not built yet)');
+    } else if (!fs.existsSync(faceCssPath)) {
+      record(
+        '④ style.css :root == installer/ui/index.html :root', false,
+        `P02 source not found: ${faceCssPath} does not exist `
+        + `(lock.parts.face.source=${lock.parts.face.source}; override with ${sourceEnvVar('face')})`,
+      );
     } else {
-      const faceSource = path.resolve(ROOT_DIR, lock.parts.face.source);
-      const faceCss = fs.readFileSync(path.join(faceSource, 'app', 'style.css'), 'utf8');
+      const faceCss = fs.readFileSync(faceCssPath, 'utf8');
       const uiHtml = fs.readFileSync(uiIndexPath, 'utf8');
       const faceRoot = extractRootBlock(faceCss);
       const uiRoot = extractRootBlock(uiHtml);
@@ -177,10 +294,12 @@ async function main() {
     // comment). Resolve P02's location the same way check ④ and collect.mjs
     // do: lock.parts.face.source, resolved against ROOT_DIR.
     {
-      const faceSource = path.resolve(ROOT_DIR, lock.parts.face.source);
       const wakePath = path.join(faceSource, 'daemon', 'wake.mjs');
       if (!fs.existsSync(wakePath)) {
-        record('⑥ shim template parity (P02 wake() vs P03 shims.mjs)', false, `P02 not found: ${wakePath} does not exist`);
+        record(
+          '⑥ shim template parity (P02 wake() vs P03 shims.mjs)', false,
+          `P02 not found: ${wakePath} does not exist (override with ${sourceEnvVar('face')})`,
+        );
       } else {
         const { agentShimText } = await import(pathToFileURL(wakePath).href);
         const mismatches = [];
@@ -247,6 +366,24 @@ async function main() {
       }
     }
     record('⑧ git history scan (all refs, all commits)', badHistoryCommits.length === 0, badHistoryCommits.length === 0 ? `0 hits across ${historyShas.length} commit(s)` : JSON.stringify(badHistoryCommits));
+
+    // ⑨ (C1/C2) the packed installer actually runs. Also proves lib/ and
+    // lock.json are inside the zip: without them this server dies on import
+    // (ERR_MODULE_NOT_FOUND) or answers 500 payload_unreadable later.
+    const packedLibOk = fs.existsSync(path.join(tmpDir, 'lib', 'run.mjs')) && fs.existsSync(path.join(tmpDir, 'lib', 'zip.mjs'));
+    const packedLockOk = fs.existsSync(path.join(tmpDir, 'lock.json'));
+    const smokeScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-smoke-'));
+    let smoke;
+    try {
+      smoke = await smokePackedServer(tmpDir, smokeScratch);
+    } finally {
+      fs.rmSync(smokeScratch, { recursive: true, force: true });
+    }
+    record(
+      '⑨ packed server smoke (/api/health from the extracted zip)',
+      smoke.ok && packedLibOk && packedLockOk,
+      `${smoke.detail}; zip lib/={run,zip}.mjs ${packedLibOk ? 'present' : 'MISSING'}, zip lock.json ${packedLockOk ? 'present' : 'MISSING'}`,
+    );
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

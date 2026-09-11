@@ -112,6 +112,36 @@ test('bootstrap.ps1 stops a stale server by its recorded pid only, never by name
   assert.doesNotMatch(ps1Text, /Get-NetTCPConnection|netstat/i, 'must never scan the port to find a process to kill');
 });
 
+// 2026-09-12 final review I6: a recorded pid is not proof of identity. Pids
+// are recycled and server.pid can outlive its process, so the recorded pid
+// must be checked to still BE our bundled Node server before it is stopped --
+// otherwise the installer can kill an unrelated process (an agent session, a
+// relay, an editor) that happens to have inherited the number.
+test('bootstrap.ps1 verifies the stale pid is our bundled node before stopping it', () => {
+  // The whole stop must live inside an identity gate...
+  const gate = ps1Text.match(/if \(\$isOurs\) \{([\s\S]*?)\n {6}\} else \{/);
+  assert.ok(gate, 'Stop-Process is not guarded by an $isOurs identity check');
+  assert.match(gate[1], /Stop-Process\s+-Id\s+\$stalePid/);
+  // ...and that gate must test both the process name and, when readable, the
+  // image path against the bundled node.exe this installer unpacks.
+  assert.match(ps1Text, /\$staleProc\.ProcessName\s+-eq\s+'node'/, 'missing ProcessName -eq node check');
+  assert.match(ps1Text, /\$stalePath\s+-eq\s+\$nodeExe/, 'missing image-path equality check against the bundled node.exe');
+  assert.match(ps1Text, /\$nodeExe = Join-Path \$nodeDir 'node\.exe'/, 'bundled node.exe path must be resolved before the check');
+  // A pid that fails the gate must be left alone (and said so in the log).
+  assert.match(ps1Text, /not our bundled Node server\. Leaving it alone\./);
+});
+
+test('bootstrap.ps1 declares the bundled node paths exactly once (hoisted above the stale-pid stage)', () => {
+  const nodeDirDecls = ps1Text.match(/^\$nodeDir = /gm) ?? [];
+  const nodeExeDecls = ps1Text.match(/^\$nodeExe = /gm) ?? [];
+  assert.equal(nodeDirDecls.length, 1);
+  assert.equal(nodeExeDecls.length, 1);
+  assert.ok(
+    ps1Text.indexOf('$nodeExe = ') < ps1Text.indexOf('$stalePid'),
+    'the bundled node.exe path must be known before the stale-pid identity check runs',
+  );
+});
+
 // Fix round 1 finding #3: bootstrap.log must not grow forever.
 test('bootstrap.ps1 writes a run separator and rotates the log past 512KB', () => {
   assert.match(ps1Text, /---- run /, 'missing a per-run separator line');

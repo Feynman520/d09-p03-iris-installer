@@ -7,6 +7,7 @@ import { ensureProxy } from '../installer/lib/proxy.mjs';
 import {
   startCliLogin, cliLoginStatus, relayImport, relayStatus,
   resolveTeamclaudeConfigPath, countProviderAccounts,
+  portableTeamclaudeConfigDir, portableTeamclaudeConfigPath,
 } from '../installer/lib/login.mjs';
 
 function tmpRoot(name) {
@@ -421,4 +422,101 @@ test('relayStatus: never exposes token material even indirectly (uses default co
   } finally {
     fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// I2 (2026-09-12 final review): TEAMCLAUDE_CONFIG travels with the soul.
+// ---------------------------------------------------------------------------
+// The installer's own process never sees the user env var install() writes
+// (HKCU\Environment is read at process creation), so every spawn has to carry
+// the path explicitly, and the receipt -- not the environment -- is the
+// authority for which config file this soul uses.
+
+const FAKE_ROOT = 'C:\\NOVA';
+const FAKE_NODE_DIR = 'C:\\NOVA\\_agent\\shared\\tools\\node';
+const FAKE_PORTABLE_CONFIG = 'C:\\NOVA\\_agent\\shared\\portable-state\\teamclaude\\teamclaude.json';
+
+test('resolveTeamclaudeConfigPath: the receipt of the soul wins over env and the OS default', () => {
+  const result = resolveTeamclaudeConfigPath({
+    root: FAKE_ROOT,
+    env: { TEAMCLAUDE_CONFIG: 'C:\\SOMEWHERE-ELSE\\teamclaude.json' },
+    homedir: () => 'X:\\fake-home',
+    readReceiptFn: () => ({ env: { teamclaudeConfig: FAKE_PORTABLE_CONFIG } }),
+  });
+  assert.equal(result, FAKE_PORTABLE_CONFIG);
+});
+
+test('resolveTeamclaudeConfigPath: an unreadable/absent receipt falls through to env, then the OS default', () => {
+  const throwing = () => { throw new Error('receipt unreadable'); };
+  assert.equal(
+    resolveTeamclaudeConfigPath({
+      root: FAKE_ROOT,
+      env: { TEAMCLAUDE_CONFIG: 'C:\\ENV\\teamclaude.json' },
+      homedir: () => 'X:\\fake-home',
+      readReceiptFn: throwing,
+    }),
+    'C:\\ENV\\teamclaude.json',
+  );
+  assert.equal(
+    resolveTeamclaudeConfigPath({
+      root: FAKE_ROOT, env: {}, homedir: () => 'X:\\fake-home', readReceiptFn: () => null,
+    }),
+    path.join('X:\\fake-home', '.config', 'teamclaude.json'),
+  );
+});
+
+test('portableTeamclaudeConfigPath: the soul-local portable-state path', () => {
+  assert.equal(
+    portableTeamclaudeConfigPath(FAKE_ROOT),
+    path.join(FAKE_ROOT, '_agent', 'shared', 'portable-state', 'teamclaude', 'teamclaude.json'),
+  );
+  assert.equal(portableTeamclaudeConfigDir(FAKE_ROOT), path.dirname(portableTeamclaudeConfigPath(FAKE_ROOT)));
+});
+
+test('startCliLogin: the spawned console carries TEAMCLAUDE_CONFIG (and still no ANTHROPIC_BASE_URL)', () => {
+  const dry = startCliLogin({
+    provider: 'claude',
+    root: FAKE_ROOT,
+    nodeDir: FAKE_NODE_DIR,
+    teamclaudeConfigPath: FAKE_PORTABLE_CONFIG,
+    dryRun: true,
+  });
+  assert.equal(dry.env.TEAMCLAUDE_CONFIG, FAKE_PORTABLE_CONFIG);
+  assert.equal(dry.env.ANTHROPIC_BASE_URL, undefined);
+});
+
+test('relayImport: both the claude import and the detached login spawn carry TEAMCLAUDE_CONFIG', async () => {
+  let importEnv = null;
+  await relayImport({
+    provider: 'claude',
+    root: FAKE_ROOT,
+    nodeDir: FAKE_NODE_DIR,
+    teamclaudeConfigPath: FAKE_PORTABLE_CONFIG,
+    runFn: async (_exe, _args, opts) => { importEnv = opts.env; return { code: 0, out: '', err: '' }; },
+  });
+  assert.equal(importEnv.TEAMCLAUDE_CONFIG, FAKE_PORTABLE_CONFIG);
+
+  let spawnEnv = null;
+  await relayImport({
+    provider: 'claude',
+    root: FAKE_ROOT,
+    nodeDir: FAKE_NODE_DIR,
+    teamclaudeConfigPath: FAKE_PORTABLE_CONFIG,
+    runFn: async () => ({ code: 1, out: '', err: 'import failed' }), // force the fallback
+    spawnFn: (_exe, _args, opts) => { spawnEnv = opts.env; return { unref() {}, pid: 1 }; },
+  });
+  assert.equal(spawnEnv.TEAMCLAUDE_CONFIG, FAKE_PORTABLE_CONFIG);
+});
+
+test('ensureProxy: the manage-script spawn carries TEAMCLAUDE_CONFIG', async () => {
+  let manageOpts = null;
+  let probeCount = 0;
+  await ensureProxy({
+    root: FAKE_ROOT,
+    nodeDir: FAKE_NODE_DIR,
+    teamclaudeConfigPath: FAKE_PORTABLE_CONFIG,
+    probe: async () => { probeCount += 1; return probeCount > 1; },
+    runManage: async (_ps1, _args, opts) => { manageOpts = opts; return { code: 0, out: '', err: '' }; },
+  });
+  assert.equal(manageOpts.env.TEAMCLAUDE_CONFIG, FAKE_PORTABLE_CONFIG);
 });

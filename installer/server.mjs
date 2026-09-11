@@ -92,6 +92,43 @@ function readJsonBody(req, limit = BODY_LIMIT) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// local-origin guard (2026-09-12 final review I3)
+// ---------------------------------------------------------------------------
+// The installer server binds 127.0.0.1 only, but "local" is not "safe": any
+// page the person happens to have open in the same browser can POST to
+// http://127.0.0.1:3460/api/... (drive-by CSRF), and that means naming a
+// soul folder, starting the install, or quitting the installer from a
+// foreign site. Two cheap, complementary checks close it:
+//
+//   1. Origin: browsers send it on every cross-origin request (and on all
+//      POSTs). A present Origin that is not this very server is rejected.
+//      An absent Origin is allowed on purpose -- same-origin GETs,
+//      EventSource, bootstrap.ps1's Invoke-WebRequest health probe and
+//      verify/static.mjs's smoke check all send none.
+//   2. Content-Type: application/json cannot be produced by a plain
+//      <form> post (the CORS "simple request" content types are
+//      form-urlencoded / multipart / text-plain), so requiring it on every
+//      /api POST forces any cross-site attempt into a preflight, which
+//      check 1 then refuses.
+export function allowedOrigins(port) {
+  return [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
+}
+
+export function checkApiRequest(req, port) {
+  const origin = req.headers?.origin;
+  if (origin && !allowedOrigins(port).includes(origin)) {
+    return { ok: false, status: 403, reason: 'bad_origin' };
+  }
+  if (req.method === 'POST') {
+    const ct = req.headers?.['content-type'] ?? '';
+    if (!ct.toLowerCase().startsWith('application/json')) {
+      return { ok: false, status: 415, reason: 'unsupported_media_type' };
+    }
+  }
+  return { ok: true };
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -444,8 +481,12 @@ export function startServer({
   // chosen subscription is fully done, flips the receipt/state to handoff.
   const relayImportInFlight = new Set();
 
+  // I2: pass the soul root so the receipt (written by install()) is the first
+  // place the path comes from -- this process cannot see the user env var
+  // install() just wrote, and must not fall back to %USERPROFILE%\.config on
+  // a machine that is already an IRIS soul.
   function getTeamclaudeConfigPath() {
-    return teamclaudeConfigPath ?? resolveTeamclaudeConfigPath();
+    return teamclaudeConfigPath ?? resolveTeamclaudeConfigPath({ root: state.soul?.root });
   }
 
   routes.set('POST /api/login', withBody(async (body, req, res) => {
@@ -461,10 +502,12 @@ export function startServer({
     const root = state.soul.root;
     const configPath = getTeamclaudeConfigPath();
     const [proxyResult, accountsBefore] = await Promise.all([
-      ensureProxyFn({ root, nodeDir: state.nodeDir }),
+      ensureProxyFn({ root, nodeDir: state.nodeDir, teamclaudeConfigPath: configPath }),
       countProviderAccountsFn({ teamclaudeConfigPath: configPath, provider }).catch(() => 0),
     ]);
-    const { pid } = startCliLoginFn({ root, nodeDir: state.nodeDir, provider });
+    const { pid } = startCliLoginFn({
+      root, nodeDir: state.nodeDir, provider, teamclaudeConfigPath: configPath,
+    });
 
     state.login = state.login ?? {};
     state.login[provider] = {
@@ -714,6 +757,15 @@ export function startServer({
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
+      // Guard every /api/* request (routed or not) before anything reads a
+      // body or touches state -- an unknown /api path must not be a hole.
+      if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
+        const guard = checkApiRequest(req, server.address()?.port ?? port);
+        if (!guard.ok) {
+          sendJson(res, guard.status, { ok: false, reason: guard.reason });
+          return;
+        }
+      }
       const handler = routes.get(`${req.method} ${url.pathname}`);
       if (handler) {
         await handler(req, res, url);

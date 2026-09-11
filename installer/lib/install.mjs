@@ -9,6 +9,7 @@ import {
 } from './receipt.mjs';
 import { writeShims, shimsDir } from './shims.mjs';
 import { writeMinimalSoulState } from './soulstate.mjs';
+import { portableTeamclaudeConfigDir, portableTeamclaudeConfigPath } from './login.mjs';
 import * as userpathDefault from './userpath.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -566,6 +567,13 @@ export async function install({
   const codexHome = path.join(root, '_agent', 'codex');
   fs.mkdirSync(claudeCfg, { recursive: true });
   fs.mkdirSync(codexHome, { recursive: true });
+  // docs/설계.md 2-2 + 10 #4 (2026-09-12 final review I2): the soul's own
+  // TeamClaude config lives here, so the relay's account list travels with
+  // the soul folder. Created up front (next to the two config homes) because
+  // the login step's very first spawn already points TEAMCLAUDE_CONFIG at it.
+  const teamclaudeStateDir = portableTeamclaudeConfigDir(root);
+  const teamclaudeConfig = portableTeamclaudeConfigPath(root);
+  fs.mkdirSync(teamclaudeStateDir, { recursive: true });
 
   // --- 1. receipt ---------------------------------------------------------
   log = makeLogger(root);
@@ -743,7 +751,12 @@ export async function install({
     CLAUDE_CONFIG_DIR: claudeCfg,
     CODEX_HOME: codexHome,
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:3456',
+    TEAMCLAUDE_CONFIG: teamclaudeConfig,
     pathShim: shims.dir,
+    // Same value under the name the rest of the installer reads it by
+    // (server.mjs's login route, login.mjs's resolveTeamclaudeConfigPath):
+    // the receipt is the authority for which config file this soul uses.
+    teamclaudeConfig,
     previous: {},
     // `applied` says whether these values were actually written to
     // HKCU\Environment or only recorded here (fix round 1 finding 3). The
@@ -766,6 +779,7 @@ export async function install({
     ['CLAUDE_CONFIG_DIR', claudeCfg],
     ['CODEX_HOME', codexHome],
     ['ANTHROPIC_BASE_URL', 'http://127.0.0.1:3456'],
+    ['TEAMCLAUDE_CONFIG', teamclaudeConfig],
   ]) {
     const r = await userpath.setUserEnv(key, value);
     if (r.previous != null) env.previous[key] = r.previous;
