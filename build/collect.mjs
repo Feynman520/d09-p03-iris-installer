@@ -1,11 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { run } from '../lib/run.mjs';
 import { extractZip, zipDir } from '../lib/zip.mjs';
 import { sha256File } from '../lib/manifest.mjs';
 import { applyPatches } from './patch-teamclaude.mjs';
+
+// Project root (one level up from this file, build/), independent of the
+// caller's process.cwd() -- lock.json's `patches` paths (e.g.
+// 'patches/teamclaude/rules.json') are always relative to here, not to
+// wherever `node build/collect.mjs` (or a test importing collect()) happens
+// to be run from.
+const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function download(url, dest) {
   const res = await fetch(url);
@@ -100,7 +108,7 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log }) {
         { env: npmEnv },
       );
       if (r.code !== 0) throw new Error(`npm install ${name}: ${r.err}`);
-      if (p.patches) await applyPatches(prefix, JSON.parse(fs.readFileSync(path.resolve(p.patches), 'utf8')), log);
+      if (p.patches) await applyPatches(prefix, JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, p.patches), 'utf8')), log);
       await zipDir(prefix, dest);
     } else if (p.kind === 'dir') {
       const work = path.join(stageDir, 'dir', name);

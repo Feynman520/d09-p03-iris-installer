@@ -30,6 +30,37 @@ test('applyPatches multi-count anchor replaces every occurrence', async () => {
   assert.equal((text.match(/activityRequestCounter/g) || []).length, 2);
 });
 
+test('applyPatches rejects create when the target already exists (create is only for files absent from pristine)', async () => {
+  const dir = path.join(tmp, 's'); fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src/existing.js'), 'already here\n');
+  await assert.rejects(
+    applyPatches(dir, { files: [{ path: 'src/existing.js', create: 'new content\n' }] }, () => {}),
+    /create target exists src\/existing\.js/,
+  );
+  // rejection must not have touched the existing file's content
+  assert.equal(fs.readFileSync(path.join(dir, 'src/existing.js'), 'utf8'), 'already here\n');
+});
+
+test('applyPatches is two-phase: a later file failing its anchor check leaves an earlier file untouched on disk', async () => {
+  const dir = path.join(tmp, 't'); fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src/first.js'), 'const x = 1;');
+  fs.writeFileSync(path.join(dir, 'src/second.js'), 'const y = 2;');
+  await assert.rejects(
+    applyPatches(dir, {
+      files: [
+        { path: 'src/first.js', replace: [{ find: 'const x = 1;', with: 'const x = 99;', count: 1 }] },
+        { path: 'src/second.js', replace: [{ find: 'NOPE', with: 'z', count: 1 }] },
+      ],
+    }, () => {}),
+    /anchor mismatch src\/second.js #0/,
+  );
+  // Phase 1 (compute-only) must have failed on second.js BEFORE phase 2 wrote
+  // anything -- so first.js, which comes earlier in the list and whose own
+  // anchor check passed, must still be unpatched on disk.
+  assert.equal(fs.readFileSync(path.join(dir, 'src/first.js'), 'utf8'), 'const x = 1;');
+  assert.equal(fs.readFileSync(path.join(dir, 'src/second.js'), 'utf8'), 'const y = 2;');
+});
+
 test('the real teamclaude rules.json is well-formed and self-consistent', async () => {
   const rulesPath = path.resolve('patches/teamclaude/rules.json');
   const rules = JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
