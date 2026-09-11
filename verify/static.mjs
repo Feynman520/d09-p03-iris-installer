@@ -190,6 +190,39 @@ async function main() {
       .filter(Boolean);
     const repoScan = await sanitize(ROOT_DIR, rules, { files: trackedFiles });
     record('⑦ repo self-scan (git ls-files)', repoScan.ok, repoScan.ok ? `0 hits across ${trackedFiles.length} tracked file(s)` : JSON.stringify(repoScan.hits));
+
+    // ⑧ (C1, 2026-09-11 Fix round 2) git history scan -- check ⑦ only ever
+    // scanned the current checkout, so a personal string that was scrubbed
+    // from HEAD but still survives in an *ancestor* commit's blob content
+    // would ship in git history to a public GitHub push (Task 20) without
+    // tripping any check. Walk every commit reachable from any ref and
+    // require 0 hits in each one's full tree, mirroring
+    // tests/history-clean.test.mjs (same materialize-via-extractZip +
+    // sanitize approach; see that file's header comment for why raw `tar`
+    // is not used directly).
+    const historyShas = execFileSync('git', ['rev-list', '--all'], { cwd: ROOT_DIR, encoding: 'utf8' })
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean);
+    const badHistoryCommits = [];
+    for (const sha of historyShas) {
+      const histTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-history-'));
+      try {
+        const histZipPath = path.join(histTmpDir, 'commit.zip');
+        execFileSync('git', ['archive', '--format=zip', '-o', histZipPath, sha], { cwd: ROOT_DIR });
+        const histTreeDir = path.join(histTmpDir, 'tree');
+        await extractZip(histZipPath, histTreeDir);
+        if (fs.readdirSync(histTreeDir).length === 0) {
+          badHistoryCommits.push({ sha, error: 'extraction produced 0 files -- materialization failed' });
+          continue;
+        }
+        const histResult = await sanitize(histTreeDir, rules);
+        if (!histResult.ok) badHistoryCommits.push({ sha, hits: histResult.hits });
+      } finally {
+        fs.rmSync(histTmpDir, { recursive: true, force: true });
+      }
+    }
+    record('⑧ git history scan (all refs, all commits)', badHistoryCommits.length === 0, badHistoryCommits.length === 0 ? `0 hits across ${historyShas.length} commit(s)` : JSON.stringify(badHistoryCommits));
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
