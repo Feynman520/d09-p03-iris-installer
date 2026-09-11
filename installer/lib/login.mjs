@@ -83,11 +83,15 @@ export function startCliLogin({ provider, root, nodeDir, spawnFn = spawn, dryRun
   }
 
   const title = provider === 'claude' ? 'IRIS Claude login' : 'IRIS Codex login';
-  // Brief-mandated one-line guidance inside the spawned console (this is a
-  // user-facing screen the person watches during the login, not a server
-  // log message, so the Korean text constraint on server.mjs's own output
-  // does not apply here).
-  const echoText = '브라우저에서 로그인 후 이 창을 닫아 주세요.';
+  // Fix round 1 finding 4: this line used to be the brief-mandated Korean
+  // guidance text, on the reasoning that a spawned console is a user-facing
+  // screen rather than a server log message. Review overruled that: it is
+  // Korean text inside a `cmd /k` line, and on a plain cp949 console (the
+  // Windows default code page, not UTF-8) that can render as garbled mojibake
+  // instead of readable Korean. Kept ASCII-only here; the real Korean
+  // guidance belongs on the installer's own HTML screen (Task 14), which is
+  // UTF-8 end to end and does not have this risk.
+  const echoText = 'Log in in the browser, then close this window.';
   // `cmd /k` keeps the window open after login finishes so the user can see
   // the result; the whole thing is one quoted command string per cmd.exe's
   // `start` rule (a quoted title makes `start` treat the NEXT quoted token
@@ -155,12 +159,34 @@ function writeJsonFileAtomic(filePath, data) {
 // Write (or refresh) the codex account's `importFrom` pointer in TeamClaude's
 // config. Never touches accessToken/refreshToken -- only a filesystem path,
 // which TeamClaude's own resolve-accounts.js reads live on every reload.
+//
+// Fix round 1 finding 1: only a missing file (ENOENT) may default to a fresh
+// minimal config -- mirrors TeamClaude's own loadConfig() (src/config.js),
+// which returns null on ENOENT and re-throws every other error. A blanket
+// catch-all here would treat invalid JSON / EACCES / a transient read while
+// the live server is mid-write as "no config exists" and then
+// writeJsonFileAtomic below would REPLACE the real, populated config -- on
+// this PC that is the developer's live TeamClaude account set. So any other
+// read failure is returned as a reported failure and NOTHING is written.
+//
+// Fix round 1 finding 2 (read-modify-write race, no code change beyond this
+// comment): TeamClaude serializes its own config writes through its internal
+// `configUpdateChain` (src/config.js), but this function's read here and its
+// write below are two separate filesystem operations -- a live server write
+// could land in between. The write stays atomic (write .tmp, then rename)
+// and the window is kept minimal (read happens immediately before write,
+// synchronously, with no I/O or await in between) to shrink, not eliminate,
+// that race.
 function writeCodexImportEntry({ root, teamclaudeConfigPath, name = 'codex' }) {
   let config;
   try {
     config = readJsonFile(teamclaudeConfigPath);
-  } catch {
-    config = { accounts: [] };
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      config = { accounts: [] };
+    } else {
+      return { ok: false, reason: 'config-unreadable', detail: String(err?.message ?? err) };
+    }
   }
   config.accounts = Array.isArray(config.accounts) ? config.accounts : [];
   const importFrom = credentialPath('chatgpt', root);
@@ -171,7 +197,18 @@ function writeCodexImportEntry({ root, teamclaudeConfigPath, name = 'codex' }) {
   } else {
     config.accounts.push(entry);
   }
-  writeJsonFileAtomic(teamclaudeConfigPath, config);
+  try {
+    writeJsonFileAtomic(teamclaudeConfigPath, config);
+  } catch (err) {
+    // A failure here is a DIFFERENT situation from an unreadable config
+    // above: the file we read was fine, so nothing about the real config was
+    // ever misjudged -- disk write itself just failed (permissions, disk
+    // full, a race on the .tmp path). Unlike a read failure, no bytes have
+    // been touched, so relayImport() below is free to fall back to a
+    // detached interactive login for this reason.
+    return { ok: false, reason: 'config-write-failed', detail: String(err?.message ?? err) };
+  }
+  return { ok: true };
 }
 
 /**
@@ -231,8 +268,22 @@ export async function relayImport({
   }
 
   // chatgpt / codex
+  const writeResult = writeCodexImportEntry({ root, teamclaudeConfigPath: configPath });
+  if (!writeResult.ok) {
+    if (writeResult.reason === 'config-unreadable') {
+      // Fix round 1 finding 1: an unreadable/corrupt config is NOT a reason
+      // to fall back to a detached browser login -- that would still leave
+      // the real problem (a config file this module could not safely touch)
+      // unresolved and hidden. Propagate the failure so the caller
+      // (server.mjs route -> the screen, eventually) can report it instead.
+      return writeResult;
+    }
+    // reason === 'config-write-failed': the config was read fine and never
+    // modified on disk -- this is the same kind of recoverable failure as a
+    // failed reload below, so fall back to a detached interactive login.
+    return startDetachedLogin('chatgpt');
+  }
   try {
-    writeCodexImportEntry({ root, teamclaudeConfigPath: configPath });
     await doReload(port);
     return { ok: true, method: 'import' };
   } catch {

@@ -399,6 +399,7 @@ export function startServer({
       cli: 'pending',
       relay: 'pending',
       relayMethod: null,
+      relayError: null,
       pid,
     };
 
@@ -441,10 +442,25 @@ export function startServer({
         relayImportInFlight.add(provider);
         relayImportFn({ provider, root, nodeDir: state.nodeDir, teamclaudeConfigPath: configPath })
           .then((r) => {
-            entry.relayMethod = r.method;
+            if (r.ok) {
+              entry.relayMethod = r.method;
+              entry.relayError = null;
+            } else {
+              // Fix round 1 finding 1: login.mjs now reports (instead of
+              // hiding behind a silent config replacement) when TeamClaude's
+              // config file could not be safely read. Surface it here so a
+              // screen (Task 14) can show the person something other than an
+              // endless spinner; relayMethod stays null so the next poll
+              // retries (the read failure may be transient -- e.g. the live
+              // server mid-write).
+              entry.relayError = { reason: r.reason, detail: r.detail };
+            }
             saveState(stateFile, state);
           })
-          .catch(() => { /* leave relayMethod null -- retried on next poll */ })
+          .catch((err) => {
+            entry.relayError = { reason: 'relay_import_failed', detail: String(err?.message ?? err) };
+            saveState(stateFile, state);
+          })
           .finally(() => { relayImportInFlight.delete(provider); });
       }
 
@@ -481,6 +497,7 @@ export function startServer({
         cli: entry.cli,
         relay: entry.relay,
         relayMethod: entry.relayMethod,
+        relayError: entry.relayError ?? null,
         reopenAvailable: entry.cli !== 'done' && elapsedMs > REOPEN_AFTER_MS,
       };
     }

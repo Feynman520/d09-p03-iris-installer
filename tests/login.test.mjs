@@ -74,46 +74,71 @@ test('ensureProxy: dead, start fails, probe still false -> started:true, alive:f
 // login.mjs -- startCliLogin
 // ---------------------------------------------------------------------------
 
-test('startCliLogin: claude -- argv/env has no ANTHROPIC_BASE_URL, sets CLAUDE_CONFIG_DIR, shows Korean guidance', () => {
-  let captured = null;
-  const fakeSpawn = (cmd, args, opts) => {
-    captured = { cmd, args, opts };
-    return { unref() {}, pid: 4242 };
-  };
-  const root = 'C:\\NOVA';
-  const nodeDir = 'C:\\NOVA\\_agent\\shared\\tools\\node';
-  const result = startCliLogin({ provider: 'claude', root, nodeDir, spawnFn: fakeSpawn });
+test('startCliLogin: claude -- argv/env has no ANTHROPIC_BASE_URL, sets CLAUDE_CONFIG_DIR, shows ASCII guidance', () => {
+  // Fix round 1 finding 3: set a sentinel BEFORE calling startCliLogin so the
+  // "absent from the built env" assertion actually proves startCliLogin
+  // deletes it, rather than merely observing that the test runner's own
+  // process never had it set in the first place.
+  const hadSentinel = 'ANTHROPIC_BASE_URL' in process.env;
+  const previousValue = process.env.ANTHROPIC_BASE_URL;
+  process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:3456';
+  try {
+    let captured = null;
+    const fakeSpawn = (cmd, args, opts) => {
+      captured = { cmd, args, opts };
+      return { unref() {}, pid: 4242 };
+    };
+    const root = 'C:\\NOVA';
+    const nodeDir = 'C:\\NOVA\\_agent\\shared\\tools\\node';
+    const result = startCliLogin({ provider: 'claude', root, nodeDir, spawnFn: fakeSpawn });
 
-  assert.equal(result.started, true);
-  assert.ok(captured, 'spawn must be called');
-  assert.equal(captured.opts.env.CLAUDE_CONFIG_DIR, path.join(root, '_agent', 'claude'));
-  assert.equal('ANTHROPIC_BASE_URL' in captured.opts.env, false, 'claude login must never see the proxy base url');
-  // command line embeds claude.cmd -- never codex.cmd
-  const line = captured.args.join(' ');
-  assert.match(line, /claude\.cmd/);
-  assert.doesNotMatch(line, /codex\.cmd/);
-  // task-13-brief.md requires a one-line Korean instruction inside the window.
-  assert.match(line, /브라우저에서 로그인 후 이 창을 닫아 주세요/);
+    assert.equal(result.started, true);
+    assert.ok(captured, 'spawn must be called');
+    assert.equal(captured.opts.env.CLAUDE_CONFIG_DIR, path.join(root, '_agent', 'claude'));
+    assert.equal('ANTHROPIC_BASE_URL' in captured.opts.env, false, 'claude login must never see the proxy base url');
+    // command line embeds claude.cmd -- never codex.cmd
+    const line = captured.args.join(' ');
+    assert.match(line, /claude\.cmd/);
+    assert.doesNotMatch(line, /codex\.cmd/);
+    // Fix round 1 finding 4: the in-window guidance must be plain ASCII --
+    // Korean text inside a cmd /k line can render as mojibake on a cp949
+    // console. Korean guidance belongs on the installer's own HTML screen
+    // (Task 14) instead.
+    assert.match(line, /Log in in the browser, then close this window\./);
+    assert.doesNotMatch(line, /[\u3130-\u318F\uAC00-\uD7A3]/, 'no Hangul characters in the spawned console line');
+  } finally {
+    if (hadSentinel) process.env.ANTHROPIC_BASE_URL = previousValue;
+    else delete process.env.ANTHROPIC_BASE_URL;
+  }
 });
 
-test('startCliLogin: codex -- sets CODEX_HOME, no ANTHROPIC_BASE_URL, invokes codex.cmd login, shows Korean guidance', () => {
-  let captured = null;
-  const fakeSpawn = (cmd, args, opts) => {
-    captured = { cmd, args, opts };
-    return { unref() {}, pid: 4243 };
-  };
-  const root = 'C:\\NOVA';
-  const nodeDir = 'C:\\NOVA\\_agent\\shared\\tools\\node';
-  const result = startCliLogin({ provider: 'chatgpt', root, nodeDir, spawnFn: fakeSpawn });
+test('startCliLogin: codex -- sets CODEX_HOME, no ANTHROPIC_BASE_URL, invokes codex.cmd login, shows ASCII guidance', () => {
+  const hadSentinel = 'ANTHROPIC_BASE_URL' in process.env;
+  const previousValue = process.env.ANTHROPIC_BASE_URL;
+  process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:3456';
+  try {
+    let captured = null;
+    const fakeSpawn = (cmd, args, opts) => {
+      captured = { cmd, args, opts };
+      return { unref() {}, pid: 4243 };
+    };
+    const root = 'C:\\NOVA';
+    const nodeDir = 'C:\\NOVA\\_agent\\shared\\tools\\node';
+    const result = startCliLogin({ provider: 'chatgpt', root, nodeDir, spawnFn: fakeSpawn });
 
-  assert.equal(result.started, true);
-  assert.ok(captured);
-  assert.equal(captured.opts.env.CODEX_HOME, path.join(root, '_agent', 'codex'));
-  assert.equal('ANTHROPIC_BASE_URL' in captured.opts.env, false);
-  const line = captured.args.join(' ');
-  assert.match(line, /codex\.cmd/);
-  assert.doesNotMatch(line, /claude\.cmd/);
-  assert.match(line, /브라우저에서 로그인 후 이 창을 닫아 주세요/);
+    assert.equal(result.started, true);
+    assert.ok(captured);
+    assert.equal(captured.opts.env.CODEX_HOME, path.join(root, '_agent', 'codex'));
+    assert.equal('ANTHROPIC_BASE_URL' in captured.opts.env, false);
+    const line = captured.args.join(' ');
+    assert.match(line, /codex\.cmd/);
+    assert.doesNotMatch(line, /claude\.cmd/);
+    assert.match(line, /Log in in the browser, then close this window\./);
+    assert.doesNotMatch(line, /[\u3130-\u318F\uAC00-\uD7A3]/, 'no Hangul characters in the spawned console line');
+  } finally {
+    if (hadSentinel) process.env.ANTHROPIC_BASE_URL = previousValue;
+    else delete process.env.ANTHROPIC_BASE_URL;
+  }
 });
 
 test('startCliLogin: dryRun -- logs the command line, never calls spawn, opens no window', () => {
@@ -215,21 +240,97 @@ test('relayImport: claude falls back to detached login when the import CLI call 
   assert.doesNotMatch(spawnCalls[0].args.join(' '), /--codex/);
 });
 
-test('relayImport: codex falls back to detached "login --codex" when writing the config fails', async () => {
+test('relayImport: codex reports config-unreadable (and never falls back to login) when the config path is a directory', async () => {
+  // Fix round 1 finding 1: a directory at the config path makes
+  // fs.readFileSync throw EISDIR -- a non-ENOENT read failure. Per the
+  // ruling, that must be REPORTED, never silently treated as "no config" and
+  // never papered over by a detached browser login (which would leave the
+  // real, unresolved problem -- a config path this module could not safely
+  // read -- hidden from the person). This repurposes what used to be a
+  // "write fails -> falls back to login" test: a directory path is
+  // fundamentally a READ-time failure (fs.readFileSync throws before any
+  // write is even attempted), so it now exercises the config-unreadable
+  // propagation path instead. See the next test for a genuine write-time
+  // failure, which still does fall back to login.
   const spawnCalls = [];
+  const configDir = tmpRoot('relay-codex-read-fail');
   const result = await relayImport({
     provider: 'chatgpt',
     root: 'C:\\NOVA',
     nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
-    // A directory (not a file) as the config path makes fs.writeFileSync throw,
-    // exercising the fallback branch without needing to mock fs internals.
-    teamclaudeConfigPath: tmpRoot('relay-codex-fail'),
+    teamclaudeConfigPath: configDir,
     spawnFn: (cmd, args, opts) => { spawnCalls.push({ cmd, args, opts }); return { unref() {}, pid: 2 }; },
   });
-  assert.equal(result.ok, true);
-  assert.equal(result.method, 'login');
-  assert.equal(spawnCalls.length, 1);
-  assert.match(spawnCalls[0].args.join(' '), /--codex/);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'config-unreadable');
+  assert.ok(result.detail, 'a detail string must be present for the screen to show');
+  assert.equal(spawnCalls.length, 0, 'a read failure must never trigger a detached login fallback');
+});
+
+test('relayImport: codex falls back to detached "login --codex" when the config read succeeds but the write itself fails', async () => {
+  // Genuine write-time failure with a SUCCESSFUL read: the config file
+  // itself is valid JSON, but the atomic write's `.tmp` path is occupied by
+  // a directory, so fs.writeFileSync(tmp, ...) throws after the read already
+  // succeeded. This is the scenario the ruling's finding 1 does NOT forbid a
+  // login fallback for -- nothing about the real config was misread or
+  // touched, so falling back to an interactive login (which does not write
+  // to this config file itself) is still safe and expected here.
+  const dir = tmpRoot('relay-codex-write-fail');
+  const configPath = path.join(dir, 'teamclaude.json');
+  fs.writeFileSync(configPath, JSON.stringify({ accounts: [] }, null, 2), 'utf8');
+  fs.mkdirSync(`${configPath}.tmp`);
+  const spawnCalls = [];
+  try {
+    const result = await relayImport({
+      provider: 'chatgpt',
+      root: 'C:\\NOVA',
+      nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
+      teamclaudeConfigPath: configPath,
+      spawnFn: (cmd, args, opts) => { spawnCalls.push({ cmd, args, opts }); return { unref() {}, pid: 2 }; },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.method, 'login');
+    assert.equal(spawnCalls.length, 1);
+    assert.match(spawnCalls[0].args.join(' '), /--codex/);
+    // The original (unwritable) config bytes must be untouched.
+    const stillThere = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    assert.deepEqual(stillThere, { accounts: [] });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('relayImport: codex reports config-unreadable and leaves the file byte-for-byte untouched when it contains invalid JSON', async () => {
+  // Required by fix round 1 finding 1: an EXISTING config file with invalid
+  // JSON must never be silently treated as "no config exists" (which would
+  // let writeJsonFileAtomic REPLACE a real, populated config -- on the
+  // developer's own PC that is the live TeamClaude account set). No write
+  // may happen, the original bytes must be untouched, and the failure must
+  // be reported back to the caller.
+  const dir = tmpRoot('relay-codex-invalid-json');
+  const configPath = path.join(dir, 'teamclaude.json');
+  const originalBytes = '{ "accounts": [ this is not valid JSON ';
+  fs.writeFileSync(configPath, originalBytes, 'utf8');
+  const spawnCalls = [];
+  try {
+    const result = await relayImport({
+      provider: 'chatgpt',
+      root: 'C:\\NOVA',
+      nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
+      teamclaudeConfigPath: configPath,
+      spawnFn: (cmd, args, opts) => { spawnCalls.push({ cmd, args, opts }); return { unref() {}, pid: 2 }; },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'config-unreadable');
+    assert.ok(result.detail, 'a detail string must be present for the screen to show');
+    assert.equal(spawnCalls.length, 0, 'an unreadable config must never trigger a detached login fallback either');
+    // The whole point of the fix: NOTHING was written. Bytes are identical.
+    const bytesAfter = fs.readFileSync(configPath, 'utf8');
+    assert.equal(bytesAfter, originalBytes);
+    assert.equal(fs.existsSync(`${configPath}.tmp`), false, 'no temp file should have been left behind either');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('relayImport: codex writes an importFrom config entry and triggers reload (no secrets written)', async () => {
