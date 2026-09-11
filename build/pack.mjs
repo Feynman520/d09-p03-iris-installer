@@ -11,6 +11,12 @@ import { zipDir } from '../lib/zip.mjs';
 // installerDir explicitly.
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_INSTALLER_DIR = path.join(ROOT_DIR, 'installer');
+// The TeamClaude patch rules travel *inside* the zip (as
+// installer\patches\teamclaude\rules.json) because the installer verifies
+// the relay by checking that every file rules.json names is present and
+// actually patched (installer/lib/install.mjs verifyTeamclaudePatches).
+// Without this the check has no list to verify against on the user's PC.
+const DEFAULT_PATCHES_DIR = path.join(ROOT_DIR, 'patches');
 const CMD_NAME = 'IRIS-설치.cmd';
 
 function copyTree(src, dest) {
@@ -55,7 +61,7 @@ function forceCRLFTree(dir) {
 // build.mjs can call pack() without knowing that detail; tests pass a fully
 // self-contained fake installerDir so they don't depend on installer/'s
 // real (evolving, Task 9+) contents.
-export async function pack({ stageDir, outDir, manifest, version = manifest?.package?.version, installerDir = DEFAULT_INSTALLER_DIR }) {
+export async function pack({ stageDir, outDir, manifest, version = manifest?.package?.version, installerDir = DEFAULT_INSTALLER_DIR, patchesDir = DEFAULT_PATCHES_DIR }) {
   if (!version) throw new Error('pack: version (or manifest.package.version) is required');
 
   const root = path.join(stageDir, 'zip-root');
@@ -69,6 +75,11 @@ export async function pack({ stageDir, outDir, manifest, version = manifest?.pac
 
   const installerDest = path.join(root, 'installer');
   copyTree(installerDir, installerDest);
+  // Optional (tests pass a self-contained fake installerDir with no patches):
+  // only copied when the directory really exists.
+  if (patchesDir && fs.existsSync(patchesDir)) {
+    copyTree(patchesDir, path.join(installerDest, 'patches'));
+  }
   forceCRLFTree(installerDest);
 
   const payloadSrc = path.join(stageDir, 'payload');

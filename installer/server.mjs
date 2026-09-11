@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { initialState, loadState, saveState } from './lib/state.mjs';
 import { precheck } from './lib/precheck.mjs';
 import { validateSoulName, detectExisting } from './lib/soulname.mjs';
+import { install as defaultInstall } from './lib/install.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -152,7 +153,30 @@ function withBody(handler) {
 // server
 // ---------------------------------------------------------------------------
 
-export function startServer({ port = 3460, zipRoot, nodeDir, stateFile, onQuit } = {}) {
+function readPayloadManifest(zipRoot) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(zipRoot, 'payload', 'manifest.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// lock.json is a build-time artifact that also travels in the zip next to
+// installer/ (it is what says which parts exist, their kinds and the
+// download-only ones). Fall back to the repo copy when running from a git
+// checkout (dev / rehearsal).
+function readLock(zipRoot) {
+  const candidates = [
+    zipRoot ? path.join(zipRoot, 'lock.json') : null,
+    path.resolve(HERE, '..', 'lock.json'),
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { /* try next */ }
+  }
+  return null;
+}
+
+export function startServer({ port = 3460, zipRoot, nodeDir, stateFile, onQuit, installFn = defaultInstall } = {}) {
   const uiDir = path.join(HERE, 'ui');
   const version = readPackageVersion(zipRoot);
 
@@ -221,26 +245,87 @@ export function startServer({ port = 3460, zipRoot, nodeDir, stateFile, onQuit }
     sendJson(res, 200, { ok: true, leadAgent, guideEdition });
   }));
 
-  // TODO Task 12: run the actual copy pipeline (payload -> _agent\shared\
-  // tools, shims, PATH, receipt, MOTW removal) and drive install.parts via
-  // the SSE stream below. For now this only flips the wizard step and
-  // acknowledges the request.
+  // --- install (copy) step ------------------------------------------------
+  // The copy runs in the background while the screen watches
+  // GET /api/install/events. Events are also buffered, so a browser that
+  // refreshes mid-install (or connects after POST) replays everything it
+  // missed instead of showing an empty progress bar. The receipt under the
+  // soul root -- not this buffer -- stays the source of truth.
+  const installEvents = [];
+  const sseClients = new Set();
+  let installRunning = false;
+
+  function pushEvent(event) {
+    installEvents.push(event);
+    if (event.part) {
+      state.install = state.install ?? { parts: {} };
+      state.install.parts[event.part] = event.error ? 'error'
+        : event.skipped ? 'skipped'
+          : event.pct === 100 ? 'done' : 'running';
+    }
+    const frame = `data: ${JSON.stringify(event)}\n\n`;
+    for (const res of sseClients) {
+      try { res.write(frame); } catch { sseClients.delete(res); }
+    }
+  }
+
   routes.set('POST /api/install', withBody(async (body, req, res) => {
+    if (!state.soul?.root) {
+      sendJson(res, 409, { ok: false, reason: 'no_soul' });
+      return;
+    }
+    if (installRunning) {
+      sendJson(res, 202, { ok: true, running: true });
+      return;
+    }
+    const manifest = readPayloadManifest(state.zipRoot);
+    const lock = readLock(state.zipRoot);
+    if (!manifest || !lock) {
+      sendJson(res, 500, { ok: false, reason: 'payload_unreadable' });
+      return;
+    }
+
+    installRunning = true;
+    installEvents.length = 0;
     state.step = 'install';
-    state.install = state.install ?? { parts: {} };
+    state.install = { parts: {} };
     saveState(stateFile, state);
-    sendJson(res, 202, { ok: true, note: 'TODO Task 12: install pipeline not yet implemented' });
+    sendJson(res, 202, { ok: true });
+
+    // Deliberately not awaited: the HTTP response is already out and the
+    // caller now follows /api/install/events.
+    installFn({
+      root: state.soul.root,
+      name: state.soul.name,
+      existing: state.soul.existing,
+      zipRoot: state.zipRoot,
+      manifest,
+      lock,
+      choice: state.choice ?? { subscriptions: [], leadAgent: 'claude', guideEdition: 'claude' },
+      onProgress: (e) => pushEvent({ part: null, pct: null, done: false, error: null, ...e }),
+    }).then(() => {
+      state.step = 'login';
+      saveState(stateFile, state);
+    }).catch((err) => {
+      // install() already emitted the coded error event; state.install.parts
+      // keeps the failing part marked 'error' for a screen refresh.
+      state.step = 'install';
+      state.installError = err?.code ?? String(err?.message ?? err);
+      saveState(stateFile, state);
+    }).finally(() => {
+      installRunning = false;
+      saveState(stateFile, state);
+    });
   }));
 
-  // TODO Task 12: push {part, pct, done, error} events as the copy pipeline
-  // actually progresses. For now this streams one snapshot of the current
-  // install state and leaves the connection open.
   routes.set('GET /api/install/events', async (req, res) => {
     writeHeaders(res, 200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       Connection: 'keep-alive',
     });
-    res.write(`data: ${JSON.stringify(state.install ?? { parts: {} })}\n\n`);
+    for (const e of installEvents) res.write(`data: ${JSON.stringify(e)}\n\n`);
+    sseClients.add(res);
+    req.on('close', () => { sseClients.delete(res); });
   });
 
   // TODO Task 13: CLI self-login flow (spawn claude/codex login in a
@@ -298,7 +383,13 @@ export function startServer({ port = 3460, zipRoot, nodeDir, stateFile, onQuit }
         server,
         port: actualPort,
         url: `http://127.0.0.1:${actualPort}`,
-        close: () => new Promise((res) => server.close(() => res())),
+        close: () => new Promise((res) => {
+          // An open SSE response keeps the socket alive forever, so
+          // server.close() would never call back. End them first.
+          for (const client of sseClients) { try { client.end(); } catch { /* already gone */ } }
+          sseClients.clear();
+          server.close(() => res());
+        }),
       });
     });
   });

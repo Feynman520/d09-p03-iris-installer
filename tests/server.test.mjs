@@ -223,3 +223,91 @@ test('body-size boundary: over BODY_LIMIT -> 413 JSON and server keeps serving; 
     await close();
   }
 });
+
+// Task 12 wiring: POST /api/install answers 202 immediately and runs the copy
+// in the background; GET /api/install/events streams one SSE frame per
+// progress event with the {part, pct, done, error} shape the screen consumes,
+// and replays what a late/refreshed client missed. installFn is injected so
+// this test never writes anything under C:\.
+test('install: 202 + SSE progress frames, replayed for a late subscriber, step -> login', async () => {
+  const zr = path.join(tmp, 'zip-install');
+  fs.mkdirSync(path.join(zr, 'payload'), { recursive: true });
+  fs.writeFileSync(
+    path.join(zr, 'payload', 'manifest.json'),
+    JSON.stringify({ schema: 1, package: { name: 'IRIS', version: '1.0.0' }, parts: {} }),
+    'utf8',
+  );
+
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const seen = [];
+  const installFn = async ({ root, onProgress }) => {
+    seen.push(root);
+    onProgress({ part: 'node', pct: 9 });
+    onProgress({ part: 'node', pct: 100 });
+    await gate;
+    onProgress({ pct: 100, done: true });
+    return { steps: { copy: 'done' } };
+  };
+
+  const { url, close } = await startServer({
+    port: 0, zipRoot: zr, nodeDir, stateFile: path.join(tmp, 'state-install.json'), installFn,
+  });
+  try {
+    await fetch(`${url}/api/name`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'NOVA-SSE-TEST' }),
+    });
+    await fetch(`${url}/api/choice`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscriptions: ['claude'] }),
+    });
+
+    const started = await fetch(`${url}/api/install`, { method: 'POST' });
+    assert.equal(started.status, 202);
+    assert.deepEqual(await started.json(), { ok: true });
+    assert.deepEqual(seen, [String.raw`C:\NOVA-SSE-TEST`]);
+
+    // Subscribe *after* the first two events -> they must be replayed.
+    const ctrl = new AbortController();
+    const stream = await fetch(`${url}/api/install/events`, { signal: ctrl.signal });
+    assert.equal(stream.status, 200);
+    assert.match(stream.headers.get('content-type'), /text\/event-stream/);
+
+    const reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    const frames = [];
+    const pump = (async () => {
+      while (frames.length < 3) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n\n')) !== -1) {
+          const raw = buf.slice(0, i).replace(/^data: /, '');
+          buf = buf.slice(i + 2);
+          if (raw.trim()) frames.push(JSON.parse(raw));
+        }
+        if (frames.length === 2) release();
+      }
+    })();
+    await pump;
+
+    assert.deepEqual(frames[0], { part: 'node', pct: 9, done: false, error: null });
+    assert.deepEqual(frames[1], { part: 'node', pct: 100, done: false, error: null });
+    assert.equal(frames[2].done, true);
+    assert.equal(frames[2].error, null);
+    ctrl.abort();
+
+    // Give the background promise chain a tick to flip the step.
+    for (let i = 0; i < 50; i++) {
+      const s = await (await fetch(`${url}/api/state`)).json();
+      if (s.step === 'login') { assert.equal(s.install.parts.node, 'done'); return; }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.fail('state.step never became "login"');
+  } finally {
+    await close();
+  }
+});
