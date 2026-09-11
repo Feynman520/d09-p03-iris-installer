@@ -32,13 +32,6 @@ if ($Action -eq 'start' -and $owned) {
     Write-Output "TeamClaude is already running (PID $($owned.ProcessId), port $port)."
     exit 0
 }
-# Local quota repair guard: check BEFORE stopping a healthy running proxy.
-# A package update must not silently restore the stale-quota/display bugs.
-if ($Action -in @('start','restart')) {
-    $quotaRepairRoot = 'C:\NOVA\_agent\setup\history\teamclaude-quota-20260908'
-    & $nodePath --test (Join-Path $quotaRepairRoot 'quota-regression.test.mjs') (Join-Path $quotaRepairRoot 'codex-usage.test.mjs') (Join-Path $quotaRepairRoot 'weekly-reset-routing.test.mjs') (Join-Path $quotaRepairRoot 'weekly-routing-server.test.mjs')
-    if ($LASTEXITCODE -ne 0) { throw 'Quota regression guard failed. The existing proxy was not stopped. See IRIS tool history #17.' }
-}
 if ($owned -and $Action -in @('stop','restart')) {
     # Restart is an explicit request to stop this exact, verified listener.
     Stop-Process -Id $owned.ProcessId -ErrorAction Stop

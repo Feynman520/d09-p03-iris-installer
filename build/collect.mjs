@@ -24,10 +24,11 @@ async function download(url, dest) {
   fs.renameSync(part, dest);
 }
 
-async function ensureCached(name, p, cacheDir, log) {
+async function ensureCached(name, p, cacheDir, log, skipDownload) {
   if (!p.sha256) throw new Error(`sha256 missing for ${name}`);
   const cached = path.join(cacheDir, path.basename(p.file));
   if (!fs.existsSync(cached) || (await sha256File(cached)) !== p.sha256) {
+    if (skipDownload) throw new Error(`cache miss for ${name} (--skip-download)`);
     log(`download ${name}`);
     await download(p.url, cached);
   }
@@ -44,11 +45,11 @@ function npmCliPath(nodeDir) {
 // npm never runs under whatever Node happens to be on the build PC's PATH; an
 // explicit `nodeDir` overrides that; a bare fallback to this PC's own Node only
 // exists so unit tests with fake locks (no node part, no npmCi/npm-prefix use) work.
-async function resolveNode({ lock, cacheDir, stageDir, nodeDir, log }) {
+async function resolveNode({ lock, cacheDir, stageDir, nodeDir, log, skipDownload }) {
   if (nodeDir) return { nodeExe: path.join(nodeDir, 'node.exe'), npmCli: npmCliPath(nodeDir), nodeDir };
   const p = lock.parts?.node;
   if (p && p.kind === 'url') {
-    const cached = await ensureCached('node', p, cacheDir, log);
+    const cached = await ensureCached('node', p, cacheDir, log, skipDownload);
     const runtimeDir = path.join(stageDir, 'node-runtime');
     await extractZip(cached, runtimeDir, { strip: 1 });
     return { nodeExe: path.join(runtimeDir, 'node.exe'), npmCli: npmCliPath(runtimeDir), nodeDir: runtimeDir };
@@ -59,6 +60,29 @@ async function resolveNode({ lock, cacheDir, stageDir, nodeDir, log }) {
     npmCli: path.join(fallbackDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
     nodeDir: null,
   };
+}
+
+// Applies a single find/replace to one already-copied staged file (never to
+// the source outside P03). `label` is only used for the log line / error
+// message. Throws if `find` is not found, so an upstream source change
+// surfaces loudly instead of silently shipping the original text again.
+function redactFile(absPath, find, replace, log, label) {
+  const text = fs.readFileSync(absPath, 'utf8');
+  if (!text.includes(find)) throw new Error(`redact: pattern not found in ${label} (source may have changed)`);
+  fs.writeFileSync(absPath, text.split(find).join(replace), 'utf8');
+  log(`redacted ${label}`);
+}
+
+// Applies lock.json-declared find/replace redactions to files already copied
+// into a staged `dir`-kind work copy (never to the source outside P03).
+// Used to strip dev-machine-only content (hardcoded org accounts/paths) from
+// parts collected from outside this project (e.g. dash) that sanitize()
+// correctly flags and that we are not allowed to edit at the source. Each
+// entry names a specific `file` relative to workDir.
+function applyRedactions(workDir, redact, log) {
+  for (const { file, find, replace } of redact ?? []) {
+    redactFile(path.join(workDir, file), find, replace, log, file);
+  }
 }
 
 function copyTree(src, dest, exclude = []) {
@@ -79,12 +103,24 @@ function globMatch(name, pattern) {
   return new RegExp(`^${esc}$`).test(name);
 }
 
-export async function collect({ lock, cacheDir, stageDir, nodeDir, log }) {
+export async function collect({ lock, cacheDir, stageDir, nodeDir, log, skipDownload = false }) {
+  // Guard: stageDir is wiped (rmSync below) at the start of every collect()
+  // run, and cacheDir exists precisely to survive across runs (downloads,
+  // npm cache). If cacheDir were nested inside stageDir, the very next
+  // collect() call would delete the cache it depends on. Equal paths are
+  // deliberately NOT rejected here (some unit tests reuse one tmp dir for
+  // both) -- only cacheDir being a strict subdirectory of stageDir is.
+  const resolvedCache = path.resolve(cacheDir);
+  const resolvedStage = path.resolve(stageDir);
+  if (resolvedCache.startsWith(resolvedStage + path.sep)) {
+    throw new Error('cacheDir must not be inside stageDir');
+  }
+
   fs.rmSync(stageDir, { recursive: true, force: true });
   const payloadDir = path.join(stageDir, 'payload');
   fs.mkdirSync(payloadDir, { recursive: true });
 
-  const { nodeExe, npmCli, nodeDir: resolvedNodeDir } = await resolveNode({ lock, cacheDir, stageDir, nodeDir, log });
+  const { nodeExe, npmCli, nodeDir: resolvedNodeDir } = await resolveNode({ lock, cacheDir, stageDir, nodeDir, log, skipDownload });
   const npmEnv = { ...process.env, npm_config_cache: path.join(cacheDir, 'npm-cache') };
 
   const skipped = [];
@@ -96,7 +132,7 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log }) {
     if (!isGlob) fs.mkdirSync(path.dirname(dest), { recursive: true });
 
     if (p.kind === 'url') {
-      const cached = await ensureCached(name, p, cacheDir, log);
+      const cached = await ensureCached(name, p, cacheDir, log, skipDownload);
       fs.copyFileSync(cached, dest);
     } else if (p.kind === 'npm-prefix') {
       if (p.redistribute === 'download') { skipped.push(name); continue; }
@@ -104,7 +140,7 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log }) {
       fs.mkdirSync(prefix, { recursive: true });
       const r = await run(
         nodeExe,
-        [npmCli, 'install', '-g', '--prefix', prefix, `${p.npm}@${p.version}`, '--no-fund', '--no-audit'],
+        [npmCli, 'install', '-g', '--prefix', prefix, `${p.npm}@${p.version}`, '--no-fund', '--no-audit', ...(skipDownload ? ['--offline'] : [])],
         { env: npmEnv },
       );
       if (r.code !== 0) throw new Error(`npm install ${name}: ${r.err}`);
@@ -113,8 +149,9 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log }) {
     } else if (p.kind === 'dir') {
       const work = path.join(stageDir, 'dir', name);
       copyTree(p.source, work, p.exclude ?? []);
+      if (p.redact) applyRedactions(work, p.redact, log);
       if (p.npmCi) {
-        const r = await run(nodeExe, [npmCli, 'ci', '--no-fund', '--no-audit'], { cwd: work, env: npmEnv });
+        const r = await run(nodeExe, [npmCli, 'ci', '--no-fund', '--no-audit', ...(skipDownload ? ['--offline'] : [])], { cwd: work, env: npmEnv });
         if (r.code !== 0) throw new Error(`npm ci ${name}: ${r.err}`);
       }
       if (name === 'face') {
@@ -127,7 +164,17 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log }) {
     } else if (isGlob) {
       fs.mkdirSync(dest, { recursive: true });
       const files = fs.readdirSync(p.source).filter((f) => globMatch(f, p.pattern));
-      for (const f of files) fs.copyFileSync(path.join(p.source, f), path.join(dest, f));
+      for (const f of files) {
+        const destFile = path.join(dest, f);
+        fs.copyFileSync(path.join(p.source, f), destFile);
+        // Unlike the `dir`-kind redact (which names one specific file),
+        // a glob part fans out into several same-shaped files (e.g. the
+        // Claude/Codex guide editions), so each redact entry here has no
+        // `file` field -- it is applied to every file this glob matched.
+        for (const { find, replace } of p.redact ?? []) {
+          redactFile(destFile, find, replace, log, f);
+        }
+      }
     } else {
       throw new Error(`unknown part kind for ${name}: ${p.kind}`);
     }

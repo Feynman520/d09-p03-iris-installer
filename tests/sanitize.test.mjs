@@ -71,6 +71,21 @@ test('(c) a hardcoded C:\\IRIS path inside a zip is found with a !/-joined file 
   assert.equal(r.hits[0].rule, `regex:${RULES.forbiddenRegex[2]}`);
 });
 
+test('(f) a JS source literal with two literal backslashes ("C:\\\\IRIS\\\\x") is caught (2026-09-11 regex fix)', async () => {
+  // The file on disk must contain TWO literal backslash characters between
+  // "C:" and "IRIS" -- i.e. the raw text of a JS string literal such as
+  // 'C:\\IRIS\\x' as it appears verbatim in real source code. Writing that
+  // here needs 4 backslash chars in this .mjs source (each \\ -> one
+  // on-disk backslash), so the file ends up with 2.
+  const root = mkroot('double-backslash-js');
+  writeFile(root, 'bad.js', "const p = 'C:\\\\IRIS\\\\x';\n");
+
+  const r = await sanitize(root, RULES);
+  assert.equal(r.hits.length, 1);
+  assert.equal(r.hits[0].file, 'bad.js');
+  assert.equal(r.hits[0].rule, `regex:${RULES.forbiddenRegex[2]}`);
+});
+
 test('(d) a binary file whose bytes happen to contain a forbidden string produces no hits', async () => {
   const root = mkroot('binary-case');
   const buf = Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from('test-user'), Buffer.from([0, 3])]);

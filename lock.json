@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "package": { "version": "1.0.0", "guideVersion": "10" },
+  "package": { "version": "1.0.0", "guideVersion": "9" },
   "parts": {
     "node": {
       "kind": "url",
@@ -68,7 +68,7 @@
     "face": {
       "kind": "dir",
       "source": "../P02-IRIS 페이스(IRIS-Face) 〖Local App〗",
-      "exclude": ["node_modules", "state", "docs", "_archive", ".git"],
+      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", "AGENTS.md", "CLAUDE.md", "scripts"],
       "npmCi": true,
       "file": "face/iris-face.zip",
       "license": "MIT"
@@ -76,7 +76,19 @@
     "dash": {
       "kind": "dir",
       "source": "C:/IRIS/_agent/claude/tools/teamclaude-dash",
-      "exclude": ["design"],
+      "exclude": ["design", "AGENTS.md", "CLAUDE.md"],
+      "redact": [
+        {
+          "file": "dashboard.html",
+          "findRegex": "const PLAN_LABELS=\\{[^}]*\\};",
+          "replace": "const PLAN_LABELS={};"
+        },
+        {
+          "file": "launch.mjs",
+          "findRegex": "Run by C:[\\\\/]+IRIS.*?\\. ",
+          "replace": "Run by the TeamClaude dashboard shortcut. "
+        }
+      ],
       "file": "dash/teamclaude-dash.zip",
       "license": "MIT"
     },
@@ -89,9 +101,15 @@
     "guides": {
       "kind": "glob",
       "source": "C:/IRIS/_setup-guides",
-      "pattern": "비서 에이전트 세팅가이드(*실행판)_v10_*_최신.md",
+      "pattern": "비서 에이전트 세팅가이드(*실행판)_v9_*_최신.md",
+      "redact": [
+        {
+          "find": "기존 `C:\\IRIS`는 먼저 카드·도구·지침을 확인한다.",
+          "replace": "기존 설치는 먼저 카드·도구·지침을 확인한다."
+        }
+      ],
       "file": "guides/",
-      "version": "10"
+      "version": "9"
     }
   }
 }

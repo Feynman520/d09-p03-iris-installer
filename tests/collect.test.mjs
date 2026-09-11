@@ -30,6 +30,19 @@ test('dir kind zips with excludes; url without sha256 throws', async () => {
   );
 });
 
+test('cacheDir inside stageDir throws before stageDir is wiped', async () => {
+  const stageDir = path.join(tmp, 'guard-stage');
+  const cacheDir = path.join(stageDir, 'cache'); // strictly inside stageDir
+  const canary = path.join(stageDir, 'canary.txt');
+  fs.mkdirSync(stageDir, { recursive: true });
+  fs.writeFileSync(canary, 'still here');
+  await assert.rejects(
+    collect({ lock: { package: {}, parts: {} }, cacheDir, stageDir, log: () => {} }),
+    /cacheDir must not be inside stageDir/,
+  );
+  assert.ok(fs.existsSync(canary), 'stageDir must not have been wiped before the guard fires');
+});
+
 test('glob part with two files lands as payload/guides/<basename> for both', async () => {
   const srcDir = path.join(tmp, 'guides-src');
   fs.mkdirSync(srcDir, { recursive: true });
