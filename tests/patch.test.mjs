@@ -152,3 +152,12 @@ test('teamclaude-manage.ps1 copy stays ASCII-only', () => {
     if (code > 127) throw new Error(`non-ASCII char 0x${code.toString(16)} at offset ${i}`);
   }
 });
+
+test('teamclaude-manage.ps1 accepts an -EntryPath override parameter', () => {
+  const text = fs.readFileSync(path.resolve('patches/teamclaude/teamclaude-manage.ps1'), 'utf8');
+  assert.match(text, /\[string\]\$EntryPath/);
+  // The override must actually be used, not just declared and ignored --
+  // the hardcoded %APPDATA%\npm\... default should remain only as a
+  // fallback inside an `if ($EntryPath) { ... } else { ... }`.
+  assert.match(text, /\$entryPath = if \(\$EntryPath\) \{ \$EntryPath \} else \{/);
+});

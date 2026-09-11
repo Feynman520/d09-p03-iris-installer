@@ -62,26 +62,45 @@ async function resolveNode({ lock, cacheDir, stageDir, nodeDir, log, skipDownloa
   };
 }
 
-// Applies a single find/replace to one already-copied staged file (never to
-// the source outside P03). `label` is only used for the log line / error
-// message. Throws if `find` is not found, so an upstream source change
-// surfaces loudly instead of silently shipping the original text again.
-function redactFile(absPath, find, replace, log, label) {
+// Applies a single redaction to one already-copied staged file (never to the
+// source outside P03). `label` is only used for the log line / error
+// message. entry is either {find, replace} (plain-text substring, for
+// non-personal text) or {findRegex, replace, count?:1} (regex-based, used
+// whenever the matched text contains personal data -- so the tracked
+// lock.json itself never has to embed the literal personal string; only the
+// shape of what to strip). A plain `find` throws if not found; a
+// `findRegex` throws unless it matches exactly `count` times -- either way
+// an upstream source change (the anchor moved/vanished) surfaces loudly
+// instead of silently shipping the original text again.
+function redactFile(absPath, entry, log, label) {
   const text = fs.readFileSync(absPath, 'utf8');
-  if (!text.includes(find)) throw new Error(`redact: pattern not found in ${label} (source may have changed)`);
-  fs.writeFileSync(absPath, text.split(find).join(replace), 'utf8');
+  if (entry.findRegex) {
+    const expectedCount = entry.count ?? 1;
+    const re = new RegExp(entry.findRegex, 'g');
+    const matches = text.match(re);
+    const actualCount = matches ? matches.length : 0;
+    if (actualCount !== expectedCount) {
+      throw new Error(
+        `redact: findRegex matched ${actualCount} time(s), expected ${expectedCount}, in ${label} (source may have changed): ${entry.findRegex}`,
+      );
+    }
+    fs.writeFileSync(absPath, text.replace(re, entry.replace), 'utf8');
+  } else {
+    if (!text.includes(entry.find)) throw new Error(`redact: pattern not found in ${label} (source may have changed)`);
+    fs.writeFileSync(absPath, text.split(entry.find).join(entry.replace), 'utf8');
+  }
   log(`redacted ${label}`);
 }
 
-// Applies lock.json-declared find/replace redactions to files already copied
-// into a staged `dir`-kind work copy (never to the source outside P03).
-// Used to strip dev-machine-only content (hardcoded org accounts/paths) from
-// parts collected from outside this project (e.g. dash) that sanitize()
-// correctly flags and that we are not allowed to edit at the source. Each
-// entry names a specific `file` relative to workDir.
+// Applies lock.json-declared redactions to files already copied into a
+// staged `dir`-kind work copy (never to the source outside P03). Used to
+// strip dev-machine-only content (hardcoded org accounts/paths) from parts
+// collected from outside this project (e.g. dash) that sanitize() correctly
+// flags and that we are not allowed to edit at the source. Each entry names
+// a specific `file` relative to workDir.
 function applyRedactions(workDir, redact, log) {
-  for (const { file, find, replace } of redact ?? []) {
-    redactFile(path.join(workDir, file), find, replace, log, file);
+  for (const entry of redact ?? []) {
+    redactFile(path.join(workDir, entry.file), entry, log, entry.file);
   }
 }
 
@@ -112,7 +131,10 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log, skipDown
   // both) -- only cacheDir being a strict subdirectory of stageDir is.
   const resolvedCache = path.resolve(cacheDir);
   const resolvedStage = path.resolve(stageDir);
-  if (resolvedCache.startsWith(resolvedStage + path.sep)) {
+  // Case-insensitive: Windows paths are case-insensitive, so cacheDir nested
+  // under stageDir with different casing (e.g. .../Stage/cache vs
+  // .../stage/Cache) must still be caught.
+  if (resolvedCache.toLowerCase().startsWith(resolvedStage.toLowerCase() + path.sep)) {
     throw new Error('cacheDir must not be inside stageDir');
   }
 
@@ -145,7 +167,7 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log, skipDown
       );
       if (r.code !== 0) throw new Error(`npm install ${name}: ${r.err}`);
       if (p.patches) await applyPatches(prefix, JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, p.patches), 'utf8')), log);
-      await zipDir(prefix, dest);
+      await zipDir(prefix, dest, log);
     } else if (p.kind === 'dir') {
       const work = path.join(stageDir, 'dir', name);
       copyTree(p.source, work, p.exclude ?? []);
@@ -158,12 +180,19 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log, skipDown
         const pkgPath = path.join(work, 'package.json');
         if (fs.existsSync(pkgPath)) faceVersion = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version;
       }
-      await zipDir(work, dest);
+      await zipDir(work, dest, log);
     } else if (p.kind === 'file') {
       fs.copyFileSync(p.source, dest);
     } else if (isGlob) {
       fs.mkdirSync(dest, { recursive: true });
-      const files = fs.readdirSync(p.source).filter((f) => globMatch(f, p.pattern));
+      // {guideVersion} is expanded from lock.package.guideVersion -- the
+      // single source of truth for the guide version (lock-only version
+      // bump, no separate per-part `version` field to drift out of sync).
+      const pattern = (p.pattern ?? '').split('{guideVersion}').join(lock.package.guideVersion ?? '');
+      const files = fs.readdirSync(p.source).filter((f) => globMatch(f, pattern));
+      if (typeof p.minCount === 'number' && files.length < p.minCount) {
+        throw new Error(`glob part ${name} matched ${files.length} < minCount ${p.minCount}`);
+      }
       for (const f of files) {
         const destFile = path.join(dest, f);
         fs.copyFileSync(path.join(p.source, f), destFile);
@@ -171,8 +200,8 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log, skipDown
         // a glob part fans out into several same-shaped files (e.g. the
         // Claude/Codex guide editions), so each redact entry here has no
         // `file` field -- it is applied to every file this glob matched.
-        for (const { find, replace } of p.redact ?? []) {
-          redactFile(destFile, find, replace, log, f);
+        for (const entry of p.redact ?? []) {
+          redactFile(destFile, entry, log, f);
         }
       }
     } else {

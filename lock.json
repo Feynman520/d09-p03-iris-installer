@@ -70,6 +70,18 @@
       "source": "../P02-IRIS 페이스(IRIS-Face) 〖Local App〗",
       "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", "AGENTS.md", "CLAUDE.md", "scripts"],
       "npmCi": true,
+      "redact": [
+        {
+          "file": "daemon/folders.mjs",
+          "findRegex": "C:[\\\\/]+Users[\\\\/]+User[\\\\/]+AppData[\\\\/]+Local[\\\\/]+Programs[\\\\/]+Python[\\\\/]+Python312[\\\\/]+python\\.exe",
+          "replace": "python"
+        },
+        {
+          "file": "daemon/voice.mjs",
+          "findRegex": "C:[\\\\/]+Users[\\\\/]+User[\\\\/]+AppData[\\\\/]+Local[\\\\/]+Programs[\\\\/]+Python[\\\\/]+Python312[\\\\/]+python\\.exe",
+          "replace": "python"
+        }
+      ],
       "file": "face/iris-face.zip",
       "license": "MIT"
     },
@@ -101,15 +113,15 @@
     "guides": {
       "kind": "glob",
       "source": "C:/IRIS/_setup-guides",
-      "pattern": "비서 에이전트 세팅가이드(*실행판)_v9_*_최신.md",
+      "pattern": "비서 에이전트 세팅가이드(*실행판)_v{guideVersion}_*_최신.md",
+      "minCount": 2,
       "redact": [
         {
           "find": "기존 `C:\\IRIS`는 먼저 카드·도구·지침을 확인한다.",
           "replace": "기존 설치는 먼저 카드·도구·지침을 확인한다."
         }
       ],
-      "file": "guides/",
-      "version": "9"
+      "file": "guides/"
     }
   }
 }

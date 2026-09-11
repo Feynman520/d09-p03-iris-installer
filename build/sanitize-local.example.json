@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy this file to build/sanitize-local.json (gitignored) and fill in YOUR OWN personal strings -- your account handle, dev-PC username, school/work email domain, etc. build/sanitize-rules.json (tracked) intentionally keeps no personal literals; this local file is where each developer's own forbidden strings live, merged in by build/rules.mjs's loadRules() at build/verify time.",
+  "forbiddenStrings": ["<your-personal-handle>", "C:\\Users\\<your-username>", "<your-school-domain>", "<your-email-local-part>@"]
+}

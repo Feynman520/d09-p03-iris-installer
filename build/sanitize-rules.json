@@ -4,16 +4,20 @@
   "forbiddenRegex": [
     {
       "pattern": "iris:[a-z0-9]{8}",
-      "skipUnder": [
-        "비서 에이전트 세팅가이드(Claude 실행판)_v9_2026-09-07_최신.md",
-        "비서 에이전트 세팅가이드(Codex 실행판)_v9_2026-09-07_최신.md"
-      ]
+      "skipUnder": ["비서 에이전트 세팅가이드(*실행판)_v*_최신.md", "AGENTS.md"]
     },
     {
       "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[a-z]{2,}",
-      "skipUnder": ["node_modules/", "node-v24.17.0-win-x64.zip!", "MinGit-2.54.0-64-bit.zip!"]
+      "skipUnder": ["node_modules/", "node-v*-win-x64.zip!", "MinGit-*-64-bit.zip!", "rules.json", "sanitize.test.mjs"]
     },
-    "C:[\\\\/]+IRIS"
+    {
+      "pattern": "C:[\\\\/]+IRIS",
+      "skipUnder": ["lock.json", "sanitize.test.mjs"]
+    },
+    {
+      "pattern": "C:[\\\\/]+Users[\\\\/]+[^\\\\/]+",
+      "skipUnder": ["node_modules/", "sanitize-local.example.json"]
+    }
   ],
   "allowFiles": ["**/LICENSE*", "**/node_modules/**/*.md"],
   "maxBytes": 629145600

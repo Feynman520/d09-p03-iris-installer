@@ -1,8 +1,8 @@
-param([ValidateSet('status','start','restart','stop')][string]$Action = 'status', [string]$NodePath)
+param([ValidateSet('status','start','restart','stop')][string]$Action = 'status', [string]$NodePath, [string]$EntryPath)
 $ErrorActionPreference = 'Stop'
 $configPath = if ($env:TEAMCLAUDE_CONFIG) { $env:TEAMCLAUDE_CONFIG } else { Join-Path $env:USERPROFILE '.config\teamclaude.json' }
 $runtimePath = Join-Path $env:USERPROFILE '.config\teamclaude.server.json'
-$entryPath = Join-Path $env:APPDATA 'npm\node_modules\@karpeleslab\teamclaude\src\index.js'
+$entryPath = if ($EntryPath) { $EntryPath } else { Join-Path $env:APPDATA 'npm\node_modules\@karpeleslab\teamclaude\src\index.js' }
 $nodePath = if ($NodePath) { $NodePath } else { (Get-Command node.exe).Source }
 $config = Get-Content -LiteralPath $configPath -Encoding UTF8 -Raw | ConvertFrom-Json
 $port = [int]$config.proxy.port

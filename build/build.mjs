@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collect } from './collect.mjs';
 import { sanitize } from './sanitize.mjs';
+import { loadRules } from './rules.mjs';
 import { buildManifest } from '../lib/manifest.mjs';
 import { pack } from './pack.mjs';
 
@@ -50,11 +51,15 @@ async function main() {
   const logDir = path.join(ROOT_DIR, '_build');
   fs.mkdirSync(logDir, { recursive: true });
   const logPath = path.join(logDir, 'build.log');
-  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+  // fs.appendFileSync (not a buffered fs.createWriteStream) so that every
+  // log() call is flushed to disk immediately -- a process.exit(2) (the
+  // sanitize-failure path below) does not give a stream's internal buffer a
+  // chance to drain, which previously risked losing exactly the hit-list
+  // lines that matter most for diagnosing why a build was aborted.
   const log = (msg) => {
     const line = `[${new Date().toISOString()}] ${msg}`;
     console.log(msg);
-    logStream.write(`${line}\n`);
+    fs.appendFileSync(logPath, `${line}\n`);
   };
 
   log(`build start out=${outDir} cache=${cacheDir} stage=${stageDir} skipDownload=${opts.skipDownload}`);
@@ -74,7 +79,7 @@ async function main() {
     log(`collect: done (skipped=${skipped.join(',') || 'none'})`);
 
     log('sanitize: start (payload dir only)');
-    const rules = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'build', 'sanitize-rules.json'), 'utf8'));
+    const rules = loadRules({ baseFile: path.join(ROOT_DIR, 'build', 'sanitize-rules.json'), localFile: path.join(ROOT_DIR, 'build', 'sanitize-local.json') });
     const sanitizeResult = await sanitize(payloadDir, rules);
     for (const w of sanitizeResult.warnings) log(`sanitize warning: ${w}`);
     if (!sanitizeResult.ok) {
@@ -84,7 +89,6 @@ async function main() {
         log(`  hit: ${h.file}${loc} [${h.rule}]`);
       }
       log('build: aborted, no zip written (exit 2)');
-      logStream.end();
       process.exit(2);
       return;
     }
@@ -115,6 +119,14 @@ async function main() {
 
     log(`pack: done zip=${zipPath} size=${fmtBytes(zipSize)} (${zipSize} bytes)`);
     log(`sha256: ${zipHash}`);
+
+    // last-build.json lets verify/static.mjs check the zip that was *just*
+    // built, rather than guessing via "newest file in outDir" (I4) -- e.g.
+    // two builds racing, or a stale zip left over from a previous run.
+    const lastBuildPath = path.join(outDir, 'last-build.json');
+    fs.writeFileSync(lastBuildPath, JSON.stringify({ zip: zipPath, sha256: zipHash, built: manifest.built, stageDir }, null, 2));
+    log(`last-build: ${lastBuildPath}`);
+
     log(`build: OK in ${(elapsedMs / 1000).toFixed(1)}s`);
 
     console.log('');
@@ -122,11 +134,8 @@ async function main() {
     console.log(`sha256:   ${zipHash}`);
     console.log(`size:     ${fmtBytes(zipSize)} (${zipSize} bytes)`);
     console.log(`elapsed:  ${(elapsedMs / 1000).toFixed(1)}s`);
-
-    logStream.end();
   } catch (err) {
     log(`build: ERROR ${err.stack || err.message}`);
-    logStream.end();
     process.exitCode = 1;
     throw err;
   }

@@ -46,23 +46,44 @@ function compareManifests(a, b) {
   return mismatches;
 }
 
-async function main() {
-  const manifestA = await runBuild('a');
-  const manifestB = await runBuild('b');
-
-  console.log('');
-  console.log(`build a: built=${manifestA.built} package.version=${manifestA.package.version}`);
-  console.log(`build b: built=${manifestB.built} package.version=${manifestB.package.version}`);
-
-  const mismatches = compareManifests(manifestA, manifestB);
-  if (mismatches.length > 0) {
-    console.log('\nreproduce verify: FAILED');
-    for (const m of mismatches) console.log(`  ${m}`);
-    process.exit(1);
+// The four dirs runBuild() above creates (out-a/out-b/stage-a/stage-b) are
+// scratch space for this comparison run only -- unlike _build/out (the
+// build.mjs default), nothing else reads them afterward, and left behind
+// they just accumulate (two full builds' worth of staged npm installs,
+// downloaded runtimes, etc. -- hundreds of MB) across repeated
+// `node verify/reproduce.mjs` runs. Clean them up unconditionally, success
+// or failure (including a thrown build error), so re-running never has to
+// account for a partial previous run's leftovers.
+function cleanup() {
+  for (const label of ['out-a', 'out-b', 'stage-a', 'stage-b']) {
+    fs.rmSync(path.join(ROOT_DIR, '_build', label), { recursive: true, force: true });
   }
+}
 
-  console.log(`\nall ${Object.keys(manifestA.parts).length} part sha256 values match (built timestamp differs, as expected)`);
-  console.log('reproduce verify: OK');
+async function main() {
+  try {
+    const manifestA = await runBuild('a');
+    const manifestB = await runBuild('b');
+
+    console.log('');
+    console.log(`build a: built=${manifestA.built} package.version=${manifestA.package.version}`);
+    console.log(`build b: built=${manifestB.built} package.version=${manifestB.package.version}`);
+
+    const mismatches = compareManifests(manifestA, manifestB);
+    if (mismatches.length > 0) {
+      console.log('\nreproduce verify: FAILED');
+      for (const m of mismatches) console.log(`  ${m}`);
+      // process.exitCode (not process.exit()) -- process.exit() terminates
+      // immediately and would skip the finally block's cleanup() below.
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`\nall ${Object.keys(manifestA.parts).length} part sha256 values match (built timestamp differs, as expected)`);
+    console.log('reproduce verify: OK');
+  } finally {
+    cleanup();
+  }
 }
 
 main();

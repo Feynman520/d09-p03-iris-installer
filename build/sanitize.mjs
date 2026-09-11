@@ -16,9 +16,16 @@ function compileRegexRules(list) {
   });
 }
 
+// skipUnder entries are glob patterns (matched per path segment), not exact
+// segment names -- so e.g. "node-v*-win-x64.zip!" keeps matching after a
+// vendored runtime's version bumps, instead of needing an update here every
+// time lock.json's node/git part versions change.
 function underSkippedSegment(logicalPath, skipUnder) {
   const segs = logicalPath.split('/');
-  return skipUnder.some((s) => segs.includes(s.replace(/\/$/, '')));
+  return skipUnder.some((s) => {
+    const pattern = s.replace(/\/$/, '');
+    return segs.some((seg) => globMatch(pattern, seg));
+  });
 }
 
 function isBinarySniff(absPath, size) {
@@ -98,11 +105,25 @@ async function walk(dir, logicalPrefix, ctx) {
   }
 }
 
-export async function sanitize(rootDir, rules) {
+// `files`, when given, is a list of paths relative to rootDir (e.g. from
+// `git ls-files`) to scan instead of walking the whole tree -- used by
+// tests/repo-clean.test.mjs and verify/static.mjs's check (7) to scan
+// exactly the repo's tracked files (the C2 "gate never scans the repo
+// itself" fix) without also picking up _build/, node_modules/, etc.
+export async function sanitize(rootDir, rules, { files } = {}) {
   const hits = [];
   const warnings = [];
   const compiledRegex = compileRegexRules(rules.forbiddenRegex);
   const ctx = { rules, compiledRegex, hits, warnings };
-  await walk(rootDir, '', ctx);
+  if (files) {
+    for (const rel of files) {
+      const absPath = path.join(rootDir, rel);
+      if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) continue;
+      const logicalPath = rel.split(path.sep).join('/');
+      await scanFile(absPath, logicalPath, ctx);
+    }
+  } else {
+    await walk(rootDir, '', ctx);
+  }
   return { ok: hits.length === 0, hits, warnings };
 }
