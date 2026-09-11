@@ -18,6 +18,30 @@ function copyTree(src, dest) {
   fs.cpSync(src, dest, { recursive: true });
 }
 
+// The repo's working tree and the packed zip must both ship .cmd/.ps1 with
+// CRLF line endings (Windows batch/PowerShell convention) regardless of the
+// git checkout that produced installerDir on the machine doing the build --
+// .gitattributes' `eol=crlf` only re-hydrates CRLF on a fresh `git checkout`,
+// not on files already sitting in a working tree from before the attribute
+// took effect, and pack() must not depend on that checkout having happened
+// correctly. Force it here so the zip is right independent of local git
+// config/state.
+const CRLF_EXTENSIONS = new Set(['.cmd', '.ps1']);
+
+function forceCRLF(filePath) {
+  const text = fs.readFileSync(filePath, 'utf8');
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+  if (normalized !== text) fs.writeFileSync(filePath, normalized, 'utf8');
+}
+
+function forceCRLFTree(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) forceCRLFTree(p);
+    else if (entry.isFile() && CRLF_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) forceCRLF(p);
+  }
+}
+
 // pack({stageDir, outDir, manifest, version, installerDir}) -> {zipPath, sha256Path}
 //
 // Builds the zip-root layout (IRIS-설치.cmd at the root, installer/ copied
@@ -41,8 +65,11 @@ export async function pack({ stageDir, outDir, manifest, version = manifest?.pac
   const cmdSrc = path.join(installerDir, CMD_NAME);
   if (!fs.existsSync(cmdSrc)) throw new Error(`pack: ${CMD_NAME} not found under installerDir ${installerDir}`);
   fs.copyFileSync(cmdSrc, path.join(root, CMD_NAME));
+  forceCRLF(path.join(root, CMD_NAME));
 
-  copyTree(installerDir, path.join(root, 'installer'));
+  const installerDest = path.join(root, 'installer');
+  copyTree(installerDir, installerDest);
+  forceCRLFTree(installerDest);
 
   const payloadSrc = path.join(stageDir, 'payload');
   if (!fs.existsSync(payloadSrc)) throw new Error(`pack: payload dir not found at ${payloadSrc}`);

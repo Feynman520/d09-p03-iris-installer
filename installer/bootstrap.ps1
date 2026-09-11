@@ -21,6 +21,18 @@ if ($ZipRoot.Length -gt 3 -and ($ZipRoot.EndsWith('\') -or $ZipRoot.EndsWith('/'
 $work = Join-Path $env:LOCALAPPDATA 'IRIS-Installer'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $log = Join-Path $work 'bootstrap.log'
+
+# Rotate before writing anything this run: a log that has grown past 512KB
+# (many prior runs, or a chatty failure loop) is moved to bootstrap.log.1
+# (overwriting any older rotation), so the active log never grows without
+# bound while still keeping one previous run's tail around for inspection.
+if ((Test-Path -LiteralPath $log) -and ((Get-Item -LiteralPath $log).Length -gt 524288)) {
+  $rotated = Join-Path $work 'bootstrap.log.1'
+  Remove-Item -LiteralPath $rotated -Force -ErrorAction SilentlyContinue
+  Move-Item -LiteralPath $log -Destination $rotated -Force
+}
+"---- run $(Get-Date -Format s) ----" | Add-Content -LiteralPath $log
+
 function Log($m) {
   "$(Get-Date -Format s) $m" | Add-Content -LiteralPath $log
   Write-Host $m
@@ -64,6 +76,60 @@ foreach ($part in $mf.parts.PSObject.Properties) {
 }
 Log 'Integrity check passed.'
 
+# --- Stage: stale server check ---------------------------------------------
+# Re-running the installer (or double-clicking it a second time) must be
+# idempotent. Two cases matter here:
+#   1. A server from an earlier run is still alive and answering -- do not
+#      start a second one (it would fail to bind the port anyway, and
+#      server.pid would get overwritten with a dead PID). Reuse it.
+#   2. server.pid names a process that used to be our server but stopped
+#      answering (crashed, hung) -- stop exactly that recorded PID (never a
+#      name or port scan) and clear the stale pid file before starting
+#      fresh.
+# The health probe alone is not enough to prove the thing on the port is
+# *our* server (some other program could be bound to 3460) -- Task 10's
+# server.mjs contract includes a "name":"iris-installer" field in the
+# /api/health JSON body for exactly this reason.
+$pidFile = Join-Path $work 'server.pid'
+$alreadyRunning = $false
+try {
+  $probe = Invoke-WebRequest "http://127.0.0.1:$Port/api/health" -UseBasicParsing -TimeoutSec 2
+  if ($probe.StatusCode -eq 200) {
+    $probeBody = $null
+    try { $probeBody = $probe.Content | ConvertFrom-Json } catch {}
+    if ($probeBody -and $probeBody.name -eq 'iris-installer') {
+      $alreadyRunning = $true
+    }
+  }
+} catch {}
+
+if ($alreadyRunning) {
+  $existingPid = $null
+  if (Test-Path -LiteralPath $pidFile) {
+    try { $existingPid = (Get-Content -LiteralPath $pidFile -Raw -Encoding UTF8).Trim() } catch {}
+  }
+  Log "Setup server already running (pid $existingPid). Reusing it."
+  Start-Process "http://127.0.0.1:$Port/"
+  exit 0
+}
+
+if (Test-Path -LiteralPath $pidFile) {
+  $stalePid = $null
+  try { $stalePid = [int]((Get-Content -LiteralPath $pidFile -Raw -Encoding UTF8).Trim()) } catch {}
+  if ($stalePid) {
+    $staleProc = Get-Process -Id $stalePid -ErrorAction SilentlyContinue
+    if ($staleProc) {
+      Log "Stopping stale server process (pid $stalePid)."
+      Stop-Process -Id $stalePid -Force -ErrorAction SilentlyContinue
+    } else {
+      Log "server.pid names pid $stalePid, which is not running. Nothing to stop."
+    }
+  }
+  Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+} else {
+  Log 'No previous server.pid found.'
+}
+
 # --- Stage: portable Node (exit 12) ----------------------------------------
 # Unpacked once into %LOCALAPPDATA%\IRIS-Installer\node and reused on every
 # later run (re-running the installer, or the server relaunching it, must
@@ -94,7 +160,7 @@ $proc = Start-Process -FilePath $nodeExe `
   -ArgumentList @("`"$server`"", '--zip-root', "`"$ZipRoot`"", '--port', $Port, '--node-dir', "`"$nodeDir`"") `
   -WindowStyle Hidden -PassThru `
   -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr
-"$($proc.Id)" | Set-Content -LiteralPath (Join-Path $work 'server.pid')
+"$($proc.Id)" | Set-Content -LiteralPath $pidFile
 Log "Server process started (pid $($proc.Id))."
 
 $ok = $false

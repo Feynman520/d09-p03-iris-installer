@@ -15,9 +15,16 @@ test('pack: zip exists at IRIS-설치_v<version>_<date>.zip, .sha256 matches, li
   // real placeholder's shape) and one payload part alongside a manifest --
   // deliberately NOT the real project installer/ dir, so this test stays
   // stable across Task 9+'s real installer UI work.
+  //
+  // Both the root .cmd and the nested bootstrap.ps1 are deliberately written
+  // with bare LF here (not CRLF) so the CRLF-forcing assertions below only
+  // pass if pack() actually normalizes line endings rather than merely
+  // copying bytes through -- a source file that already happened to be CRLF
+  // would pass even with the old, pre-fix copyFileSync/copyTree-only code.
   const installerDir = path.join(tmp, 'fake-installer');
   fs.mkdirSync(path.join(installerDir, 'ui'), { recursive: true });
-  fs.writeFileSync(path.join(installerDir, 'IRIS-설치.cmd'), '@echo off\r\necho hi\r\npause\r\n');
+  fs.writeFileSync(path.join(installerDir, 'IRIS-설치.cmd'), '@echo off\necho hi\npause\n');
+  fs.writeFileSync(path.join(installerDir, 'bootstrap.ps1'), "Write-Host 'hi'\nexit 0\n");
   fs.writeFileSync(path.join(installerDir, 'ui', '.gitkeep'), '');
 
   const stageDir = path.join(tmp, 'stage');
@@ -51,6 +58,18 @@ test('pack: zip exists at IRIS-설치_v<version>_<date>.zip, .sha256 matches, li
   assert.ok(fs.existsSync(path.join(extractDir, 'installer', 'IRIS-설치.cmd')), 'zip missing installer/IRIS-설치.cmd');
   assert.ok(fs.existsSync(path.join(extractDir, 'installer', 'ui', '.gitkeep')), 'zip missing installer/ui/.gitkeep');
   assert.ok(fs.existsSync(path.join(extractDir, 'payload', 'node', 'part.txt')), 'zip missing payload/node/part.txt');
+
+  // Fix round 1 finding #1: pack() must force CRLF on .cmd/.ps1 regardless
+  // of the source's line endings (sources above are deliberately bare LF).
+  function assertCRLFOnly(filePath) {
+    const text = fs.readFileSync(filePath, 'utf8');
+    assert.ok(/\r\n/.test(text), `${filePath}: expected at least one CRLF line ending`);
+    const bareLf = text.replace(/\r\n/g, '').match(/\n/g);
+    assert.deepEqual(bareLf, null, `${filePath}: found bare LF line ending(s) not paired with CR`);
+  }
+  assertCRLFOnly(path.join(extractDir, 'IRIS-설치.cmd'));
+  assertCRLFOnly(path.join(extractDir, 'installer', 'IRIS-설치.cmd'));
+  assertCRLFOnly(path.join(extractDir, 'installer', 'bootstrap.ps1'));
 });
 
 test('pack: falls back to manifest.package.version when version is omitted', async () => {
