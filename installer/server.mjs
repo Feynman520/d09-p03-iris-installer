@@ -155,6 +155,11 @@ function readPackageVersion(zipRoot) {
 export function recordingUserpath(record = []) {
   return {
     record,
+    // install() reads these two to stamp receipt.env.applied=false +
+    // skippedReason, so a rehearsal receipt can never be mistaken for a real
+    // install's (fix round 1 finding 3).
+    recording: true,
+    skippedReason: 'no-user-env',
     addUserPath: async (dir) => {
       record.push({ op: 'addUserPath', dir });
       return { changed: false, before: '', after: '', recorded: true };
@@ -279,6 +284,10 @@ export function startServer({
     state.zipRoot = zipRoot;
     state.nodeDir = nodeDir;
   }
+  // Always this run's value: the screen shows a notice when the install did not
+  // really write HKCU\Environment, and a restored state must not claim
+  // otherwise in either direction.
+  state.userEnvSkipped = userEnvSkipped;
   saveState(stateFile, state);
 
   const routes = new Map();
@@ -599,8 +608,9 @@ export function startServer({
     const logFile = path.join(root, '_agent', 'setup', 'package-install.log');
     const fail = (where, err, extra = {}) => {
       const detail = String(err?.message ?? err);
-      handoffLog(root, `${where} failed: ${detail}`);
-      sendJson(res, 200, { ok: false, where, detail, log: logFile, ...extra });
+      const reason = err?.code ?? null;
+      handoffLog(root, `${where} failed${reason ? ` (${reason})` : ''}: ${detail}`);
+      sendJson(res, 200, { ok: false, where, reason, detail, log: logFile, ...extra });
     };
 
     try {
@@ -642,13 +652,18 @@ export function startServer({
         handoffLog(root, `launch pid=${launched.pid}`);
       } catch (err) { fail('launch', err); return; }
 
-      // ⑤ 준비 확인: /api/health 200 + 세션 1개 이상
-      const ready = await waitFaceReadyFn({ port: facePort ?? 3458 });
+      // ⑤ 준비 확인: /api/health 200 + *이 영혼 폴더*의 세션 1개 이상.
+      // root를 넘기는 것이 핵심 — 이미 Face를 쓰던 PC에서는 남의 세션이 전역
+      // 개수를 채워 버린다(fix round 1 finding 1).
+      const ready = await waitFaceReadyFn({ root, port: facePort ?? 3458 });
       if (!ready.ok) {
-        handoffLog(root, `ready failed after ${ready.tries} tries`);
+        handoffLog(root, `ready failed after ${ready.tries} tries sessions=${ready.sessions ?? '?'} wanted=${ready.wantedCwd ?? root}`);
         sendJson(res, 200, {
-          ok: false, where: 'ready', pid: launched.pid, tries: ready.tries,
-          detail: ready.error ?? 'face daemon did not report a live session',
+          ok: false, where: 'ready', reason: 'no_session_in_soul', pid: launched.pid, tries: ready.tries,
+          detail: ready.error ?? (ready.sessions
+            ? `face daemon is up with ${ready.sessions} session(s), none of them in ${root}`
+            : 'face daemon did not report a session in this soul folder'),
+          sessions: ready.sessions ?? null,
           log: logFile, faceLog: launched.logFile ?? null,
         });
         return;
@@ -669,10 +684,12 @@ export function startServer({
         });
       } catch (err) { fail('finish', err); return; }
 
-      handoffLog(root, `done sessions=${ready.health?.sessions} faceVersion=${ready.health?.version ?? 'unknown'}`);
+      handoffLog(root, `done session=${ready.session?.id ?? '?'} cwd=${ready.session?.cwd ?? '?'} sessions=${ready.health?.sessions} faceVersion=${ready.health?.version ?? 'unknown'}`);
       sendJson(res, 200, {
         ok: true,
         pid: launched.pid,
+        sessionId: ready.session?.id ?? null,
+        sessionCwd: ready.session?.cwd ?? null,
         sessions: ready.health?.sessions ?? null,
         faceVersion: ready.health?.version ?? null,
         launcher: launcher.cmdPath,

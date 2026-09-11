@@ -36,18 +36,29 @@ export function faceLogPath(root) { return path.join(setupDir(root), 'face-launc
 // zip (`guides:<basename>` keys, build/collect.mjs) -- never a literal
 // "_v10.md" in the source, which would silently point the agent at a file
 // that does not exist the moment the guide version moves.
+// Strict on purpose (fix round 1 finding 4): if the *chosen* edition's guide is
+// not in the manifest, this fails instead of handing the person the other
+// edition. A Codex-led soul pointed at the Claude guide would be told to
+// follow instructions written for a CLI it does not have -- a wrong contract is
+// worse than a loud stop.
 export function resolveGuide(manifest, edition = 'claude') {
   const wanted = (edition === 'chatgpt' || edition === 'codex') ? 'Codex' : 'Claude';
   const basenames = Object.keys(manifest?.parts ?? {})
     .filter((k) => k.startsWith('guides:'))
     .map((k) => k.slice('guides:'.length));
   if (basenames.length === 0) return null;
-  const basename = basenames.find((b) => b.includes(`(${wanted} 실행판)`)) ?? basenames[0];
+  const basename = basenames.find((b) => b.includes(`(${wanted} 실행판)`));
+  if (!basename) return null;
   return {
     basename,
     edition: wanted,
     version: manifest?.package?.guideVersion ?? null,
   };
+}
+
+// 'claude' | 'chatgpt' | 'codex' -> the guide edition word used in the filename.
+export function guideEditionWord(edition = 'claude') {
+  return (edition === 'chatgpt' || edition === 'codex') ? 'Codex' : 'Claude';
 }
 
 // Three sentences, one line (the prompt is typed into a terminal), absolute
@@ -62,7 +73,13 @@ export function firstRequestText({ root, guideBasename }) {
 export function writeFirstRequest(root, { edition = 'claude', manifest } = {}) {
   const guide = resolveGuide(manifest, edition);
   if (!guide) {
-    throw Object.assign(new Error('manifest carries no guides:<basename> part'), { code: 'no-guide-in-manifest' });
+    const anyGuide = Object.keys(manifest?.parts ?? {}).some((k) => k.startsWith('guides:'));
+    throw anyGuide
+      ? Object.assign(
+        new Error(`manifest has guides but none for the ${guideEditionWord(edition)} edition`),
+        { code: `guide-missing:${edition}` },
+      )
+      : Object.assign(new Error('manifest carries no guides:<basename> part'), { code: 'no-guide-in-manifest' });
   }
   const text = firstRequestText({ root, guideBasename: guide.basename });
   const dest = firstRequestPath(root);
@@ -236,29 +253,67 @@ export function launchFace({
   }
 }
 
-// Ready = the daemon answers /api/health with 200 *and* reports at least one
-// session, i.e. --first-session actually produced the setting-up session.
-// A daemon that is up but has zero sessions is not a successful handoff.
+// Windows path comparison, identical to P02 launch.mjs's own normCwd (which is
+// what decides there whether a session already exists for a folder): forward
+// slashes are separators too, a trailing separator means nothing, and case
+// does not matter.
+export function normCwd(p) {
+  return String(p || '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+}
+
+// Ready = the daemon answers /api/health with 200 *and* /api/sessions lists at
+// least one session whose cwd is this soul root.
+//
+// The health endpoint's `sessions` count alone is not enough (fix round 1
+// finding 1): it is the daemon's GLOBAL count, and on a PC that was already
+// running Face -- the normal case for a re-install, and for the default port
+// 3458 generally -- somebody else's session satisfies `>= 1` while this soul
+// got none. That would stamp steps.handoff=done over a handoff that never
+// happened, and the person would be left with an installed soul and no
+// setting-up session.
 export async function waitFaceReady({
-  port = FACE_PORT, timeoutMs = 60000, intervalMs = 500, fetchFn = fetch,
+  root, port = FACE_PORT, timeoutMs = 60000, intervalMs = 500, fetchFn = fetch,
 } = {}) {
   const deadline = Date.now() + timeoutMs;
+  const wanted = root ? normCwd(root) : null;
   let tries = 0;
   let lastHealth = null;
+  let lastSessions = null;
   let lastError = null;
   for (;;) {
     tries += 1;
     try {
       const res = await fetchFn(`http://127.0.0.1:${port}/api/health`);
       if (res.ok) {
-        const health = await res.json();
-        lastHealth = health;
-        if (Number(health?.sessions) >= 1) return { ok: true, health, tries };
+        lastHealth = await res.json();
+        const sres = await fetchFn(`http://127.0.0.1:${port}/api/sessions`);
+        if (sres.ok) {
+          const list = await sres.json();
+          lastSessions = Array.isArray(list) ? list : [];
+          const mine = wanted === null
+            ? lastSessions
+            : lastSessions.filter((s) => normCwd(s?.cwd) === wanted);
+          if (mine.length >= 1) {
+            return { ok: true, health: lastHealth, session: mine[0], sessions: lastSessions.length, tries };
+          }
+        }
       }
     } catch (err) {
       lastError = String(err?.message ?? err);
     }
-    if (Date.now() >= deadline) return { ok: false, health: lastHealth, tries, error: lastError };
+    if (Date.now() >= deadline) {
+      return {
+        ok: false,
+        health: lastHealth,
+        tries,
+        error: lastError,
+        // What was actually seen, so a failure says "the daemon is up with N
+        // sessions, none of them in this folder" rather than just "timed out".
+        sessions: lastSessions === null ? null : lastSessions.length,
+        foreignSessions: lastSessions === null ? null : lastSessions.map((s) => s?.cwd ?? null),
+        wantedCwd: wanted,
+      };
+    }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
 }

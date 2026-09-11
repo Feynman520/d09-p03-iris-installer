@@ -1,3 +1,4 @@
+<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>IRIS 설치</title>
@@ -179,7 +180,7 @@ function drawBar() {
   $('bar').innerHTML =
     '<span class="bar-num">전체 </span>[<span class="bar-fill">' + '█'.repeat(filled) + '</span>' +
     '<span class="bar-rest">' + '░'.repeat(BAR_CELLS - filled) + '</span>] ' +
-    '<span class="bar-num">' + String(pct).padStart(3, ' ') + '%  (' + n + '/' + total + ')</span>';
+    '<span class="bar-num">' + pct + '%  (' + n + '/' + total + ')</span>';
 }
 
 function badge(step, text, cls) {
@@ -352,14 +353,28 @@ function renderInstall() {
 }
 
 function installProgressNote(pct) {
-  const filled = Math.floor((pct / 100) * BAR_CELLS);
-  return '<div class="mini">[<span class="bar-fill">' + '█'.repeat(filled) + '</span>' + '░'.repeat(BAR_CELLS - filled) + '] ' + Math.floor(pct) + '%</div>';
+  // pct는 서버가 주는 값이라 방어적으로 0~100으로 가둔다(음수·101이 오면 바가 깨진다).
+  const p = Math.min(100, Math.max(0, Math.floor(Number(pct) || 0)));
+  const filled = Math.floor((p / 100) * BAR_CELLS);
+  return '<div class="mini">[<span class="bar-fill">' + '█'.repeat(filled) + '</span>' + '░'.repeat(BAR_CELLS - filled) + '] ' + p + '%</div>';
+}
+
+// 설치 실패(또는 이어지지 않음)는 막다른 길이 아니다 — 서버는 state.installError만
+// 남기고 다시 POST /api/install 을 받아 준다. 그러니 화면도 반드시 되돌아와야 한다.
+function installRetry(message) {
+  badge('install', '막힘', 'bad');
+  note('install-note', message, 'bad');
+  const b = $('btn-install');
+  b.disabled = false;
+  b.textContent = '다시 시도';
 }
 
 function watchInstall() {
   if (installSource) return;
+  let sawEvent = false;
   installSource = new EventSource('/api/install/events');
   installSource.onmessage = (ev) => {
+    sawEvent = true;
     let e; try { e = JSON.parse(ev.data); } catch { return; }
     if (e.part) {
       partState[e.part] = partState[e.part] || {};
@@ -368,12 +383,16 @@ function watchInstall() {
       partState[e.part].error = e.error || null;
       renderInstall();
     }
-    if (typeof e.pct === 'number' && !e.part) note('install-note', installProgressNote(e.pct));
-    if (e.error && !e.part) {
-      badge('install', '막힘', 'bad');
-      note('install-note', '설치가 멈췄습니다(' + esc(e.error) + '). 이미 있던 것은 그대로 되돌려 두었습니다.', 'bad');
+    if (typeof e.pct === 'number' && !e.part && !e.error) note('install-note', installProgressNote(e.pct));
+    // 실패 이벤트에는 대개 부품 이름이 붙어 온다(install.mjs emitFinal).
+    // 부품 유무와 상관없이 여기서 잡아야 단추가 되살아난다.
+    if (e.error) {
+      installSource.close(); installSource = null;
+      installRetry('설치가 멈췄습니다' + (e.part ? ' — ' + esc(PART_LABEL[e.part] || e.part) : '') +
+        ' (' + esc(e.error) + ').<br>이미 있던 것은 그대로 되돌려 두었습니다. 다시 시도해도 안전합니다.');
+      return;
     }
-    if (e.done && !e.error) {
+    if (e.done) {
       done.install = true;
       badge('install', '완료', 'done');
       note('install-note', installProgressNote(100) + '<div class="note ok">설치가 끝났습니다.</div>');
@@ -381,16 +400,23 @@ function watchInstall() {
       relock();
     }
   };
+  // 서버가 중간에 다시 뜨면 이벤트 버퍼가 비어 있어 아무것도 오지 않는다.
+  // 그대로 두면 "진행중"에서 영원히 멈춘 것처럼 보이므로 되돌릴 길을 준다.
+  setTimeout(() => {
+    if (!sawEvent && installSource) {
+      installSource.close(); installSource = null;
+      installRetry('설치가 이어지지 않았습니다(설치기가 다시 시작된 것 같습니다). 다시 시도해 주세요.');
+    }
+  }, 5000);
 }
 
 $('btn-install').onclick = async () => {
   $('btn-install').disabled = true;
   badge('install', '진행중', 'run');
+  note('install-note', '');
   const { status, body } = await api('/api/install', {});
   if (status >= 400) {
-    badge('install', '막힘', 'bad');
-    note('install-note', '시작하지 못했습니다(' + esc(body.reason || status) + ').', 'bad');
-    $('btn-install').disabled = false;
+    installRetry('시작하지 못했습니다(' + esc(body.reason || status) + ').');
     return;
   }
   watchInstall();
@@ -451,7 +477,11 @@ function pollLogin() {
           re.appendChild(b);
         } else if (!s.reopenAvailable) { re.innerHTML = ''; }
       }
-      if (s.relayError) note('login-note', esc(PROVIDER_LABEL[p]) + ' 등록이 아직 끝나지 않았습니다(' + esc(s.relayError.reason) + '). 계속 다시 시도합니다.', 'bad');
+      // reason이 없는 모양으로 와도 "undefined"를 사람에게 보이지 않게 한다.
+      if (s.relayError) {
+        const why = s.relayError.reason || s.relayError.detail || '까닭을 알 수 없음';
+        note('login-note', PROVIDER_LABEL[p] + ' 등록이 아직 끝나지 않았습니다(' + esc(why) + '). 계속 다시 시도합니다.', 'bad');
+      }
     }
     if (body.step === 'handoff' || body.step === 'done') {
       clearInterval(loginTimer); loginTimer = null;
@@ -482,7 +512,8 @@ $('btn-handoff').onclick = async () => {
     const { body } = await api('/api/handoff', {});
     if (!body.ok) {
       badge('handoff', '막힘', 'bad');
-      note('handoff-note', (HANDOFF_WHERE[body.where] || body.where) + ' 실패했습니다.<br>' + esc(body.detail || '') +
+      note('handoff-note', (HANDOFF_WHERE[body.where] || body.where) + ' 실패했습니다' +
+        (body.reason ? ' (' + esc(body.reason) + ')' : '') + '.<br>' + esc(body.detail || '') +
         '<br>기록: <span class="path">' + esc(body.log || '') + '</span>', 'bad');
       $('btn-handoff').disabled = false;
       return;
@@ -535,13 +566,30 @@ async function restore() {
     renderInstall();
   }
 
+  // 레지스트리를 건드리지 않고 돌린 설치(--no-user-env)라는 사실은 화면에도 남긴다.
+  const envNotice = st.userEnvSkipped
+    ? '<div class="note">이 설치는 <b>환경 변수를 실제로 쓰지 않는 모드</b>로 돌았습니다(리허설). 영수증에 <code>env.applied: false</code>로 남습니다.</div>'
+    : '';
+
   const beyondInstall = st.step === 'login' || st.step === 'handoff' || st.step === 'done';
   if (beyondInstall) {
     done.install = true;
     badge('install', '완료', 'done');
-    note('install-note', installProgressNote(100) + '<div class="note ok">설치가 끝났습니다.</div>');
+    note('install-note', installProgressNote(100) + '<div class="note ok">설치가 끝났습니다.</div>' + envNotice);
     $('btn-install').disabled = true;
-  } else if (st.step === 'install') { badge('install', '진행중', 'run'); watchInstall(); $('btn-install').disabled = true; }
+  } else if (st.step === 'install') {
+    // 서버는 실패를 state.installError에 남기고 재시도를 받아 준다.
+    // 그 값을 무시하면 새로고침한 화면이 영원히 "진행중"에 갇힌다.
+    if (st.installError) {
+      installRetry('지난번 설치가 멈췄습니다 (' + esc(st.installError) + ').<br>이미 있던 것은 그대로 되돌려 두었습니다. 다시 시도해도 안전합니다.');
+    } else {
+      badge('install', '진행중', 'run');
+      $('btn-install').disabled = true;
+      watchInstall(); // 5초 안에 아무 이벤트도 안 오면 watchInstall이 재시도로 되돌린다
+    }
+  } else if (envNotice) {
+    note('install-note', envNotice);
+  }
 
   if (st.step === 'handoff' || st.step === 'done') {
     done.login = true;

@@ -118,6 +118,10 @@ test('install: unpacks parts, writes shims/soul-state/receipt, then skips on re-
   assert.equal(receipt1.installed.node.version, '24.17.0');
   assert.equal(receipt1.installed.node.path, '_agent\\shared\\tools\\node');
   assert.equal(receipt1.env.pathShim, path.join(root, '_agent', 'shared', 'shims'));
+  // Fix round 1, finding 3: a normal install says the env values really were
+  // written, and carries no skippedReason.
+  assert.equal(receipt1.env.applied, true);
+  assert.equal(receipt1.env.skippedReason, undefined);
 
   // shims: only the chosen agent's .cmd, plus node.cmd
   const shimDir = path.join(root, '_agent', 'shared', 'shims');
@@ -449,6 +453,42 @@ test('writeShims: no agent chosen -> node.cmd only; both -> three shims', () => 
   const codex = fs.readFileSync(path.join(root2, '_agent', 'shared', 'shims', 'codex.cmd'), 'utf8');
   assert.ok(codex.includes('CODEX_HOME=%~dp0..\\..\\codex'));
   assert.ok(codex.includes('%~dp0..\\tools\\codex\\codex.cmd'));
+});
+
+// Fix round 1, finding 3: the installer's --no-user-env switch injects a
+// recording userpath (server.mjs recordingUserpath). The receipt of such a run
+// must be distinguishable from a real install's -- guide v10 tells the
+// setting-up agent to *verify* these values, and with applied:false it knows
+// there is nothing in the registry to verify yet.
+test('install with a recording userpath (--no-user-env): receipt.env.applied=false + skippedReason, nothing written', async () => {
+  const work = path.join(tmp, 'case-no-user-env');
+  const { zipRoot, manifest, lock } = await makeFakePayload(work);
+  const root = path.join(work, 'NOVA');
+  const events = [];
+  const deps = fakeDeps(events);
+  const record = [];
+  deps.userpath = {
+    recording: true,
+    skippedReason: 'no-user-env',
+    addUserPath: async (dir) => { record.push({ op: 'addUserPath', dir }); return { changed: false, before: '', after: '', recorded: true }; },
+    setUserEnv: async (name, value) => { record.push({ op: 'setUserEnv', name, value }); return { changed: false, previous: null, recorded: true }; },
+  };
+
+  const receipt = await install({
+    root, name: 'NOVA', zipRoot, manifest, lock, choice: CHOICE, existing: 'none', ...deps,
+  });
+
+  assert.equal(receipt.env.applied, false);
+  assert.equal(receipt.env.skippedReason, 'no-user-env');
+  assert.equal(receipt.env.pathAdded, false);
+  // The values themselves are still recorded -- that is what the agent reads.
+  assert.equal(receipt.env.CLAUDE_CONFIG_DIR, path.join(root, '_agent', 'claude'));
+  assert.equal(receipt.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:3456');
+  assert.equal(readReceipt(root).env.applied, false);
+  // ...and every write that a real run would have made was seen, not made.
+  assert.deepEqual(record.map((r) => r.op + ':' + (r.name ?? 'Path')), [
+    'addUserPath:Path', 'setUserEnv:CLAUDE_CONFIG_DIR', 'setUserEnv:CODEX_HOME', 'setUserEnv:ANTHROPIC_BASE_URL',
+  ]);
 });
 
 test('writeMinimalSoulState returns written=false when a soul already lives there', () => {

@@ -745,7 +745,16 @@ export async function install({
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:3456',
     pathShim: shims.dir,
     previous: {},
+    // `applied` says whether these values were actually written to
+    // HKCU\Environment or only recorded here (fix round 1 finding 3). The
+    // installer's --no-user-env rehearsal switch injects a recording
+    // `userpath`, and without this field the receipt of such a run is
+    // indistinguishable from a real install -- the setting-up agent is told by
+    // the guide to *verify* these values, and with applied:false it knows they
+    // are not there to verify yet.
+    applied: userpath?.recording !== true,
   };
+  if (env.applied === false) env.skippedReason = userpath?.skippedReason ?? 'no-user-env';
   // The *previous* full Path is deliberately not recorded: it is the user's
   // own machine layout (personal folder names), the receipt is a file the
   // agent reads and quotes, and removeUserPath re-reads the live value

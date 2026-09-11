@@ -52,6 +52,25 @@ test('resolveGuide picks the edition\'s guide out of the manifest (never a hard-
   assert.equal(resolveGuide({ parts: {} }, 'claude'), null);
 });
 
+// Fix round 1, finding 4: handing a Codex-led soul the Claude guide would point
+// the agent at instructions for a CLI it does not have. Missing edition = stop.
+test('resolveGuide does NOT fall back to the other edition; writeFirstRequest fails with guide-missing:<edition>', () => {
+  const claudeOnly = {
+    package: { guideVersion: '9' },
+    parts: { [`guides:${GUIDE_CLAUDE}`]: { sha256: 'a' } },
+  };
+  assert.equal(resolveGuide(claudeOnly, 'chatgpt'), null);
+  assert.equal(resolveGuide(claudeOnly, 'claude').basename, GUIDE_CLAUDE);
+
+  const root = freshRoot('guide-missing');
+  assert.throws(
+    () => writeFirstRequest(root, { edition: 'chatgpt', manifest: claudeOnly }),
+    (err) => err.code === 'guide-missing:chatgpt',
+  );
+  // ...and nothing was written on the failing path.
+  assert.equal(fs.existsSync(firstRequestPath(root)), false);
+});
+
 test('writeFirstRequest: three sentences, real absolute paths, manifest-resolved guide filename + guideVersion', () => {
   const root = freshRoot('first-request');
   const result = writeFirstRequest(root, { edition: 'claude', manifest: MANIFEST });
@@ -221,25 +240,66 @@ test('launchFace spawns the bundled node on <tools>\\face\\launch.mjs --first-se
   assert.equal(seen2[0].opts.env.IRIS_FACE_PORT, '3466');
 });
 
-test('waitFaceReady requires 200 AND sessions >= 1, and times out with ok:false', async () => {
-  let call = 0;
-  const fetchFn = async () => {
-    call += 1;
-    if (call === 1) throw new Error('ECONNREFUSED');
-    if (call === 2) return { ok: true, json: async () => ({ ok: true, sessions: 0, version: '2.45.0' }) };
-    return { ok: true, json: async () => ({ ok: true, sessions: 1, version: '2.45.0' }) };
+// Fix round 1, finding 1: /api/health's `sessions` is the daemon's GLOBAL
+// count. On a PC that already runs Face, a stranger's session satisfies
+// ">= 1" while this soul got none -- so readiness is decided by /api/sessions
+// and a cwd match against the soul root.
+function faceFetch({ health, sessions }) {
+  return async (url) => {
+    if (url.endsWith('/api/health')) {
+      const h = typeof health === 'function' ? health() : health;
+      if (h === null) throw new Error('ECONNREFUSED');
+      return { ok: true, json: async () => h };
+    }
+    const s = typeof sessions === 'function' ? sessions() : sessions;
+    return { ok: true, json: async () => s };
   };
-  const ready = await waitFaceReady({ port: 3466, timeoutMs: 5000, intervalMs: 1, fetchFn });
+}
+
+test('waitFaceReady: 200 + a session whose cwd IS the soul root -> ready', async () => {
+  let call = 0;
+  const fetchFn = faceFetch({
+    health: () => (++call === 1 ? null : { ok: true, sessions: 2, version: '2.45.0' }),
+    // First look: only a foreign session. Then ours appears -- note the
+    // forward slashes, trailing slash and different case: normCwd must see
+    // through all three, exactly like P02 launch.mjs does.
+    sessions: (() => { let n = 0; return () => (++n <= 1 ? [{ id: 's1', cwd: 'C:\\OTHER-SOUL' }] : [{ id: 's1', cwd: 'C:\\OTHER-SOUL' }, { id: 's2', cwd: 'c:/Nova/' }]); })(),
+  });
+  const ready = await waitFaceReady({ root: 'C:\\NOVA', port: 3466, timeoutMs: 5000, intervalMs: 1, fetchFn });
   assert.equal(ready.ok, true);
-  assert.equal(ready.health.sessions, 1);
-  assert.equal(call, 3);
+  assert.equal(ready.session.id, 's2');
+  assert.equal(ready.health.version, '2.45.0');
+});
+
+test('waitFaceReady: a daemon full of FOREIGN sessions is not ready (the old sessions>=1 bug)', async () => {
+  const ready = await waitFaceReady({
+    root: 'C:\\NOVA', port: 3458, timeoutMs: 40, intervalMs: 1,
+    fetchFn: faceFetch({
+      health: { ok: true, sessions: 3, version: '2.45.0' },
+      sessions: [{ id: 's1', cwd: 'C:\\ALPHA' }, { id: 's2', cwd: 'C:\\OTHER' }, { id: 's3', cwd: 'D:\\WORK' }],
+    }),
+  });
+  assert.equal(ready.ok, false, 'a foreign session must never count as this soul being handed over');
+  assert.equal(ready.sessions, 3);
+  assert.equal(ready.wantedCwd, 'c:\\nova');
+  assert.deepEqual(ready.foreignSessions, ['C:\\ALPHA', 'C:\\OTHER', 'D:\\WORK']);
+});
+
+test('waitFaceReady: a live daemon with zero sessions, and an unreachable one, both time out', async () => {
+  const empty = await waitFaceReady({
+    root: 'C:\\NOVA', port: 3466, timeoutMs: 30, intervalMs: 1,
+    fetchFn: faceFetch({ health: { ok: true, sessions: 0 }, sessions: [] }),
+  });
+  assert.equal(empty.ok, false);
+  assert.equal(empty.sessions, 0);
 
   const never = await waitFaceReady({
-    port: 3466, timeoutMs: 30, intervalMs: 1,
+    root: 'C:\\NOVA', port: 3466, timeoutMs: 30, intervalMs: 1,
     fetchFn: async () => { throw new Error('ECONNREFUSED'); },
   });
   assert.equal(never.ok, false);
   assert.ok(never.tries >= 1);
+  assert.equal(never.sessions, null);
 });
 
 test('finish: steps.handoff=done, node cache removed, quit called', () => {
@@ -322,6 +382,32 @@ test('ui/index.html: no "TeamClaude", no external CDN/font, 20-cell progress bar
   assert.ok(html.includes('canProceedOffline'));
   assert.ok(html.includes('allOk'));
   assert.ok(html.includes('reopenAvailable'), 'the login card offers 다시 열기');
+
+  // Fix round 1, finding 5: without a doctype the page renders in quirks mode.
+  assert.ok(html.startsWith('<!doctype html>\n'), 'the first line must be the doctype');
+});
+
+// Fix round 1, findings 2/3/7 -- behaviours that only exist inside the inline
+// script, checked at the source level (there is no DOM in `node --test`).
+test('ui/index.html: install failure offers a retry, restore honours installError, env notice, guarded relayError, clamped pct', () => {
+  const html = fs.readFileSync(path.join(REPO, 'installer', 'ui', 'index.html'), 'utf8');
+
+  // ② 실패해도 되돌아올 수 있어야 한다
+  assert.ok(/function installRetry\(/.test(html), 'a retry path must exist');
+  assert.ok(html.includes('다시 시도'), 'the button becomes 다시 시도 after a failure');
+  assert.ok(/if \(e\.error\) \{/.test(html), 'an error event with a part name must also trigger the retry path');
+  assert.ok(html.includes('st.installError'), 'the restore path must read state.installError');
+  assert.ok(/sawEvent/.test(html), 'an empty event buffer (server restarted) must not look like 진행중 forever');
+
+  // ③ --no-user-env 는 화면에도 한 줄로 남는다
+  assert.ok(html.includes('userEnvSkipped'));
+  assert.ok(html.includes('env.applied'));
+
+  // ⑦ 다듬기
+  assert.ok(!html.includes('padStart'), 'the no-op padStart is gone');
+  assert.ok(/Math\.min\(100, Math\.max\(0,/.test(html), 'install pct must be clamped to 0..100');
+  assert.ok(!/esc\(s\.relayError\.reason\)/.test(html), 'relayError.reason must not be printed unguarded');
+  assert.ok(html.includes('까닭을 알 수 없음'), 'a relayError with no reason needs a fallback wording');
 });
 
 test('ui/index.html :root block is byte-identical to IRIS-Face app/style.css (static check ④)', (t) => {
@@ -373,7 +459,13 @@ test('POST /api/handoff: first request -> launcher -> launch -> ready -> finish,
       return { cmdPath: path.join(root, `${name} Face.cmd`), lnkPath: null, shortcut: { ok: false, detail: 'skipped in test' } };
     },
     launchFaceFn: (args) => { order.push('launch'); return { pid: 999, command: 'node launch.mjs' }; },
-    waitFaceReadyFn: async () => { order.push('ready'); return { ok: true, health: { sessions: 1, version: '2.45.0', pid: 1234 }, tries: 1 }; },
+    waitFaceReadyFn: async (args) => {
+      order.push('ready');
+      // The server must hand the soul root down, or the check degrades into
+      // the global-count bug (fix round 1 finding 1).
+      assert.equal(args.root, fx.soulRoot);
+      return { ok: true, health: { sessions: 1, version: '2.45.0', pid: 1234 }, session: { id: 's1', cwd: fx.soulRoot }, tries: 1 };
+    },
     finishFn: (args) => { order.push('finish'); args.setStep?.('done'); return { ok: true, cacheRemoved: true }; },
   });
   try {
@@ -383,6 +475,8 @@ test('POST /api/handoff: first request -> launcher -> launch -> ready -> finish,
     assert.equal(body.ok, true, JSON.stringify(body));
     assert.equal(body.pid, 999);
     assert.equal(body.sessions, 1);
+    assert.equal(body.sessionId, 's1');
+    assert.equal(body.sessionCwd, fx.soulRoot);
 
     // The first-request file is written for real (not injected) -- it is the
     // one artefact the agent actually reads.
@@ -430,16 +524,48 @@ test('POST /api/handoff: launch failure -> {ok:false, where:"launch", log}; read
     stateFile: fx2.stateFile,
     writeFaceLauncherFn: async (root, name) => ({ cmdPath: path.join(root, `${name} Face.cmd`), lnkPath: null, shortcut: { ok: true } }),
     launchFaceFn: () => ({ pid: 11, command: 'node launch.mjs' }),
-    waitFaceReadyFn: async () => ({ ok: false, health: null, tries: 120 }),
+    // Daemon up, three sessions, none in this soul -> NOT ready.
+    waitFaceReadyFn: async () => ({ ok: false, health: { sessions: 3 }, tries: 120, sessions: 3, foreignSessions: ['C:\\ALPHA'], wantedCwd: 'x' }),
     finishFn: () => { throw new Error('finish must not run when the daemon never became ready'); },
   });
   try {
     const body = await (await fetch(`${s2.url}/api/handoff`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } })).json();
     assert.equal(body.ok, false);
     assert.equal(body.where, 'ready');
+    assert.equal(body.reason, 'no_session_in_soul');
+    assert.equal(body.sessions, 3);
+    assert.ok(body.detail.includes('none of them in'));
     assert.equal(body.pid, 11);
   } finally {
     await s2.close();
+  }
+});
+
+// Fix round 1, finding 4 (server side): a missing guide edition stops at
+// where:'first-request' with the coded reason, and never launches Face.
+test('POST /api/handoff: a manifest without the chosen edition\'s guide -> where:"first-request", reason guide-missing', async () => {
+  const fx = handoffServerFixture('server-guide-missing');
+  fs.writeFileSync(path.join(fx.zipRoot, 'payload', 'manifest.json'), JSON.stringify({
+    schema: 1,
+    package: { name: 'IRIS', version: '1.0.0', guideVersion: '9' },
+    parts: { [`guides:${GUIDE_CODEX}`]: { sha256: 'b' } }, // Codex only; the soul chose claude
+  }), 'utf8');
+  let launched = false;
+  const { url, close } = await startServer({
+    port: 0,
+    zipRoot: fx.zipRoot,
+    nodeDir: path.join(fx.base, 'node'),
+    stateFile: fx.stateFile,
+    launchFaceFn: () => { launched = true; return { pid: 1 }; },
+  });
+  try {
+    const body = await (await fetch(`${url}/api/handoff`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } })).json();
+    assert.equal(body.ok, false);
+    assert.equal(body.where, 'first-request');
+    assert.equal(body.reason, 'guide-missing:claude');
+    assert.equal(launched, false, 'Face must not be launched when the contract file is missing');
+  } finally {
+    await close();
   }
 });
 
