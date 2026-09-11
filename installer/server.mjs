@@ -50,29 +50,41 @@ function writeHeaders(res, status, extra = {}) {
   res.writeHead(status, { 'Cache-Control': 'no-store', ...extra });
 }
 
-function sendJson(res, status, obj) {
+function sendJson(res, status, obj, extraHeaders = {}) {
   const body = JSON.stringify(obj);
   writeHeaders(res, status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
+    ...extraHeaders,
   });
   res.end(body);
 }
 
+// Rejects with statusCode 413 once `limit` is exceeded, but does NOT destroy
+// the request/socket itself -- that is the caller's job, and only *after*
+// the 413 JSON response has been written and flushed (see withBody). Doing
+// it here raced the response write against the socket teardown and produced
+// a client-side ECONNRESET instead of the coded 413 (fix round 1 finding 1).
+// Memory still stays bounded: once overLimit flips, further chunks are
+// dropped on the floor (never pushed to `chunks`) instead of being buffered.
 function readJsonBody(req, limit = BODY_LIMIT) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let overLimit = false;
     const chunks = [];
     req.on('data', (chunk) => {
+      if (overLimit) return; // already rejected; drop without buffering
       size += chunk.length;
       if (size > limit) {
+        overLimit = true;
+        chunks.length = 0; // release what we had buffered so far
         reject(Object.assign(new Error('payload too large'), { statusCode: 413 }));
-        req.destroy();
         return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
+      if (overLimit) return; // already settled above
       const raw = Buffer.concat(chunks).toString('utf8');
       if (!raw.trim()) { resolve({}); return; }
       try {
@@ -144,7 +156,18 @@ function withBody(handler) {
     try {
       body = await readJsonBody(req);
     } catch (err) {
-      sendJson(res, err.statusCode ?? 400, { ok: false, reason: 'bad_request' });
+      const status = err.statusCode ?? 400;
+      if (status === 413) {
+        // The client may still be streaming the rest of an oversized body.
+        // Write the JSON response (with Connection: close so the socket is
+        // not reused for a request we never fully read) and only destroy
+        // the request stream once that response has actually been flushed,
+        // so the client sees the coded 413 instead of a connection reset.
+        sendJson(res, 413, { ok: false, reason: 'bad_request' }, { Connection: 'close' });
+        res.on('finish', () => { req.destroy(); });
+      } else {
+        sendJson(res, status, { ok: false, reason: 'bad_request' });
+      }
       return;
     }
     await handler(body, req, res, url);
