@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "package": { "version": "1.0.0", "guideVersion": "10" },
+  "parts": {
+    "node": {
+      "kind": "url",
+      "version": "24.17.0",
+      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-win-x64.zip",
+      "sha256": "f2aa33b35b75aca5f3f7b85675a6f6423201053e9381911e64961f3bda2528ab",
+      "sha256Source": "vendor",
+      "file": "node/node-v24.17.0-win-x64.zip",
+      "license": "MIT"
+    },
+    "python": {
+      "kind": "url",
+      "version": "3.12.10",
+      "url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
+      "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
+      "sha256Source": "computed 2026-09-11 from official URL",
+      "file": "python/python-3.12.10-embed-amd64.zip",
+      "license": "PSF"
+    },
+    "pyyaml": {
+      "kind": "url",
+      "version": "6.0.3",
+      "url": "https://files.pythonhosted.org/packages/86/bf/899e81e4cce32febab4fb42bb97dcdf66bc135272882d1987881a4b519e9/pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
+      "sha256": "5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b",
+      "sha256Source": "vendor",
+      "file": "python/PyYAML-6.0.3-cp312-cp312-win_amd64.whl",
+      "license": "MIT"
+    },
+    "git": {
+      "kind": "url",
+      "version": "2.54.0.windows.1",
+      "url": "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip",
+      "sha256": "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668",
+      "sha256Source": "vendor",
+      "file": "git/MinGit-2.54.0-64-bit.zip",
+      "license": "GPL-2.0"
+    },
+    "claude": {
+      "kind": "npm-prefix",
+      "npm": "@anthropic-ai/claude-code",
+      "version": "2.1.267",
+      "file": "agents/claude-code-2.1.267.zip",
+      "redistribute": "download",
+      "license": "SEE LICENSE IN README.md (LICENSE.md: © Anthropic PBC. All rights reserved)",
+      "bin": "bin/claude.exe"
+    },
+    "codex": {
+      "kind": "npm-prefix",
+      "npm": "@openai/codex",
+      "version": "0.154.0",
+      "file": "agents/codex-0.154.0.zip",
+      "redistribute": "bundle",
+      "license": "Apache-2.0",
+      "bin": "bin/codex.js"
+    },
+    "teamclaude": {
+      "kind": "npm-prefix",
+      "npm": "@karpeleslab/teamclaude",
+      "version": "1.1.16",
+      "file": "relay/teamclaude-1.1.16+iris.zip",
+      "patches": "patches/teamclaude/rules.json",
+      "license": "MIT",
+      "bin": "src/index.js"
+    },
+    "face": {
+      "kind": "dir",
+      "source": "../P02-IRIS 페이스(IRIS-Face) 〖Local App〗",
+      "exclude": ["node_modules", "state", "docs", "_archive", ".git"],
+      "npmCi": true,
+      "file": "face/iris-face.zip",
+      "license": "MIT"
+    },
+    "dash": {
+      "kind": "dir",
+      "source": "C:/IRIS/_agent/claude/tools/teamclaude-dash",
+      "exclude": ["design"],
+      "file": "dash/teamclaude-dash.zip",
+      "license": "MIT"
+    },
+    "manage": {
+      "kind": "file",
+      "source": "patches/teamclaude/teamclaude-manage.ps1",
+      "file": "relay/teamclaude-manage.ps1",
+      "license": "MIT"
+    },
+    "guides": {
+      "kind": "glob",
+      "source": "C:/IRIS/_setup-guides",
+      "pattern": "비서 에이전트 세팅가이드(*실행판)_v10_*_최신.md",
+      "file": "guides/",
+      "version": "10"
+    }
+  }
+}
