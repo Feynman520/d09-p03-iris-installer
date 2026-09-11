@@ -1,0 +1,78 @@
+{
+  "files": [
+    {
+      "path": "node_modules/@karpeleslab/teamclaude/src/server.js",
+      "replace": [
+        {
+          "find": "import { BodyWriter, truncationNote } from './request-log.js';\nimport { upstreamFetch } from './upstream-fetch.js';",
+          "with": "import { BodyWriter, truncationNote } from './request-log.js';\n\n// (local patch 2026-09-07 IRIS: effort tag)\n// Effort/thinking setting of a request, for the activity view only. The prompt\n// itself is never kept. Quotes inside JSON string values are escaped, so these\n// unescaped patterns cannot match text that merely mentions the field names.\nfunction parseRequestEffort(body) {\n  const s = body.toString('latin1');\n  let m = /\"output_config\"\\s*:\\s*\\{[^{}]*\"effort\"\\s*:\\s*\"([a-z0-9_-]+)\"/.exec(s)\n    || /\"reasoning\"\\s*:\\s*\\{[^{}]*\"effort\"\\s*:\\s*\"([a-z0-9_-]+)\"/.exec(s);\n  if (m) return m[1];\n  m = /\"thinking\"\\s*:\\s*\\{[^{}]*\"budget_tokens\"\\s*:\\s*(\\d+)/.exec(s);\n  if (m) return `think ${Math.round(Number(m[1]) / 1000)}k`;\n  if (/\"thinking\"\\s*:\\s*\\{[^{}]*\"type\"\\s*:\\s*\"adaptive\"/.test(s)) return 'adaptive';\n  return null;\n}\nimport { upstreamFetch } from './upstream-fetch.js';",
+          "count": 1
+        },
+        {
+          "find": " */\nexport function createProxyRequestListener({ accountManager, upstream, logDir = null, hooks = {}, sx = null, holdMs = 0, config = {}, forcedPin = null, egress = null, clientUsage = null, forcedClient = null, dimensionUsage = null }) {\n  let counter = 0;",
+          "with": " */\n// All HTTP/MITM listeners share activity hooks. A listener-local counter would\n// reuse ids and make one request close a different listener's active row.\nlet activityRequestCounter = 0;\nexport function createProxyRequestListener({ accountManager, upstream, logDir = null, hooks = {}, sx = null, holdMs = 0, config = {}, forcedPin = null, egress = null, clientUsage = null, forcedClient = null, dimensionUsage = null }) {",
+          "count": 1
+        },
+        {
+          "find": "const reqId = ++counter;",
+          "with": "const reqId = ++activityRequestCounter;",
+          "count": 3
+        },
+        {
+          "find": "      const model = modelFinder.done ? modelFinder.value : parseRequestModel(body);\n      // An advisor request (Claude Code's advisor tool) carries a SECOND model",
+          "with": "      const model = modelFinder.done ? modelFinder.value : parseRequestModel(body);\n      // (local patch 2026-09-07 IRIS: effort tag)\n      if (!hideActivity) {\n        const effort = parseRequestEffort(body);\n        if (effort) hooks.onRequestModel?.(reqId, { model, effort });\n      }\n      // An advisor request (Claude Code's advisor tool) carries a SECOND model",
+          "count": 1
+        },
+        {
+          "find": "  hooks.onRequestRouted?.(reqId, { account: account.name });",
+          "with": "  hooks.onRequestRouted?.(reqId, { account: account.name, provider: ctx.provider });",
+          "count": 1
+        },
+        {
+          "find": "    for (const [key, value] of upstreamRes.headers.entries()) {\n      if (key.startsWith('anthropic-ratelimit-')) {\n        rateLimitHeaders[key] = value;\n      }\n    }",
+          "with": "    for (const [key, value] of upstreamRes.headers.entries()) {\n      // Codex reports its quota under x-codex-* (parsed by codex-quota.js);\n      // keep those too, or updateQuota's Codex path always gets an empty set.\n      // (local patch 2026-09-07 IRIS)\n      if (key.startsWith('anthropic-ratelimit-') || key.startsWith('x-codex-')) {\n        rateLimitHeaders[key] = value;\n      }\n    }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@karpeleslab/teamclaude/src/codex-quota.js",
+      "replace": [
+        {
+          "find": "      resetAt: scoped.weekly.resetAt,\n    });",
+          "with": "      resetAt: scoped.weekly.resetAt,\n      // (local patch 2026-09-07 IRIS) keep the family's 5-hour window too\n      utilization5h: scoped.fiveHour ? scoped.fiveHour.utilization : null,\n      reset5hAt: scoped.fiveHour ? scoped.fiveHour.resetAt : null,\n    });",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@karpeleslab/teamclaude/src/account-manager.js",
+      "replace": [
+        {
+          "find": "    name: acct.name,\n    type: acct.type,",
+          "with": "    name: acct.name,\n    displayName: typeof acct.displayName === 'string' ? acct.displayName : null,\n    type: acct.type,",
+          "count": 1
+        },
+        {
+          "find": "        resetAt: bucket.resetAt,\n        seenAt: Date.now(),",
+          "with": "        resetAt: bucket.resetAt,\n        utilization5h: bucket.utilization5h ?? null, // (local patch 2026-09-07 IRIS)\n        reset5hAt: bucket.reset5hAt ?? null,\n        seenAt: Date.now(),",
+          "count": 1
+        },
+        {
+          "find": "      currentAccount: this.accounts[this.currentIndex]?.name,\n      // Where a request no route claims lands right now — the same derivation",
+          "with": "      currentAccount: this.accounts[this.currentIndex]?.name,\n      // (local patch 2026-09-07 IRIS) per-provider cursor, so a status reader can show\n      // which account each provider (anthropic / codex) will be handed next.\n      currentAccounts: Object.fromEntries([...this.providerCursors].map(([p, i]) => [p, this.accounts[i]?.name ?? null])),\n      // Where a request no route claims lands right now — the same derivation",
+          "count": 1
+        },
+        {
+          "find": "        name: a.name,\n        type: a.type,",
+          "with": "        name: a.name,\n        displayName: a.displayName || a.name,\n        provider: providerOf(a),\n        type: a.type,",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@karpeleslab/teamclaude/src/activity.js",
+      "create": "import { randomUUID } from 'node:crypto';\nimport { providerForPath } from './provider.js';\nimport { safeLine } from './safe-text.js';\n\nconst MAX_ACTIVE = 256;\nconst MAX_RECENT = 100;\nconst ACTIVITY_HOOKS = ['onRequestStart', 'onRequestModel', 'onRequestRouted', 'onRequestEnd'];\n\nfunction requestPath(value) {\n  return String(value || '').split(/[?#]/)[0].replace(/^\\/tc-acct\\/[^/]+(?=\\/)/, '');\n}\n\nfunction publicPath(value) {\n  const path = requestPath(value);\n  // Publish only known API endpoint names. Arbitrary path segments can contain\n  // private data just as query strings can; neither belongs in a status view.\n  const known = /^\\/(?:v1\\/(?:messages(?:\\/count_tokens)?|models|complete)|backend-api\\/codex\\/(?:responses(?:\\/compact)?|models)|api\\/event_logging(?:\\/batch)?)$/;\n  return known.test(path) ? safeLine(path, 240) : '(other)';\n}\n\nfunction text(value, max = 120) {\n  return value == null ? null : safeLine(value, max);\n}\n\n/** Ephemeral, bounded request metadata. Credentials, prompts, responses,\n * session ids and client/dimension headers never enter this object. */\nexport class ActivityTracker {\n  constructor({ now = Date.now } = {}) {\n    this.instanceId = randomUUID();\n    this.now = now;\n    this.active = new Map();\n    this.recent = [];\n    this.lastRoutedAccounts = {};\n    this.droppedActive = 0;\n  }\n\n  onRequestStart(id, info = {}) {\n    if (!this.active.has(id) && this.active.size >= MAX_ACTIVE) {\n      // The display must stay bounded even if many connections are held open.\n      // Eviction affects observation only; it never cancels or delays a call.\n      this.active.delete(this.active.keys().next().value);\n      this.droppedActive++;\n    }\n    this.active.set(id, {\n      id,\n      provider: providerForPath(requestPath(info.path)),\n      method: text(info.method, 16),\n      path: publicPath(info.path),\n      account: null,\n      model: null,\n      effort: null,\n      pinned: !!info.pinned,\n      startedAt: new Date(this.now()).toISOString(),\n      endedAt: null,\n      durationMs: null,\n      status: null,\n    });\n  }\n\n  onRequestModel(id, info = {}) {\n    const row = this.active.get(id);\n    if (row && info.model) row.model = text(info.model);\n    if (row && info.effort) row.effort = text(info.effort, 24); // (local patch 2026-09-07 IRIS)\n  }\n\n  onRequestRouted(id, info = {}) {\n    const row = this.active.get(id);\n    const provider = info.provider === 'codex' || info.provider === 'anthropic' ? info.provider : row?.provider;\n    const account = text(info.account);\n    if (row) {\n      row.account = account;\n      if (provider) row.provider = provider;\n    }\n    // A routed event can outlive an evicted active row, or belong to hidden\n    // telemetry. Provider metadata still identifies the actual selected pool.\n    if (provider && account) this.lastRoutedAccounts[provider] = account;\n  }\n\n  onRequestEnd(id, info = {}) {\n    const row = this.active.get(id);\n    this.active.delete(id);\n    if (this.recent.some(r => r.id === id)) return;\n    const ended = this.now();\n    const started = row?.startedAt ? Date.parse(row.startedAt) : null;\n    this.recent.unshift({\n      id,\n      provider: row?.provider || providerForPath(requestPath(info.path)),\n      method: text(info.method, 16) || row?.method || null,\n      path: info.path == null ? (row?.path || '(other)') : publicPath(info.path),\n      account: text(info.account) || row?.account || null,\n      model: text(info.model) || row?.model || null,\n      effort: row?.effort || null,\n      pinned: info.pinned == null ? !!row?.pinned : !!info.pinned,\n      startedAt: row?.startedAt || null,\n      endedAt: new Date(ended).toISOString(),\n      durationMs: started == null ? null : Math.max(0, ended - started),\n      status: Number.isFinite(info.status) ? info.status : null,\n    });\n    if (this.recent.length > MAX_RECENT) this.recent.length = MAX_RECENT;\n  }\n\n  snapshot() {\n    return {\n      instanceId: this.instanceId,\n      active: [...this.active.values()].map(row => ({ ...row })),\n      recent: this.recent.map(row => ({ ...row })),\n      lastRoutedAccounts: { ...this.lastRoutedAccounts },\n      droppedActive: this.droppedActive,\n    };\n  }\n}\n\n/** Add metadata observation without replacing existing TUI/file-log hooks. */\nexport function withActivityHooks(hooks, tracker) {\n  const combined = { ...hooks };\n  for (const name of ACTIVITY_HOOKS) {\n    const previous = hooks[name];\n    combined[name] = function (id, info) {\n      // Monitoring is never allowed to fail inference, nor to suppress an\n      // existing hook. Preserve the existing callback's result and errors.\n      try { tracker[name](id, info); } catch { /* observation only */ }\n      return previous?.call(this, id, info);\n    };\n  }\n  return combined;\n}\n"
+    }
+  ]
+}

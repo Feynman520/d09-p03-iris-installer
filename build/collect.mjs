@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import { run } from '../lib/run.mjs';
 import { extractZip, zipDir } from '../lib/zip.mjs';
 import { sha256File } from '../lib/manifest.mjs';
+import { applyPatches } from './patch-teamclaude.mjs';
 
 async function download(url, dest) {
   const res = await fetch(url);
@@ -99,7 +100,7 @@ export async function collect({ lock, cacheDir, stageDir, nodeDir, log }) {
         { env: npmEnv },
       );
       if (r.code !== 0) throw new Error(`npm install ${name}: ${r.err}`);
-      // TODO(Task 6): if (p.patches) await applyPatches(prefix, JSON.parse(fs.readFileSync(p.patches, 'utf8')), log);
+      if (p.patches) await applyPatches(prefix, JSON.parse(fs.readFileSync(path.resolve(p.patches), 'utf8')), log);
       await zipDir(prefix, dest);
     } else if (p.kind === 'dir') {
       const work = path.join(stageDir, 'dir', name);
