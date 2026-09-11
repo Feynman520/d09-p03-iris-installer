@@ -241,11 +241,17 @@ test('install: 202 + SSE progress frames, replayed for a late subscriber, step -
   let release;
   const gate = new Promise((r) => { release = r; });
   const seen = [];
+  // Fix round 1 finding 2: these deliberately mirror the *real* shape
+  // install.mjs emits -- a part's completion carries pct = floor((i+1)/total
+  // *100), which is 9 for the first of eleven parts, NOT 100. The old
+  // pct === 100 heuristic therefore left ten of eleven parts stuck on
+  // 'running' in state.install.parts; only `status` gets it right.
   const installFn = async ({ root, onProgress }) => {
     seen.push(root);
-    onProgress({ part: 'node', pct: 9 });
-    onProgress({ part: 'node', pct: 100 });
+    onProgress({ part: 'node', pct: 0, status: 'running' });
+    onProgress({ part: 'node', pct: 9, status: 'done' });
     await gate;
+    onProgress({ part: 'python', pct: 18, skipped: true });
     onProgress({ pct: 100, done: true });
     return { steps: { copy: 'done' } };
   };
@@ -279,7 +285,7 @@ test('install: 202 + SSE progress frames, replayed for a late subscriber, step -
     let buf = '';
     const frames = [];
     const pump = (async () => {
-      while (frames.length < 3) {
+      while (frames.length < 4) {
         const { value, done } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
@@ -294,16 +300,22 @@ test('install: 202 + SSE progress frames, replayed for a late subscriber, step -
     })();
     await pump;
 
-    assert.deepEqual(frames[0], { part: 'node', pct: 9, done: false, error: null });
-    assert.deepEqual(frames[1], { part: 'node', pct: 100, done: false, error: null });
-    assert.equal(frames[2].done, true);
-    assert.equal(frames[2].error, null);
+    assert.deepEqual(frames[0], { part: 'node', pct: 0, done: false, error: null, status: 'running' });
+    assert.deepEqual(frames[1], { part: 'node', pct: 9, done: false, error: null, status: 'done' });
+    assert.deepEqual(frames[2], { part: 'python', pct: 18, done: false, error: null, skipped: true });
+    assert.equal(frames[3].done, true);
+    assert.equal(frames[3].error, null);
     ctrl.abort();
 
     // Give the background promise chain a tick to flip the step.
     for (let i = 0; i < 50; i++) {
       const s = await (await fetch(`${url}/api/state`)).json();
-      if (s.step === 'login') { assert.equal(s.install.parts.node, 'done'); return; }
+      if (s.step === 'login') {
+        // 'done' despite pct being 9, not 100 -- the whole point of the fix.
+        assert.equal(s.install.parts.node, 'done');
+        assert.equal(s.install.parts.python, 'skipped');
+        return;
+      }
       await new Promise((r) => setTimeout(r, 20));
     }
     assert.fail('state.step never became "login"');

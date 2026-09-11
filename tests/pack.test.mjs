@@ -72,6 +72,51 @@ test('pack: zip exists at IRIS-설치_v<version>_<date>.zip, .sha256 matches, li
   assertCRLFOnly(path.join(extractDir, 'installer', 'bootstrap.ps1'));
 });
 
+// Task 12: the installer verifies the relay by checking every file
+// patches/teamclaude/rules.json names, so that one file has to be inside the
+// zip. Fix round 1 finding 6: *only* that file -- patches/ also holds
+// teamclaude-manage.ps1, which already ships as the payload's `manage` part.
+test('pack: ships patches/teamclaude/rules.json into installer/, and nothing else from patches/', async () => {
+  const installerDir = path.join(tmp, 'fake-installer-patches');
+  fs.mkdirSync(installerDir, { recursive: true });
+  fs.writeFileSync(path.join(installerDir, 'IRIS-설치.cmd'), '@echo off\r\n');
+
+  const patchesSrc = path.join(tmp, 'fake-patches', 'teamclaude');
+  fs.mkdirSync(patchesSrc, { recursive: true });
+  const rulesFile = path.join(patchesSrc, 'rules.json');
+  fs.writeFileSync(rulesFile, JSON.stringify({ files: [{ path: 'src/index.js', replace: [] }] }), 'utf8');
+  fs.writeFileSync(path.join(patchesSrc, 'teamclaude-manage.ps1'), 'Write-Host manage\r\n', 'utf8');
+
+  const stageDir = path.join(tmp, 'stage-patches');
+  fs.mkdirSync(path.join(stageDir, 'payload'), { recursive: true });
+  fs.writeFileSync(path.join(stageDir, 'payload', 'manifest.json'), '{}');
+
+  const { zipPath } = await pack({
+    stageDir, outDir: path.join(tmp, 'out-patches'), manifest: { package: { version: '0.0.2' } },
+    installerDir, patchRulesFile: rulesFile,
+  });
+
+  const extractDir = path.join(tmp, 'extracted-patches');
+  await extractZip(zipPath, extractDir);
+  const packedRules = path.join(extractDir, 'installer', 'patches', 'teamclaude', 'rules.json');
+  assert.ok(fs.existsSync(packedRules), 'zip missing installer/patches/teamclaude/rules.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(packedRules, 'utf8')), JSON.parse(fs.readFileSync(rulesFile, 'utf8')));
+  assert.deepEqual(
+    fs.readdirSync(path.join(extractDir, 'installer', 'patches', 'teamclaude')),
+    ['rules.json'],
+    'the whole patches/ tree was copied instead of just rules.json',
+  );
+
+  // ...and packing without one still works (no patches dir at all).
+  const { zipPath: bare } = await pack({
+    stageDir, outDir: path.join(tmp, 'out-patches2'), manifest: { package: { version: '0.0.3' } },
+    installerDir, patchRulesFile: path.join(tmp, 'nope', 'rules.json'),
+  });
+  const bareDir = path.join(tmp, 'extracted-bare');
+  await extractZip(bare, bareDir);
+  assert.ok(!fs.existsSync(path.join(bareDir, 'installer', 'patches')));
+});
+
 test('pack: falls back to manifest.package.version when version is omitted', async () => {
   const installerDir = path.join(tmp, 'fake-installer-2');
   fs.mkdirSync(installerDir, { recursive: true });

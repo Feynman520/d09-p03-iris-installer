@@ -16,7 +16,13 @@ const DEFAULT_INSTALLER_DIR = path.join(ROOT_DIR, 'installer');
 // the relay by checking that every file rules.json names is present and
 // actually patched (installer/lib/install.mjs verifyTeamclaudePatches).
 // Without this the check has no list to verify against on the user's PC.
-const DEFAULT_PATCHES_DIR = path.join(ROOT_DIR, 'patches');
+//
+// Exactly this one file, not the whole patches/ tree: the only other thing
+// in there is teamclaude-manage.ps1, which already ships as the `manage`
+// part of the payload and would otherwise be in the zip twice (fix round 1
+// finding 6).
+const PATCH_RULES_REL = path.join('patches', 'teamclaude', 'rules.json');
+const DEFAULT_PATCH_RULES_FILE = path.join(ROOT_DIR, PATCH_RULES_REL);
 const CMD_NAME = 'IRIS-설치.cmd';
 
 function copyTree(src, dest) {
@@ -61,7 +67,7 @@ function forceCRLFTree(dir) {
 // build.mjs can call pack() without knowing that detail; tests pass a fully
 // self-contained fake installerDir so they don't depend on installer/'s
 // real (evolving, Task 9+) contents.
-export async function pack({ stageDir, outDir, manifest, version = manifest?.package?.version, installerDir = DEFAULT_INSTALLER_DIR, patchesDir = DEFAULT_PATCHES_DIR }) {
+export async function pack({ stageDir, outDir, manifest, version = manifest?.package?.version, installerDir = DEFAULT_INSTALLER_DIR, patchRulesFile = DEFAULT_PATCH_RULES_FILE }) {
   if (!version) throw new Error('pack: version (or manifest.package.version) is required');
 
   const root = path.join(stageDir, 'zip-root');
@@ -75,10 +81,13 @@ export async function pack({ stageDir, outDir, manifest, version = manifest?.pac
 
   const installerDest = path.join(root, 'installer');
   copyTree(installerDir, installerDest);
-  // Optional (tests pass a self-contained fake installerDir with no patches):
-  // only copied when the directory really exists.
-  if (patchesDir && fs.existsSync(patchesDir)) {
-    copyTree(patchesDir, path.join(installerDest, 'patches'));
+  // Lands at installer\patches\teamclaude\rules.json -- the first candidate
+  // installer/lib/install.mjs's resolvePatchRules() looks for inside a zip.
+  // Optional so tests can pack a self-contained fake installerDir.
+  if (patchRulesFile && fs.existsSync(patchRulesFile)) {
+    const rulesDest = path.join(installerDest, PATCH_RULES_REL);
+    fs.mkdirSync(path.dirname(rulesDest), { recursive: true });
+    fs.copyFileSync(patchRulesFile, rulesDest);
   }
   forceCRLFTree(installerDest);
 

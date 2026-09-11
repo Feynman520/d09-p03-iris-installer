@@ -191,6 +191,40 @@ export function preserveAside(slot) {
   return candidate;
 }
 
+// The undo half of preserveAside, run when a part fails after its old copy
+// was already moved aside (fix round 1 finding 1). Without it a re-install
+// that dies mid-part -- the realistic case being `claude` on a machine whose
+// network blocks the npm registry -- left the soul with `claude.prev` and no
+// `claude` at all, so the shim pointed at nothing and the previously working
+// install was worse off than if the user had never re-run the installer.
+//
+// Whatever sits at `slot` when this runs is this run's own half-written
+// output: the slot was either empty to begin with or renamed out of the way
+// by preserveAside before the attempt started. Clearing it is therefore
+// never a deletion of user data -- it is the only way to give the backup its
+// real name back -- and it is the single exception to the installer's
+// never-delete rule. If the clear fails (a file still locked by a crashed
+// child), the backup is deliberately left under its .prev name rather than
+// risking a half-merged directory.
+export function restorePart(slot, moved) {
+  const result = { clearedPartial: false, restored: false };
+  if (fs.existsSync(slot)) {
+    try {
+      fs.rmSync(slot, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 });
+      result.clearedPartial = true;
+    } catch {
+      return result; // slot still occupied -> do not clobber it with the backup
+    }
+  }
+  if (moved && fs.existsSync(moved) && !fs.existsSync(slot)) {
+    try {
+      fs.renameSync(moved, slot);
+      result.restored = true;
+    } catch { /* backup stays under .prev; reported in the receipt */ }
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // python embeddable: enable site-packages so PyYAML is importable
 // ---------------------------------------------------------------------------
@@ -386,9 +420,14 @@ export function defaultVerifiers({ root, manifest, lock, zipRoot, patchRulesFile
       const version = JSON.parse(fs.readFileSync(pkg, 'utf8')).version;
       const wanted = want('face');
       // The manifest is the authority (build/collect.mjs records the version
-      // it read out of the shipped package.json); if it carries none, the
-      // shipped package.json's own version is all there is to report.
-      return { ok: wanted == null || version === wanted, detail: `package.json=${version} manifest=${wanted ?? 'none'}` };
+      // it read out of the shipped package.json). A manifest with no face
+      // version is a broken build, not a pass: without it there is nothing to
+      // check the shipped package.json against, and "the file exists" is not
+      // verification (fix round 1 finding 4).
+      if (wanted == null) {
+        return { ok: false, detail: `manifest carries no face version (shipped package.json=${version}) -- cannot verify` };
+      }
+      return { ok: version === wanted, detail: `package.json=${version} manifest=${wanted}` };
     },
     guides: async () => {
       const dir = path.join(root, '_setup-guides');
@@ -421,6 +460,42 @@ export const defaultNpmInstall = ({ nodeExe, npmCli, prefix, spec, cacheDir }) =
 // ---------------------------------------------------------------------------
 // install
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// install log
+// ---------------------------------------------------------------------------
+
+// docs/설계.md 3-3: "로그 = _agent\setup\package-install.log 하나(단계·시각·
+// 결과, 비밀 없음)", and the receipt's `log` field already points at it.
+// Deliberately narrow: ISO timestamp, part, status/pct, error CODE. Free-form
+// `detail` (npm stderr, a CLI's --version output, a verifier message) is kept
+// out of the log on purpose -- the receipt already carries it, and a log is
+// the artefact most likely to be pasted into a bug report, so it gets only
+// fields whose shape the installer controls.
+export function installLogPath(root) {
+  return path.join(root, '_agent', 'setup', 'package-install.log');
+}
+
+function makeLogger(root) {
+  const file = installLogPath(root);
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); } catch { /* logged nowhere, then */ }
+  return (text) => {
+    try {
+      fs.appendFileSync(file, `${new Date().toISOString()} ${text}\r\n`, 'utf8');
+    } catch { /* a log that cannot be written must never fail the install */ }
+  };
+}
+
+function formatEvent(e) {
+  const bits = [];
+  bits.push(`part=${e.part ?? '-'}`);
+  if (e.skipped) bits.push('status=skipped');
+  else if (e.status) bits.push(`status=${e.status}`);
+  if (typeof e.pct === 'number') bits.push(`pct=${e.pct}`);
+  if (e.error) bits.push(`error=${e.error}`);
+  if (e.done) bits.push('done=true');
+  return bits.join(' ');
+}
 
 class InstallError extends Error {
   constructor(code, part, detail) {
@@ -458,12 +533,27 @@ export async function install({
   npmInstall = defaultNpmInstall,
   patchRulesFile,
 } = {}) {
-  const emit = (e) => { try { onProgress({ done: false, ...e }); } catch { /* listener errors never break the install */ } };
+  // `log` only exists once the root is known to be safe to write to; until
+  // then it is a no-op, so the path-safety refusal below writes nothing under
+  // C:\ (global constraint).
+  let log = () => {};
+  // Both helpers contain listener errors: a screen that throws while
+  // rendering progress must never take the install down with it. The terminal
+  // (done:true) events go through emitFinal for exactly the same containment
+  // -- they used to call onProgress bare (fix round 1 finding 5).
+  const emit = (e) => {
+    log(formatEvent(e));
+    try { onProgress({ done: false, ...e }); } catch { /* listener errors never break the install */ }
+  };
+  const emitFinal = (e) => {
+    log(formatEvent({ ...e, done: true }));
+    try { onProgress({ ...e, done: true }); } catch { /* same containment as emit */ }
+  };
 
   // --- 0. path safety, before anything under C:\ is touched ---------------
   const pathCheck = await checkRootPath(root, fsutil);
   if (!pathCheck.ok) {
-    onProgress({ part: 'root', error: pathCheck.reason, done: true });
+    emitFinal({ part: 'root', error: pathCheck.reason });
     throw new InstallError(pathCheck.reason, 'root');
   }
 
@@ -478,6 +568,9 @@ export async function install({
   fs.mkdirSync(codexHome, { recursive: true });
 
   // --- 1. receipt ---------------------------------------------------------
+  log = makeLogger(root);
+  log(`install start root=${root} package=${manifest?.package?.version ?? '?'} parts=${PART_ORDER.length}`);
+
   const prior = readReceipt(root);
   const receipt = prior ?? newReceipt({
     root,
@@ -485,6 +578,12 @@ export async function install({
     manifest,
     createdBy: existing === 'soul' ? 'existing' : 'package-installer',
   });
+  // Re-install over an older receipt: the package identity is whatever is
+  // being installed *now*, so it is refreshed from this manifest, while
+  // `installed` keeps its per-part history (that is what the skip check reads)
+  // -- fix round 1 finding 7.
+  const fresh = newReceipt({ root, name, manifest, createdBy: receipt.soul?.createdBy });
+  receipt.package = fresh.package;
   receipt.soul = { root, name, createdBy: receipt.soul?.createdBy ?? 'package-installer' };
   receipt.choice = choice;
   markStep(receipt, 'precheck', 'done');
@@ -587,26 +686,46 @@ export async function install({
       writeReceipt(root, receipt);
 
       if (!result.ok) {
+        // Verification failing means the new copy is *there* but wrong, so
+        // the old one deliberately stays under .prev (already recorded in
+        // `info.previous` above) rather than being swapped back over it --
+        // that is a decision for the user, with both copies on disk.
         markStep(receipt, 'copy', 'error');
         writeReceipt(root, receipt);
-        onProgress({ part, error: 'verify-failed', detail: result.detail ?? null, done: true });
+        emitFinal({ part, error: 'verify-failed', detail: result.detail ?? null });
         throw new InstallError('verify-failed', part, result.detail);
       }
 
       emit({ part, pct: Math.floor(((i + 1) / total) * 100), status: 'done' });
     } catch (err) {
-      if (err instanceof InstallError && err.code !== 'verify-failed') {
-        setInstalled(receipt, part, {
-          version: want.version, path: relToRoot(root, dest), sha256: want.sha256, verified: false, detail: err.detail ?? null,
-        });
-        markStep(receipt, 'copy', 'error');
-        writeReceipt(root, receipt);
-        onProgress({ part, error: err.code, detail: err.detail ?? null, done: true });
-      } else if (!(err instanceof InstallError)) {
-        markStep(receipt, 'copy', 'error');
-        writeReceipt(root, receipt);
-        onProgress({ part, error: 'install-failed', detail: String(err?.message ?? err), done: true });
-      }
+      if (err instanceof InstallError && err.code === 'verify-failed') throw err; // already recorded above
+
+      // The part never got far enough to produce a usable copy (payload
+      // missing, extraction died, npm unreachable): put the previous install
+      // back so a failed re-install leaves the soul exactly as it was.
+      const restore = restorePart(slot, moved);
+      const code = err instanceof InstallError ? err.code : 'install-failed';
+      const detail = err instanceof InstallError ? (err.detail ?? null) : String(err?.message ?? err);
+
+      setInstalled(receipt, part, {
+        version: want.version,
+        path: relToRoot(root, dest),
+        sha256: want.sha256,
+        verified: false,
+        detail,
+        // Always recorded on the error path (fix round 1 finding 1): the path
+        // of a backup that still exists on disk, or null once it has been put
+        // back under its real name. `priorRestored` says which of those
+        // happened, and `priorExisted` distinguishes "restored" from "there
+        // was nothing to restore" (a first install).
+        previous: restore.restored ? null : (moved ? relToRoot(root, moved) : null),
+        priorExisted: moved !== null,
+        priorRestored: restore.restored,
+      });
+      markStep(receipt, 'copy', 'error');
+      writeReceipt(root, receipt);
+      log(`part=${part} rollback priorExisted=${moved !== null} restored=${restore.restored} clearedPartial=${restore.clearedPartial}`);
+      emitFinal({ part, error: code, detail });
       throw err;
     }
   }
@@ -648,6 +767,7 @@ export async function install({
   // --- 5. done ------------------------------------------------------------
   markStep(receipt, 'copy', 'done');
   writeReceipt(root, receipt);
-  onProgress({ pct: 100, done: true });
+  log('install done steps.copy=done');
+  emitFinal({ pct: 100 });
   return receipt;
 }

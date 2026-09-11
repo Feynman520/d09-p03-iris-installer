@@ -259,9 +259,16 @@ export function startServer({ port = 3460, zipRoot, nodeDir, stateFile, onQuit, 
     installEvents.push(event);
     if (event.part) {
       state.install = state.install ?? { parts: {} };
+      // `status` is authoritative when the event carries one. The old
+      // pct === 100 heuristic was wrong for every part but the last: install()
+      // reports a part's completion at floor((i+1)/total*100) -- 9, 18, ... 90
+      // -- so ten of eleven parts stayed 'running' forever in the state a
+      // refreshed screen reads back (fix round 1 finding 2). pct is now only
+      // the fallback for an event that has no status at all.
       state.install.parts[event.part] = event.error ? 'error'
         : event.skipped ? 'skipped'
-          : event.pct === 100 ? 'done' : 'running';
+          : event.status ? event.status
+            : event.pct === 100 ? 'done' : 'running';
     }
     const frame = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) {
