@@ -1,7 +1,8 @@
-import { test } from 'node:test'; import assert from 'node:assert/strict';
+import { test, after } from 'node:test'; import assert from 'node:assert/strict';
 import fs from 'node:fs'; import path from 'node:path'; import os from 'node:os';
 import { sha256File, buildManifest, verifyManifest } from '../lib/manifest.mjs';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-mf-'));
+after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 test('sha256File matches known vector', async () => {
   const f = path.join(tmp, 'a.txt'); fs.writeFileSync(f, 'abc');
   assert.equal(await sha256File(f), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
@@ -15,4 +16,21 @@ test('build then verify ok; tamper → mismatch', async () => {
   assert.deepEqual(await verifyManifest(payload, m), { ok: true, mismatches: [] });
   fs.writeFileSync(path.join(payload, 'node/n.zip'), 'zip!');
   const r = await verifyManifest(payload, m); assert.equal(r.ok, false); assert.equal(r.mismatches[0].file, 'node/n.zip');
+});
+test('glob part with exactly one file is still keyed name:basename', async () => {
+  const payload = path.join(tmp, 'payload-glob-one'); fs.mkdirSync(path.join(payload, 'guides'), { recursive: true });
+  fs.writeFileSync(path.join(payload, 'guides/guide-ko.md'), 'guide-ko');
+  const lock = { package: { version: '1.0.0', guideVersion: '10' }, parts: { guides: { version: '10', file: 'guides/' } } };
+  const m = await buildManifest({ payloadDir: payload, lock, faceVersion: '2.29.0' });
+  assert.deepEqual(Object.keys(m.parts), ['guides:guide-ko.md']);
+  assert.deepEqual(await verifyManifest(payload, m), { ok: true, mismatches: [] });
+});
+test('glob part with two files is keyed name:basename per file', async () => {
+  const payload = path.join(tmp, 'payload-glob-two'); fs.mkdirSync(path.join(payload, 'guides'), { recursive: true });
+  fs.writeFileSync(path.join(payload, 'guides/guide-ko.md'), 'guide-ko');
+  fs.writeFileSync(path.join(payload, 'guides/guide-en.md'), 'guide-en');
+  const lock = { package: { version: '1.0.0', guideVersion: '10' }, parts: { guides: { version: '10', file: 'guides/' } } };
+  const m = await buildManifest({ payloadDir: payload, lock, faceVersion: '2.29.0' });
+  assert.deepEqual(new Set(Object.keys(m.parts)), new Set(['guides:guide-ko.md', 'guides:guide-en.md']));
+  assert.deepEqual(await verifyManifest(payload, m), { ok: true, mismatches: [] });
 });
