@@ -45,11 +45,28 @@ function relToRoot(root, abs) {
 // never delete: move aside instead
 // ---------------------------------------------------------------------------
 
-// Deliberately a COPY of installer/lib/install.mjs's preserveAside(), not an
-// import: the updater is installed on its own at <tools>\updater\ and must
-// keep working when the installer's lib/ is nowhere near it. tests/updater.
-// test.mjs pins the two implementations to the same behaviour instead.
-export function preserveAside(slot) {
+// Deliberately a COPY of installer/lib/install.mjs's preserveAside(),
+// moveDir() and carryOver(), not an import: the updater is installed on its
+// own at <tools>\updater\ and must keep working when the installer's lib/ is
+// nowhere near it. tests/updater.test.mjs pins the copies to the same
+// behaviour instead. Change one, change the other, or that test fails.
+
+// A sleep that works inside a synchronous function -- preserveAside() has to
+// stay synchronous (it is the one step that must not be interleaved with
+// anything else touching the slot).
+export function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Windows hands out EBUSY/EPERM for a directory that something still has open
+// -- a virus scanner that just walked the freshly written files, Explorer with
+// the folder selected, a child process that is on its way out. Those clear in
+// well under a second, so a short retry turns "the update failed" into "the
+// update took two seconds longer" (2026-09-14 review). A rename that fails for
+// any other reason still throws immediately.
+const TRANSIENT_RENAME_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+export function preserveAside(slot, { retries = 20, retryDelayMs = 100, sleep = sleepSync } = {}) {
   if (!fs.existsSync(slot)) return null;
   let candidate = `${slot}.prev`;
   let n = 2;
@@ -57,19 +74,55 @@ export function preserveAside(slot) {
     candidate = `${slot}.prev-${n}`;
     n += 1;
   }
-  fs.renameSync(slot, candidate);
-  return candidate;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(slot, candidate);
+      return candidate;
+    } catch (err) {
+      if (attempt >= retries || !TRANSIENT_RENAME_CODES.has(err?.code)) throw err;
+      sleep(retryDelayMs);
+    }
+  }
 }
 
 // A rename that survives the source and destination being on different
-// volumes (a download folder redirected elsewhere): copy + remove.
-function moveDir(src, dest) {
+// volumes (a downloads folder redirected elsewhere). Only EXDEV falls back to
+// copy+remove -- every other failure is a real one and is thrown, instead of
+// being turned into a copy that fails again with a less useful message.
+export function moveDir(src, dest) {
   try {
     fs.renameSync(src, dest);
-  } catch {
+  } catch (err) {
+    if (err?.code !== 'EXDEV') throw err;
     fs.cpSync(src, dest, { recursive: true });
     fs.rmSync(src, { recursive: true, force: true });
   }
+}
+
+// Folders that live inside a part's slot but belong to the user, not to the
+// package: Face's `state` (session cards, settings, voice hints) and `modules`
+// (installed extension modules). They have to travel from <slot>.prev into the
+// new copy or an update silently throws the user's sessions away.
+//
+// A name already present in the new copy is NOT overwritten -- that would mean
+// deleting something the package shipped. It is reported instead, and the
+// user's copy stays in <slot>.prev where nothing has been lost.
+export function carryOver(fromDir, toDir, names) {
+  const carried = [];
+  const failed = [];
+  for (const name of names ?? []) {
+    const from = path.join(fromDir, name);
+    if (!fs.existsSync(from)) continue;
+    const to = path.join(toDir, name);
+    if (fs.existsSync(to)) { failed.push(`${name}: already present in the new copy`); continue; }
+    try {
+      moveDir(from, to);
+      carried.push(name);
+    } catch (err) {
+      failed.push(`${name}: ${String(err?.message ?? err)}`);
+    }
+  }
+  return { carried, failed };
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +278,7 @@ export async function applyFaceItem({
   dir,
   version,
   npmInstall = defaultNpmInstall,
+  preserveOptions,
   log = () => {},
 }) {
   const tools = toolsDir(root);
@@ -232,8 +286,16 @@ export async function applyFaceItem({
   if (!fs.existsSync(dir)) return { ok: false, reason: 'source-missing' };
 
   fs.mkdirSync(tools, { recursive: true });
+  // npm ci REQUIRES a package-lock.json, so a new copy without one cannot be
+  // installed at all. Say so and stop rather than guessing: reusing the
+  // previous node_modules for an unknown dependency set would put a Face
+  // together out of two different releases' halves (2026-09-14 review).
   const newLock = readTextOrNull(path.join(dir, 'package-lock.json'));
-  const moved = preserveAside(slot);
+  if (newLock === null) {
+    log('face: the new copy has no package-lock.json -- refusing to install it');
+    return { ok: false, reason: 'no-package-lock' };
+  }
+  const moved = preserveAside(slot, preserveOptions);
   log(`face: previous=${moved ? relToRoot(root, moved) : 'none'}`);
 
   const rollback = () => {
@@ -252,11 +314,15 @@ export async function applyFaceItem({
 
   {
     // --- ① the new folder takes the slot --------------------------------
+    // COPIED, not moved (2026-09-14 review): the downloaded folder is the only
+    // copy of a verified release on this PC, and a rollback that consumed it
+    // would force a fresh download before the person could try again. It is
+    // removed at the end, once there is nothing left to roll back to.
     try {
-      moveDir(dir, slot);
+      fs.cpSync(dir, slot, { recursive: true });
     } catch (err) {
       const restored = rollback();
-      return { ok: false, reason: 'move-failed', detail: String(err?.message ?? err), restored };
+      return { ok: false, reason: 'copy-failed', detail: String(err?.message ?? err), restored };
     }
 
     // --- ② node_modules: reuse the old one, or run npm ci ---------------
@@ -278,7 +344,16 @@ export async function applyFaceItem({
       const nodeDir = path.join(tools, 'node');
       const npmCmd = path.join(nodeDir, 'npm.cmd');
       log('face: package-lock.json changed (or no previous node_modules) -> npm ci --omit=dev');
-      npm = await npmInstall({ npmCmd, cwd: slot, nodeDir });
+      try {
+        npm = await npmInstall({ npmCmd, cwd: slot, nodeDir });
+      } catch (err) {
+        // A spawn that could not even start counts the same as one that
+        // failed: put the previous copy back rather than leaving a Face with
+        // no node_modules.
+        log(`face: npm ci threw ${String(err?.message ?? err)}`);
+        const restored = rollback();
+        return { ok: false, reason: 'npm-ci-failed', detail: String(err?.message ?? err), restored };
+      }
       if (!npm || npm.code !== 0) {
         const detail = String(npm?.err || npm?.out || `npm exit ${npm?.code}`).slice(0, 300);
         log(`face: npm ci FAILED ${detail}`);
@@ -292,20 +367,9 @@ export async function applyFaceItem({
     // Failure here is reported, never rolled back: nothing has been deleted,
     // the folders are still in <slot>.prev, and undoing the swap at this
     // point would mean deleting a folder that now holds user data.
-    const carried = [];
-    const carryFailed = [];
-    for (const name of CARRY_OVER) {
-      const from = moved ? path.join(moved, name) : null;
-      if (!from || !fs.existsSync(from)) continue;
-      const to = path.join(slot, name);
-      try {
-        if (fs.existsSync(to)) fs.rmSync(to, { recursive: true, force: true });
-        moveDir(from, to);
-        carried.push(name);
-      } catch (err) {
-        carryFailed.push(`${name}: ${String(err?.message ?? err)}`);
-      }
-    }
+    const { carried, failed: carryFailed } = moved
+      ? carryOver(moved, slot, CARRY_OVER)
+      : { carried: [], failed: [] };
     log(`face: carried=${carried.join(',') || 'none'}${carryFailed.length ? ` failed=${carryFailed.join(' | ')}` : ''}`);
 
     // --- ④ receipt ------------------------------------------------------
@@ -338,6 +402,15 @@ export async function applyFaceItem({
       log(`face: receipt installed.face.version=${version ?? 'null'}`);
     }
 
+    // --- ⑤ the download has done its job ---------------------------------
+    // Only now: up to this point it was the one thing a retry could be built
+    // from. A failure to clean it up is not a failure of the update.
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      log(`face: could not remove the download folder: ${String(err?.message ?? err)}`);
+    }
+
     return {
       ok: true,
       reason,
@@ -355,6 +428,12 @@ export async function applyFaceItem({
 export function applyPackageItem({ root, dir, spawnFn = spawn, log = () => {} }) {
   const cmd = path.join(dir, 'IRIS-설치.cmd');
   if (!fs.existsSync(cmd)) return { ok: false, reason: 'installer-cmd-missing', detail: cmd };
+  // The installer derives the soul root from IRIS_INSTALLER_SOUL_NAME (server.
+  // mjs: root = C:\<name>), so telling it this plan's own root is simply
+  // passing the last folder name of plan.root. Without it the installer would
+  // fall back to its hardcoded default and update a soul nobody asked about
+  // -- which is exactly what a rehearsal soul is (2026-09-14 review).
+  const soulName = path.basename(root);
   try {
     const child = spawnFn(COMSPEC, ['/d', '/s', '/c', `""${cmd}" --auto"`], {
       cwd: dir,
@@ -362,10 +441,14 @@ export function applyPackageItem({ root, dir, spawnFn = spawn, log = () => {} })
       stdio: 'ignore',
       windowsHide: true,
       windowsVerbatimArguments: true,
-      env: { ...process.env, IRIS_INSTALLER_AUTO: '1', IRIS_UPDATE_ROOT: root },
+      env: {
+        ...process.env,
+        IRIS_INSTALLER_AUTO: '1',
+        ...(soulName ? { IRIS_INSTALLER_SOUL_NAME: soulName } : {}),
+      },
     });
     child.unref?.();
-    log(`package: started ${cmd} (pid ${child.pid}) with IRIS_INSTALLER_AUTO=1`);
+    log(`package: started ${cmd} (pid ${child.pid}) with IRIS_INSTALLER_AUTO=1 soul=${soulName}`);
     return { ok: true, pid: child.pid };
   } catch (err) {
     return { ok: false, reason: 'installer-spawn-failed', detail: String(err?.message ?? err) };
@@ -407,6 +490,20 @@ export function relaunchFace({ root, spawnFn = spawn, log = () => {} }) {
 // apply
 // ---------------------------------------------------------------------------
 
+export const PLAN_SCHEMA = 1;
+
+// An item may only point inside <root>\_agent\shared\downloads. The daemon is
+// the only thing that writes a plan, so this is not a trust boundary so much
+// as a spelling check -- but "the updater will copy any folder you name over
+// <tools>\face" is not a sentence anyone should have to trust, and a plan with
+// a wrong path is a bug worth catching loudly (2026-09-14 review).
+export function insideDownloads(root, dir) {
+  if (!dir) return false;
+  const base = path.resolve(root, '_agent', 'shared', 'downloads');
+  const rel = path.relative(base, path.resolve(dir));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 /**
  * applyPlan({plan, ...deps}) -> Promise<result>
  *
@@ -420,6 +517,7 @@ export async function applyPlan({
   spawnFn = spawn,
   waitFn = waitForDaemonStop,
   waitOptions = {},
+  preserveOptions,
   logger,
 } = {}) {
   const root = plan?.root;
@@ -428,7 +526,7 @@ export async function applyPlan({
   const at = () => new Date().toISOString();
 
   const planItems = Array.isArray(plan.items) ? plan.items : [];
-  log(`apply start root=${root} items=${planItems.map((i) => `${i.kind}@${i.version ?? '?'}`).join(',') || 'none'}`);
+  log(`apply start root=${root} schema=${plan.schema} items=${planItems.map((i) => `${i.kind}@${i.version ?? '?'}`).join(',') || 'none'}`);
 
   const finish = (result) => {
     try { writeJsonAtomic(updateResultPath(root), result); } catch (err) {
@@ -437,6 +535,20 @@ export async function applyPlan({
     log(`apply done ok=${result.ok} ${result.reason ? `reason=${result.reason}` : ''}`);
     return result;
   };
+  const notAttempted = (i, reason) => ({ kind: i.kind, version: i.version ?? null, ok: false, reason });
+
+  // --- ⓪ a plan this version does not understand -------------------------
+  // The daemon and the updater are separate release trains; an older updater
+  // meeting a newer plan must stop, not guess at fields it has never seen.
+  if (plan.schema !== PLAN_SCHEMA) {
+    log(`plan schema ${plan.schema} is not ${PLAN_SCHEMA} -- nothing changed`);
+    return finish({
+      ok: false,
+      reason: 'unsupported-schema',
+      items: planItems.map((i) => notAttempted(i, 'not-attempted')),
+      at: at(),
+    });
+  }
 
   // --- ① wait for the daemon to be gone ---------------------------------
   const waited = await waitFn({
@@ -446,10 +558,12 @@ export async function applyPlan({
   });
   if (!waited.ok) {
     log(`daemon still running after ${waited.waitedMs}ms (pid=${waited.pidAlive} port=${waited.portOpen}) -- nothing changed`);
+    // No relaunch here on purpose: the daemon is still running, so the window
+    // the person is looking at is the one we failed to replace.
     return finish({
       ok: false,
       reason: waited.reason ?? 'daemon-still-running',
-      items: planItems.map((i) => ({ kind: i.kind, version: i.version ?? null, ok: false, reason: 'not-attempted' })),
+      items: planItems.map((i) => notAttempted(i, 'not-attempted')),
       at: at(),
     });
   }
@@ -462,22 +576,54 @@ export async function applyPlan({
   // starts the window itself (P02 설계 4-2).
   const pkg = planItems.find((i) => i.kind === 'package');
   if (pkg) {
-    const r = applyPackageItem({ root, dir: pkg.dir, spawnFn, log });
+    let r;
+    try {
+      r = insideDownloads(root, pkg.dir)
+        ? applyPackageItem({ root, dir: pkg.dir, spawnFn, log })
+        : { ok: false, reason: 'dir-outside-downloads', detail: pkg.dir ?? null };
+    } catch (err) {
+      log(`package: threw ${String(err?.stack ?? err)}`);
+      r = { ok: false, reason: 'item-threw', detail: String(err?.message ?? err) };
+    }
     const items = planItems.map((i) => (i === pkg
       ? { kind: 'package', version: pkg.version ?? null, ok: r.ok, reason: r.reason }
       : { kind: i.kind, version: i.version ?? null, ok: true, reason: 'skipped-included-in-package' }));
-    return finish({ ok: r.ok, items, at: at(), handedOffToInstaller: r.ok, relaunched: false });
+    // 설계 4-5: the window comes back even when something failed. On the happy
+    // path the installer we just started is what reopens it, so we must NOT --
+    // but if the handoff failed there is nobody left to do it (2026-09-14
+    // review).
+    let relaunch = null;
+    if (!r.ok && plan.relaunch) relaunch = relaunchFace({ root, spawnFn, log });
+    return finish({
+      ok: r.ok, items, at: at(), handedOffToInstaller: r.ok, relaunched: relaunch?.ok ?? false,
+    });
   }
 
   // --- ③ per-item -------------------------------------------------------
+  // Every item is contained: a throw from one must not skip the result file
+  // and the relaunch below, or the person is left with no window and Face has
+  // nothing to report on its next start (2026-09-14 review).
   const items = [];
   for (const item of planItems) {
-    if (item.kind === 'face') {
-      const r = await applyFaceItem({ root, dir: item.dir, version: item.version, npmInstall, log });
-      items.push({ kind: 'face', version: item.version ?? null, ok: r.ok, reason: r.reason });
-    } else {
-      log(`item ${item.kind}: unknown kind, skipped`);
-      items.push({ kind: item.kind, version: item.version ?? null, ok: false, reason: 'unknown-kind' });
+    try {
+      if (item.kind !== 'face') {
+        log(`item ${item.kind}: unknown kind, skipped`);
+        items.push(notAttempted(item, 'unknown-kind'));
+      } else if (!insideDownloads(root, item.dir)) {
+        log(`item face: dir is not under _agent\\shared\\downloads (${item.dir}) -- refused`);
+        items.push(notAttempted(item, 'dir-outside-downloads'));
+      } else {
+        const r = await applyFaceItem({
+          root, dir: item.dir, version: item.version, npmInstall, preserveOptions, log,
+        });
+        items.push({ kind: 'face', version: item.version ?? null, ok: r.ok, reason: r.reason });
+      }
+    } catch (err) {
+      log(`item ${item.kind}: threw ${String(err?.stack ?? err)}`);
+      items.push({
+        kind: item.kind, version: item.version ?? null, ok: false,
+        reason: 'item-threw', detail: String(err?.message ?? err),
+      });
     }
   }
 
@@ -496,14 +642,18 @@ export async function applyPlan({
 // cli
 // ---------------------------------------------------------------------------
 
+// Both spellings are accepted: `--plan <p>` (the documented one) and a bare
+// positional path, which is how the Face daemon calls it today. Neither side
+// gets to break the other on a release boundary (2026-09-14 contract check).
 export function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--plan') args.plan = argv[++i];
+    else if (!a.startsWith('-') && args.plan === undefined) args.plan = a;
     else throw new Error(`unknown arg: ${a}`);
   }
-  if (!args.plan) throw new Error('usage: node apply.mjs --plan <plan.json>');
+  if (!args.plan) throw new Error('usage: node apply.mjs [--plan] <plan.json>');
   return args;
 }
 

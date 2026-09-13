@@ -23,7 +23,9 @@ after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 // (manifest.json + per-part archives) but weighs a few hundred bytes, so the
 // unit tests never touch the 250 MB build output.
 // --------------------------------------------------------------------------
-async function makeFakePayload(dir, { nodeBody = 'hello-node' } = {}) {
+// `faceVersion` is opt-in so every other test's payload stays exactly as it
+// was: only the carry-over test needs a face part.
+async function makeFakePayload(dir, { nodeBody = 'hello-node', faceVersion = null } = {}) {
   const payload = path.join(dir, 'payload');
   fs.mkdirSync(path.join(payload, 'node'), { recursive: true });
   fs.mkdirSync(path.join(payload, 'guides'), { recursive: true });
@@ -43,12 +45,28 @@ async function makeFakePayload(dir, { nodeBody = 'hello-node' } = {}) {
   fs.writeFileSync(path.join(payload, 'guides', guideA), 'claude edition', 'utf8');
   fs.writeFileSync(path.join(payload, 'guides', guideB), 'codex edition', 'utf8');
 
+  if (faceVersion) {
+    const faceSrc = path.join(dir, '_facesrc');
+    fs.rmSync(faceSrc, { recursive: true, force: true });
+    fs.mkdirSync(faceSrc, { recursive: true });
+    fs.writeFileSync(path.join(faceSrc, 'app.js'), `face ${faceVersion}`, 'utf8');
+    fs.writeFileSync(path.join(faceSrc, 'package.json'), JSON.stringify({ name: 'iris-face', version: faceVersion }), 'utf8');
+    fs.mkdirSync(path.join(payload, 'face'), { recursive: true });
+    const faceZip = path.join(payload, 'face', 'iris-face.zip');
+    fs.rmSync(faceZip, { force: true });
+    const fr = await run(TAR, ['-a', '-cf', faceZip, '-C', faceSrc, '.']);
+    assert.equal(fr.code, 0, `tar failed: ${fr.err}`);
+  }
+
   const manifest = {
     schema: 1,
     built: '2026-09-11T00:00:00.000Z',
     package: { name: 'IRIS', version: '1.0.0', guideVersion: '9', license: 'MIT' },
     parts: {
       node: { file: 'node/fake-node.zip', version: '24.17.0', sha256: 'aaa', bytes: 1 },
+      ...(faceVersion
+        ? { face: { file: 'face/iris-face.zip', version: faceVersion, sha256: `face-${faceVersion}`, bytes: 1 } }
+        : {}),
       [`guides:${guideA}`]: { file: `guides/${guideA}`, version: '9', sha256: 'bbb', bytes: 1 },
       [`guides:${guideB}`]: { file: `guides/${guideB}`, version: '9', sha256: 'ccc', bytes: 1 },
     },
@@ -60,6 +78,7 @@ async function makeFakePayload(dir, { nodeBody = 'hello-node' } = {}) {
     package: { version: '1.0.0', guideVersion: '9' },
     parts: {
       node: { kind: 'url', version: '24.17.0', file: 'node/fake-node.zip' },
+      ...(faceVersion ? { face: { kind: 'dir', file: 'face/iris-face.zip' } } : {}),
       guides: { kind: 'glob', file: 'guides/' },
     },
   };
@@ -171,6 +190,62 @@ test('install: unpacks parts, writes shims/soul-state/receipt, then skips on re-
   });
   assert.equal(fs.readFileSync(path.join(root, '_agent', 'shared', 'tools', 'node.prev', 'hello.txt'), 'utf8'), 'hello-node');
   assert.equal(fs.readFileSync(path.join(nodeDir, 'hello.txt'), 'utf8'), 'hello-node-v2');
+});
+
+// Critical (2026-09-14 review): Face's `state` (session cards, settings, voice
+// hints) and `modules` (installed extension modules) live INSIDE the part's
+// own slot, and the shipped face zip deliberately excludes them -- so
+// replacing the part used to leave them behind in face.prev and the person
+// came back to an IRIS window with no sessions, no settings and no modules.
+// The structural-package update path (IRIS-설치.cmd --auto) made that reachable
+// without anyone re-running the wizard.
+test('install: replacing the face part carries the user\'s state/ and modules/ into the new copy', async () => {
+  const work = path.join(tmp, 'case-face-carry');
+  const { zipRoot, manifest, lock } = await makeFakePayload(work, { faceVersion: '2.57.1' });
+  const root = path.join(work, 'NOVA');
+  const faceDir = path.join(root, '_agent', 'shared', 'tools', 'face');
+
+  // ---- run 1: first install, then the person uses it --------------------
+  await install({
+    root, name: 'NOVA', zipRoot, manifest, lock, choice: CHOICE, existing: 'none', ...fakeDeps([]),
+  });
+  assert.equal(fs.readFileSync(path.join(faceDir, 'app.js'), 'utf8'), 'face 2.57.1');
+
+  fs.mkdirSync(path.join(faceDir, 'state'), { recursive: true });
+  fs.mkdirSync(path.join(faceDir, 'modules', 'messenger'), { recursive: true });
+  fs.writeFileSync(path.join(faceDir, 'state', 'sessions.json'), '{"mine":true}', 'utf8');
+  fs.writeFileSync(path.join(faceDir, 'modules', 'messenger', 'module.json'), '{"name":"messenger"}', 'utf8');
+
+  // ---- run 2: a new face version arrives ---------------------------------
+  const next = await makeFakePayload(work, { faceVersion: '2.58.0' });
+  const events = [];
+  await install({
+    root,
+    name: 'NOVA',
+    zipRoot: next.zipRoot,
+    manifest: next.manifest,
+    lock: next.lock,
+    choice: CHOICE,
+    existing: 'soul',
+    ...fakeDeps(events),
+  });
+
+  // the new code is there ...
+  assert.equal(fs.readFileSync(path.join(faceDir, 'app.js'), 'utf8'), 'face 2.58.0');
+  // ... and so is everything the person had
+  assert.equal(fs.readFileSync(path.join(faceDir, 'state', 'sessions.json'), 'utf8'), '{"mine":true}');
+  assert.equal(fs.readFileSync(path.join(faceDir, 'modules', 'messenger', 'module.json'), 'utf8'), '{"name":"messenger"}');
+  // moved, not copied -- the backup must not keep a second live copy
+  assert.equal(fs.existsSync(path.join(`${faceDir}.prev`, 'state')), false);
+  assert.equal(fs.existsSync(path.join(`${faceDir}.prev`, 'modules')), false);
+  // the old code is still preserved
+  assert.equal(fs.readFileSync(path.join(`${faceDir}.prev`, 'app.js'), 'utf8'), 'face 2.57.1');
+
+  const receipt = readReceipt(root);
+  assert.deepEqual(receipt.installed.face.carried, ['state', 'modules']);
+  assert.equal(receipt.installed.face.carryFailed, null);
+  // a part with no carryOver declaration gets no such fields at all
+  assert.equal(receipt.installed.node.carried, undefined);
 });
 
 test('install: soul-state is never overwritten when one already exists', async () => {

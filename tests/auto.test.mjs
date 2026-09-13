@@ -233,6 +233,39 @@ test('auto: without the flag nothing is automatic, even over an existing install
   }
 });
 
+// The updater hands the installer the soul to update by setting
+// IRIS_INSTALLER_SOUL_NAME (= the last folder name of plan.root) alongside
+// IRIS_INSTALLER_AUTO. Without this the installer would fall back to its
+// built-in default and update a different soul than the one the plan named --
+// which on this development PC means the real one instead of a rehearsal.
+test('auto: the soul to update comes from IRIS_INSTALLER_SOUL_NAME, not from a hardcoded root', async () => {
+  const zipRoot = makeZipRoot('zip-auto-env');
+  const before = process.env.IRIS_INSTALLER_SOUL_NAME;
+  const seen = [];
+  process.env.IRIS_INSTALLER_SOUL_NAME = 'ALPHA-FROM-ENV';
+  let server;
+  try {
+    server = await startServer({
+      port: 0,
+      zipRoot,
+      nodeDir: path.join(tmp, 'node'),
+      stateFile: path.join(tmp, 'state-env.json'),
+      auto: true,
+      // no soulName override: the env var is the only thing naming the soul
+      readReceiptFn: (root) => { seen.push(root); return priorReceipt(); },
+    });
+    const st = await (await fetch(`${server.url}/api/state`)).json();
+    assert.equal(st.auto.eligible, true);
+    assert.equal(st.auto.name, 'ALPHA-FROM-ENV');
+    assert.equal(st.auto.root, 'C:\\ALPHA-FROM-ENV');
+  } finally {
+    if (before === undefined) delete process.env.IRIS_INSTALLER_SOUL_NAME;
+    else process.env.IRIS_INSTALLER_SOUL_NAME = before;
+    if (server) await server.close();
+  }
+  assert.deepEqual(seen, ['C:\\ALPHA-FROM-ENV'], 'eligibility was checked against the soul the env var names');
+});
+
 test('auto: a failing install stops the run, records the reason, and never reopens the window', async () => {
   const zipRoot = makeZipRoot('zip-auto-fail');
   const relaunchCalls = [];

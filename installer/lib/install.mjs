@@ -58,7 +58,15 @@ const LAYOUT = {
   // <tools>\teamclaude-dash (docs/설계.md 2-2 layout) and hides the limits
   // drawer / skips the proxy start when it is not there.
   dash: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'teamclaude-dash') },
-  face: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'face') },
+  // `carryOver` = folders inside the slot that belong to the user, not to the
+  // package, and that must travel from <slot>.prev into the new copy when the
+  // part is replaced. Face's `state` holds the session cards, the settings and
+  // the voice hints; `modules` holds installed extension modules. Both are
+  // excluded from the shipped face zip (lock.json), so the new copy never has
+  // them and a replacement without this silently threw the person's sessions
+  // and installed modules away -- the structural-package update path made that
+  // reachable without anyone re-running the wizard (2026-09-14 review).
+  face: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'face'), carryOver: ['state', 'modules'] },
   // The updater lives on its own, next to face rather than inside it: it is
   // what replaces <tools>\face, so it must not be part of what it replaces.
   updater: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'updater') },
@@ -187,7 +195,26 @@ export function stripMotw(target) {
 // still want. A part being replaced is renamed to <slot>.prev; if that name
 // is taken (a third install), .prev-2, .prev-3, ... are used, so no earlier
 // copy is ever clobbered either.
-export function preserveAside(slot) {
+//
+// updater/apply.mjs carries a byte-for-byte copy of this function, of
+// moveDir() and of carryOver() below -- it is installed on its own at
+// <tools>\updater\ and cannot import them. tests/updater.test.mjs pins the
+// two sets to the same behaviour; change one, change the other.
+
+// A sleep that works inside a synchronous function.
+export function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Windows hands out EBUSY/EPERM for a directory something still has open -- a
+// virus scanner that just walked the freshly written files, Explorer with the
+// folder selected, a child process on its way out. Those clear in well under a
+// second, so a short retry turns "the install failed" into "the install took
+// two seconds longer" (2026-09-14 review). Any other failure still throws at
+// once.
+const TRANSIENT_RENAME_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+export function preserveAside(slot, { retries = 20, retryDelayMs = 100, sleep = sleepSync } = {}) {
   if (!fs.existsSync(slot)) return null;
   let candidate = `${slot}.prev`;
   let n = 2;
@@ -195,8 +222,49 @@ export function preserveAside(slot) {
     candidate = `${slot}.prev-${n}`;
     n += 1;
   }
-  fs.renameSync(slot, candidate);
-  return candidate;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(slot, candidate);
+      return candidate;
+    } catch (err) {
+      if (attempt >= retries || !TRANSIENT_RENAME_CODES.has(err?.code)) throw err;
+      sleep(retryDelayMs);
+    }
+  }
+}
+
+// A rename that survives source and destination being on different volumes.
+// Only EXDEV falls back to copy+remove -- every other failure is a real one.
+export function moveDir(src, dest) {
+  try {
+    fs.renameSync(src, dest);
+  } catch (err) {
+    if (err?.code !== 'EXDEV') throw err;
+    fs.cpSync(src, dest, { recursive: true });
+    fs.rmSync(src, { recursive: true, force: true });
+  }
+}
+
+// Moves the user's own folders out of <slot>.prev into the new copy. A name
+// already present in the new copy is NOT overwritten -- that would delete
+// something the package shipped -- it is reported instead, and the user's copy
+// stays in <slot>.prev where nothing has been lost.
+export function carryOver(fromDir, toDir, names) {
+  const carried = [];
+  const failed = [];
+  for (const name of names ?? []) {
+    const from = path.join(fromDir, name);
+    if (!fs.existsSync(from)) continue;
+    const to = path.join(toDir, name);
+    if (fs.existsSync(to)) { failed.push(`${name}: already present in the new copy`); continue; }
+    try {
+      moveDir(from, to);
+      carried.push(name);
+    } catch (err) {
+      failed.push(`${name}: ${String(err?.message ?? err)}`);
+    }
+  }
+  return { carried, failed };
 }
 
 // The undo half of preserveAside, run when a part fails after its old copy
@@ -713,12 +781,25 @@ export async function install({
       const verifier = verify[part];
       const result = verifier ? await verifier() : { ok: true, detail: 'no verifier' };
 
+      // The user's own folders travel into the new copy -- but only once it
+      // has verified. Everything before this point is still undoable by
+      // clearing the slot and putting <slot>.prev back (restorePart below),
+      // and moving the user's folders in first would turn that rollback into
+      // a deletion of their data. Same order the updater uses.
+      let carried = [];
+      let carryFailed = [];
+      if (result.ok && moved && layout.carryOver) {
+        ({ carried, failed: carryFailed } = carryOver(moved, slot, layout.carryOver));
+        log(`part=${part} carried=${carried.join(',') || 'none'}${carryFailed.length ? ` carryFailed=${carryFailed.length}` : ''}`);
+      }
+
       const info = {
         version: want.version,
         path: relToRoot(root, dest),
         sha256: want.sha256,
         verified: !!result.ok,
         detail: result.detail ?? null,
+        ...(layout.carryOver ? { carried, carryFailed: carryFailed.length ? carryFailed : null } : {}),
       };
       if (part === 'claude' || part === 'codex') {
         info.active = activeAgents.includes(part);
