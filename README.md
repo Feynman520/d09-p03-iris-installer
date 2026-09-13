@@ -32,7 +32,7 @@
 
 ```powershell
 npm test                                  # node:test 단위 시험 (외부 의존 0)
-node build/build.mjs                      # 부품 내려받기 + 형제 프로젝트 수집 + 포장 → _build/out/IRIS-설치_v<판>_<날짜>.zip
+node build/build.mjs                      # 부품 내려받기 + 형제 프로젝트 수집 + 포장 → _build/out/IRIS-Setup_v<판>_<날짜>.zip
 node verify/static.mjs                    # 정적 검사 ①~⑨ (매니페스트·정화·node-pty·패킹된 서버 기동 등)
 node verify/reproduce.mjs                 # 재현성 검사 (두 번 빌드, 11개 부품 sha256 일치)
 ```

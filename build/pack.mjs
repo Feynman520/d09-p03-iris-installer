@@ -207,7 +207,12 @@ export async function pack({
   );
 
   const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD, UTC
-  const zipName = `IRIS-설치_v${version}_${dateStr}.zip`;
+  // ASCII on purpose (2026-09-14): the zip is published as a GitHub Release
+  // attachment, and GitHub strips the Korean out of an attachment's file name
+  // (measured on v1.2.0), so `IRIS-설치_v1.2.0_....zip` arrived as
+  // `_v1.2.0_....zip`. The .cmd *inside* the zip keeps its Korean name -- that
+  // one is what the person double-clicks, and nothing rewrites it.
+  const zipName = `IRIS-Setup_v${version}_${dateStr}.zip`;
   fs.mkdirSync(outDir, { recursive: true });
   const zipPath = path.join(outDir, zipName);
   fs.rmSync(zipPath, { force: true });

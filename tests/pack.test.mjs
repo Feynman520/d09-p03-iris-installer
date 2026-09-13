@@ -10,7 +10,7 @@ import { extractZip } from '../lib/zip.mjs';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-pack-'));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
-test('pack: zip exists at IRIS-설치_v<version>_<date>.zip, .sha256 matches, listing has IRIS-설치.cmd + payload/manifest.json', async () => {
+test('pack: zip exists at IRIS-Setup_v<version>_<date>.zip, .sha256 matches, listing has IRIS-설치.cmd + payload/manifest.json', async () => {
   // Fake stage: one installer file (+ its own ui/.gitkeep, mirroring the
   // real placeholder's shape) and one payload part alongside a manifest --
   // deliberately NOT the real project installer/ dir, so this test stays
@@ -40,7 +40,7 @@ test('pack: zip exists at IRIS-설치_v<version>_<date>.zip, .sha256 matches, li
   assert.ok(fs.existsSync(zipPath), 'zip was not created');
   assert.equal(path.dirname(zipPath), outDir);
   const today = new Date().toISOString().slice(0, 10);
-  assert.equal(path.basename(zipPath), `IRIS-설치_v9.9.9_${today}.zip`);
+  assert.equal(path.basename(zipPath), `IRIS-Setup_v9.9.9_${today}.zip`);
 
   assert.ok(fs.existsSync(sha256Path));
   const expectedHex = await sha256File(zipPath);
@@ -238,7 +238,7 @@ test('pack: falls back to manifest.package.version when version is omitted', asy
   const manifest = { package: { version: '1.2.3' } };
   const { zipPath } = await pack({ stageDir, outDir, manifest, installerDir });
   const today = new Date().toISOString().slice(0, 10);
-  assert.equal(path.basename(zipPath), `IRIS-설치_v1.2.3_${today}.zip`);
+  assert.equal(path.basename(zipPath), `IRIS-Setup_v1.2.3_${today}.zip`);
 });
 
 test('pack: throws when installerDir has no IRIS-설치.cmd', async () => {
