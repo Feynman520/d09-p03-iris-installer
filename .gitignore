@@ -4,3 +4,6 @@ node_modules/
 tests/_tmp/
 .superpowers/
 build/sanitize-local.json
+.env
+.env.local
+.vercel
