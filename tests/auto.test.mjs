@@ -266,7 +266,151 @@ test('auto: the soul to update comes from IRIS_INSTALLER_SOUL_NAME, not from a h
   assert.deepEqual(seen, ['C:\\ALPHA-FROM-ENV'], 'eligibility was checked against the soul the env var names');
 });
 
-test('auto: a failing install stops the run, records the reason, and never reopens the window', async () => {
+// ---------------------------------------------------------------------------
+// Stale state (review round 2, critical 1). state.json is persistent
+// (%LOCALAPPDATA%\IRIS-Installer\state.json), so an automatic update opens on
+// whatever the last run left behind. The screen's enterAutoMode() returns early
+// on `step:'done'`+autoResult.ok and on installError -- and by then the daemon
+// is already shut down, so "the screen showed an old result" means "the person
+// has no IRIS window". The server clears the run-specific fields before the
+// screen ever reads them.
+// ---------------------------------------------------------------------------
+
+function writeStaleState(file, extra) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    step: 'done',
+    zipRoot: 'C:\\somewhere-old',
+    nodeDir: 'C:\\somewhere-old\\node',
+    soul: { name: SOUL, root: `C:\\${SOUL}`, existing: 'soul' },
+    install: { parts: { face: 'error', node: 'done' } },
+    ...extra,
+  }, null, 2), 'utf8');
+}
+
+test('auto: a previous update left step=done + autoResult -- the update still starts', async () => {
+  const zipRoot = makeZipRoot('zip-stale-done');
+  const stateFile = path.join(tmp, 'state-stale-done.json');
+  writeStaleState(stateFile, {
+    autoResult: { ok: true, from: '1.1.0', to: '1.2.0', relaunched: true, pid: 42 },
+  });
+
+  const installCalls = [];
+  const { url, close } = await startServer({
+    port: 0,
+    zipRoot,
+    nodeDir: path.join(tmp, 'node'),
+    stateFile,
+    soulName: SOUL,
+    auto: true,
+    readReceiptFn: () => priorReceipt(),
+    installFn: async (opts) => { installCalls.push(opts); return { steps: { copy: 'done' } }; },
+    relaunchFaceFn: () => ({ ok: true, how: 'wscript', pid: 778 }),
+    finishFn: () => ({ ok: true }),
+    onQuit: () => {},
+  });
+
+  try {
+    // What the screen reads before it decides anything: nothing that would
+    // make enterAutoMode() render the old success instead of calling
+    // startAuto().
+    const st = await (await fetch(`${url}/api/state`)).json();
+    assert.equal(st.auto.eligible, true);
+    assert.notEqual(st.step, 'done', 'a fresh update must not open on the previous run\'s "done"');
+    assert.equal(st.step, 'precheck');
+    assert.equal(st.autoResult, null, 'the previous run\'s result must not be replayed');
+    assert.equal(st.installError, null);
+    assert.equal(st.install, null, 'the previous run\'s part badges must not be rendered');
+    // and this run's zipRoot won, not the old one recorded in the file
+    assert.equal(st.zipRoot, zipRoot);
+
+    // the run the screen would now start really does start
+    const started = await fetch(`${url}/api/auto`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.equal(started.status, 202);
+    const end = await waitForStep(url, 'done');
+    assert.equal(end.autoResult.ok, true);
+    assert.equal(end.autoResult.to, '1.3.0', 'the new result replaced the stale one');
+    assert.equal(installCalls.length, 1);
+  } finally {
+    await close();
+  }
+
+  // the cleared state is persisted, not only held in memory -- a browser that
+  // refreshes before POST /api/auto reads the file, not the old object
+  const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.equal(onDisk.autoResult.to, '1.3.0');
+});
+
+test('auto: a first install that failed long ago left installError -- the update still starts', async () => {
+  const zipRoot = makeZipRoot('zip-stale-error');
+  const stateFile = path.join(tmp, 'state-stale-error.json');
+  writeStaleState(stateFile, { step: 'install', installError: 'payload-missing' });
+
+  const installCalls = [];
+  const { url, close } = await startServer({
+    port: 0,
+    zipRoot,
+    nodeDir: path.join(tmp, 'node'),
+    stateFile,
+    soulName: SOUL,
+    auto: true,
+    readReceiptFn: () => priorReceipt(),
+    installFn: async (opts) => { installCalls.push(opts); return { steps: { copy: 'done' } }; },
+    relaunchFaceFn: () => ({ ok: true, how: 'wscript', pid: 779 }),
+    finishFn: () => ({ ok: true }),
+    onQuit: () => {},
+  });
+
+  try {
+    const st = await (await fetch(`${url}/api/state`)).json();
+    assert.equal(st.auto.eligible, true);
+    assert.equal(st.installError, null, 'an old failure must not be shown as this update\'s failure');
+    assert.equal(st.step, 'precheck');
+    assert.equal(st.autoResult, null);
+
+    const started = await fetch(`${url}/api/auto`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.equal(started.status, 202);
+    const end = await waitForStep(url, 'done');
+    assert.equal(end.autoResult.ok, true);
+    assert.equal(installCalls.length, 1);
+  } finally {
+    await close();
+  }
+});
+
+// The ordinary (non-automatic) wizard still resumes where it left off: the
+// clearing above is guarded by auto.eligible, because there a leftover step is
+// exactly what a refresh is supposed to restore.
+test('auto: without the flag a leftover step/installError is still restored (the wizard resumes)', async () => {
+  const zipRoot = makeZipRoot('zip-stale-wizard');
+  const stateFile = path.join(tmp, 'state-stale-wizard.json');
+  writeStaleState(stateFile, { step: 'install', installError: 'payload-missing' });
+
+  const { url, close } = await startServer({
+    port: 0,
+    zipRoot,
+    nodeDir: path.join(tmp, 'node'),
+    stateFile,
+    soulName: SOUL,
+    auto: false,
+    readReceiptFn: () => priorReceipt(),
+  });
+  try {
+    const st = await (await fetch(`${url}/api/state`)).json();
+    assert.equal(st.auto.eligible, false);
+    assert.equal(st.step, 'install');
+    assert.equal(st.installError, 'payload-missing');
+    assert.deepEqual(st.install.parts, { face: 'error', node: 'done' });
+  } finally {
+    await close();
+  }
+});
+
+test('auto: a failing install stops the run, records the reason, and reopens the previous window', async () => {
   const zipRoot = makeZipRoot('zip-auto-fail');
   const relaunchCalls = [];
   const { url, close } = await startServer({
@@ -301,12 +445,22 @@ test('auto: a failing install stops the run, records the reason, and never reope
     assert.equal(st.autoResult.reason, 'payload-missing');
     assert.equal(st.installError, 'payload-missing');
     assert.equal(st.step, 'auto', 'a failed run must not claim to be done');
-    assert.equal(relaunchCalls.length, 0);
+
+    // 설계 4-5 (review round 2, important 3): the updater already shut the
+    // daemon down, so a failure with no relaunch leaves the person with no
+    // window at all. install() rolled the failed part back to .prev, so the
+    // window that reopens is the one that worked before the update.
+    assert.equal(relaunchCalls.length, 1, 'a failed update still reopens the window');
+    assert.equal(relaunchCalls[0].root, `C:\\${SOUL}`);
+    assert.equal(st.autoResult.relaunched, true);
 
     const frames = await readBufferedEvents(url);
     const terminal = frames.filter((f) => f.done);
-    assert.equal(terminal.length, 1);
+    assert.equal(terminal.length, 1, 'still exactly one terminal frame');
     assert.equal(terminal[0].error, 'payload-missing');
+    const relaunchFrame = frames.filter((f) => f.part === 'relaunch');
+    assert.equal(relaunchFrame.length, 1);
+    assert.equal(relaunchFrame[0].status, 'done');
   } finally {
     await close();
   }

@@ -363,6 +363,25 @@ export function startServer({
     };
   }
   state.auto = autoEligibility();
+  // A previous run's leftovers must never decide this one. state.json lives in
+  // %LOCALAPPDATA%\IRIS-Installer and survives forever, so an automatic update
+  // could open on a `step:'done'` + `autoResult.ok` left by the *last* update
+  // (the screen would replay that old success) or on an `installError` left by
+  // a first install that failed months ago (the screen would show that error
+  // and offer 「다시 시도」). In both cases enterAutoMode() returns before it
+  // ever calls startAuto(), and the daemon has already been shut down by the
+  // updater -- so the person is left with no IRIS window and no update. The
+  // verdict has to be made here, on the server, before the screen reads the
+  // state: this run is an update, therefore the run-specific fields start
+  // empty. (`step` goes back to the initial 'precheck'; POST /api/auto sets it
+  // to 'auto', which is how a *mid-run* browser refresh still reconnects to the
+  // live stream -- startServer() runs once per process, not per request.)
+  if (state.auto.eligible) {
+    state.step = 'precheck';
+    state.autoResult = null;
+    state.installError = null;
+    state.install = null;
+  }
   saveState(stateFile, state);
 
   const routes = new Map();
@@ -528,11 +547,33 @@ export function startServer({
   async function runAuto(info, manifest, lock) {
     const root = info.root;
     const forward = (e) => pushEvent({ part: null, pct: null, error: null, ...e, done: false });
+    const relaunchFace = () => {
+      try {
+        return relaunchFaceFn({
+          root,
+          ...(faceDir ? { faceDir } : {}),
+          ...(faceNodeExe ? { nodeExe: faceNodeExe } : {}),
+        });
+      } catch (err) {
+        return { ok: false, reason: String(err?.message ?? err) };
+      }
+    };
+    // Set the moment the happy path reopens the window, so a failure *after*
+    // that (finishFn throwing, say) does not open a second one.
+    let relaunched = null;
+
+    // 설계 4-5: 실패 항목이 있어도 창은 다시 연다 -- the updater shut the daemon
+    // down before handing over, and install() rolls a failed part back to its
+    // .prev copy, so what reopens is the version that was working a minute ago.
+    // Without this the person is left staring at a browser tab with no IRIS
+    // window at all, which is a worse outcome than the failed update itself.
     const failAuto = (where, reason, detail = null) => {
+      if (relaunched === null) relaunched = relaunchFace();
       state.step = 'auto';
       state.installError = reason;
-      state.autoResult = { ok: false, where, reason, detail };
+      state.autoResult = { ok: false, where, reason, detail, relaunched: relaunched?.ok ?? false };
       saveState(stateFile, state);
+      pushEvent({ part: 'relaunch', pct: null, skipped: false, status: relaunched?.ok ? 'done' : 'error', error: null, done: false });
       pushEvent({ part: where, pct: null, skipped: false, status: 'error', error: reason, detail, done: true });
     };
 
@@ -571,7 +612,8 @@ export function startServer({
       forward({ part: 'login', pct: 96, status: 'skipped', skipped: true });
 
       // ⓕ IRIS 창 다시 열기. install() already refreshed the receipt.
-      const relaunch = relaunchFaceFn({ root, ...(faceDir ? { faceDir } : {}), ...(faceNodeExe ? { nodeExe: faceNodeExe } : {}) });
+      const relaunch = relaunchFace();
+      relaunched = relaunch;
       forward({ part: 'relaunch', pct: 99, status: relaunch?.ok ? 'done' : 'error' });
 
       finishFn({
