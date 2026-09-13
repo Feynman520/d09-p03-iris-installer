@@ -23,6 +23,7 @@
 | `installer/` | zip에 들어가는 설치기 — `IRIS-설치.cmd`·`bootstrap.ps1`(겉옷, ASCII 전용) · `server.mjs`+`lib/`(속옷, 127.0.0.1:3460) · `ui/index.html`(단일 파일 화면) |
 | `build/` | 공장 — `lock.json`대로 부품 수집 → TeamClaude 로컬 패치 → 개인정보 정화 → 매니페스트(SHA-256) → 포장 |
 | `verify/` | 검사소 — `static.mjs`(정적 ①~⑨) · `reproduce.mjs`(두 번 빌드해 부품 해시 일치) · `e2e-checklist.md`(새 PC 실행 검사 대장) |
+| `updater/` | 적용기 — `apply.mjs` 한 파일(의존성 0). 설치되면 `_agent\shared\tools\updater\` |
 | `patches/` | TeamClaude 로컬 패치 규칙(앵커→치환)과 관리 스크립트 |
 | `lock.json` | 부품 잠금표 — 버전·URL·SHA-256(`latest` 금지) |
 | `docs/` | 설계(`설계.md`), 검증기록, 화면 캡처 |
@@ -40,6 +41,25 @@ node verify/reproduce.mjs                 # 재현성 검사 (두 번 빌드, 11
 - 형제 프로젝트(IRIS-Face 등)의 위치는 `lock.json`의 `source`가 가리키며, 다른 PC에서는 `IRIS_FACE_SOURCE`·`IRIS_DASH_SOURCE`·`IRIS_GUIDES_SOURCE` 환경변수로 바꿉니다.
 - Claude Code는 약관상 동봉하지 않고 설치 때 npm에서 잠근 버전을 내려받습니다(`lock.json parts.claude.redistribute: "download"`).
 - 개발 PC에서 설치기를 연습할 때는 `IRIS_INSTALLER_SOUL_NAME=<임시이름>`과 `IRIS_INSTALLER_NO_USER_ENV=1`을 주고 띄워, 진짜 `C:\IRIS`와 사용자 환경변수를 건드리지 않게 합니다. 끝나면 임시 폴더를 지웁니다.
+
+## 업데이트 (v1.3.0부터)
+
+새 판이 나오면 **IRIS 창의 설정 → 업데이트**에서 단추 하나로 끝납니다. 사람이 zip을 다시 받아 두 번 클릭할 일은 없습니다.
+
+```text
+IRIS 창이 새 판을 확인(하루 1회) → 사용자가 「업데이트」 → 내려받기·서명 검증 → 창이 꺼지며 적용기 실행
+      ↓
+적용기(_agent\shared\tools\updater\apply.mjs)
+  · 창이 완전히 꺼질 때까지 기다림(PID + 포트, 최대 90초 — 안 꺼지면 아무것도 바꾸지 않음)
+  · IRIS 창 부품만 바꾸는 경우: 옛 폴더를 .prev 로 밀어내고 새 폴더를 앉힌 뒤 state·modules·node_modules 를 넘김
+  · 구조판(설치 패키지)까지 바뀐 경우: IRIS-설치.cmd --auto 를 띄우고 물러남
+      ↓
+자동 모드 설치기 — 준비 확인 → 영수증과 비교해 바뀐 부품만 교체 → 로그인 생략 → 영수증 갱신 → IRIS 창 다시 열기
+```
+
+- 자동 모드는 **이미 영수증이 있는 PC에서만** 발동합니다. 새 PC에서 `--auto`를 줘도 평소의 여섯 단계 화면으로 갑니다.
+- 사용자 자료(R/D/P·기억·설정·시크릿)는 업데이트가 건드리지 않습니다. 바뀐 부품의 옛 판은 `.prev`로 남습니다.
+- 계약 정본(Face·설치기·적용기·릴리스 도구·홈페이지 공통)은 IRIS-Face(P02) 저장소의 `docs\설계-업데이트-2026-09-14.md`이고, P03이 맡는 몫은 `docs\설계.md` 12절입니다.
 
 ## 원칙
 
