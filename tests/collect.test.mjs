@@ -12,13 +12,23 @@ after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 test('dir kind zips with excludes; url without sha256 throws', async () => {
   const src = path.join(tmp, 'src');
   fs.mkdirSync(path.join(src, 'state'), { recursive: true });
+  // Nested folders: a plain exclude name matches the first segment only, a
+  // `dir/sub` entry matches that relative path (Face daemon/__pycache__).
+  fs.mkdirSync(path.join(src, 'daemon', '__pycache__'), { recursive: true });
+  fs.mkdirSync(path.join(src, 'app', 'state'), { recursive: true });
   fs.writeFileSync(path.join(src, 'a.js'), '1');
   fs.writeFileSync(path.join(src, 'state/x'), '2');
-  const lock = { package: { version: '0' }, parts: { face: { kind: 'dir', source: src, exclude: ['state'], file: 'face/iris-face.zip' } } };
+  fs.writeFileSync(path.join(src, 'daemon/keep.mjs'), '3');
+  fs.writeFileSync(path.join(src, 'daemon/__pycache__/m.pyc'), '4');
+  fs.writeFileSync(path.join(src, 'app/state/keep.txt'), '5');
+  const lock = { package: { version: '0' }, parts: { face: { kind: 'dir', source: src, exclude: ['state', 'daemon/__pycache__'], file: 'face/iris-face.zip' } } };
   const r = await collect({ lock, cacheDir: path.join(tmp, 'c'), stageDir: path.join(tmp, 's'), log: () => {} });
   await extractZip(path.join(r.payloadDir, 'face/iris-face.zip'), path.join(tmp, 'x'));
   assert.ok(fs.existsSync(path.join(tmp, 'x/a.js')));
   assert.ok(!fs.existsSync(path.join(tmp, 'x/state')));
+  assert.ok(fs.existsSync(path.join(tmp, 'x/daemon/keep.mjs')));
+  assert.ok(!fs.existsSync(path.join(tmp, 'x/daemon/__pycache__')), 'nested path exclude must apply');
+  assert.ok(fs.existsSync(path.join(tmp, 'x/app/state/keep.txt')), 'a plain name must not exclude a nested folder of the same name');
   await assert.rejects(
     collect({
       lock: { package: {}, parts: { node: { kind: 'url', url: 'https://x', sha256: '', file: 'node/n.zip' } } },

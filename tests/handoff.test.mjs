@@ -131,8 +131,15 @@ test('faceLauncherContent: ASCII-only, CRLF, chcp 65001, %~dp0-relative, no abso
   assert.ok(content.startsWith('@echo off\r\n'));
   assert.ok(content.includes('chcp 65001 >nul'));
   assert.ok(content.includes('setlocal'));
-  assert.ok(content.includes('"%~dp0_agent\\shared\\tools\\node\\node.exe"'));
-  assert.ok(content.includes('"%~dp0_agent\\shared\\tools\\face\\launch.mjs"'));
+  // Face v2.49+: no console window. The bundled node is handed to
+  // launch-hidden.vbs through IRIS_FACE_NODE (a fresh PC has no `node` on
+  // PATH), and --console / a missing .vbs fall back to the visible window.
+  assert.ok(content.includes('set "IRIS_FACE_NODE=%~dp0_agent\\shared\\tools\\node\\node.exe"'));
+  assert.ok(content.includes('wscript.exe //nologo "%~dp0_agent\\shared\\tools\\face\\launch-hidden.vbs" %*'));
+  assert.ok(content.includes('if "%~1"=="--console" goto console'));
+  assert.ok(content.includes('if not exist "%~dp0_agent\\shared\\tools\\face\\launch-hidden.vbs" goto console'));
+  assert.ok(content.includes('"%IRIS_FACE_NODE%" "%~dp0_agent\\shared\\tools\\face\\launch.mjs" %*'));
+  assert.ok(!content.includes('node.exe" "%~dp0'), 'the default path must not spawn node directly (console window)');
   assert.ok(content.includes('%*'), 'must forward its own arguments');
 
   // No hard-coded soul path and no IRIS_FACE_HWP_PY line (this PC's
@@ -342,7 +349,11 @@ function faceStyleCss() {
   return fs.existsSync(css) ? css : null;
 }
 
-function extractRootBlock(css) {
+function extractRootBlock(raw) {
+  // Line endings are a checkout artefact (P02 is checked out with
+  // core.autocrlf=true, so its working copy is CRLF while the index is LF);
+  // the comparison is about the tokens, so normalise before comparing.
+  const css = raw.replace(/\r\n/g, '\n');
   const idx = css.indexOf(':root');
   if (idx === -1) return null;
   const braceStart = css.indexOf('{', idx);

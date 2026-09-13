@@ -40,7 +40,11 @@ function findNewestZip(outDir) {
 // matching braces so a block containing nested braces (none expected here,
 // but this stays correct if one is ever added) is still captured whole.
 // Returns null if no ":root" selector is found.
-function extractRootBlock(css) {
+function extractRootBlock(raw) {
+  // Line endings are a checkout artefact (P02 is checked out with
+  // core.autocrlf=true, so its working copy is CRLF while the index is LF);
+  // the comparison is about the tokens, so normalise before comparing.
+  const css = raw.replace(/\r\n/g, '\n');
   const idx = css.indexOf(':root');
   if (idx === -1) return null;
   const braceStart = css.indexOf('{', idx);

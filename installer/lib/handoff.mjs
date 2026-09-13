@@ -98,14 +98,28 @@ export function writeFirstRequest(root, { edition = 'claude', manifest } = {}) {
 // machine-specific environment line. ASCII + CRLF so cmd.exe reads it the
 // same way under any code page -- which is also why the soul name never
 // appears *inside* the file, only in its name.
+//
+// Face v2.49 (2026-09-12) runs with no console window: the .cmd hands off to
+// wscript.exe + launch-hidden.vbs, which reads the node to use from
+// IRIS_FACE_NODE (the bundled node here -- a fresh PC has no `node` on PATH
+// until the shims are picked up). `--console` (or a Face too old to ship the
+// .vbs) falls back to the visible `node launch.mjs` window.
 export function faceLauncherContent() {
   return [
     '@echo off',
     'chcp 65001 >nul',
-    'rem IRIS-Face: Claude Code / Codex sessions in one window.',
-    'rem Daemon 127.0.0.1:3458 + window. Usage: this file [--browser] [--no-open]',
+    'rem IRIS: Claude Code / Codex sessions in one window.',
+    'rem Daemon 127.0.0.1:3458 + window. Usage: this file [--browser] [--no-open] [--console]',
+    'rem Default = no console window (wscript launch-hidden.vbs -> launch.mjs). --console = visible window.',
     'setlocal',
-    '"%~dp0_agent\\shared\\tools\\node\\node.exe" "%~dp0_agent\\shared\\tools\\face\\launch.mjs" %*',
+    'set "IRIS_FACE_NODE=%~dp0_agent\\shared\\tools\\node\\node.exe"',
+    'if "%~1"=="--console" goto console',
+    'if not exist "%~dp0_agent\\shared\\tools\\face\\launch-hidden.vbs" goto console',
+    'wscript.exe //nologo "%~dp0_agent\\shared\\tools\\face\\launch-hidden.vbs" %*',
+    'endlocal',
+    'exit /b 0',
+    ':console',
+    '"%IRIS_FACE_NODE%" "%~dp0_agent\\shared\\tools\\face\\launch.mjs" %*',
     'endlocal',
     '',
   ].join('\r\n');

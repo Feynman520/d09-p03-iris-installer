@@ -1,5 +1,5 @@
 {
-  "forbiddenNames": ["**/.env", "**/secrets/**", "**/auth.json", "**/teamclaude.json", "**/*.token", "**/credentials*", "**/.git/**"],
+  "forbiddenNames": ["**/.env", "**/secrets/**", "**/auth.json", "**/teamclaude.json", "**/*.token", "**/credentials*", "**/.git/**", "**/auth.bin", "**/keys.bin", "**/modules/*/state/**", "**/.stack", "**/.supa"],
   "forbiddenStrings": [],
   "forbiddenRegex": [
     {

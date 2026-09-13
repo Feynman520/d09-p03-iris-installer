@@ -104,15 +104,24 @@ function applyRedactions(workDir, redact, log) {
   }
 }
 
-function copyTree(src, dest, exclude = []) {
+// `exclude` entries: a plain name matches the FIRST path segment only
+// (`node_modules`, `state`); an entry containing `/` is a source-relative
+// path prefix (`daemon/__pycache__`) -- the 2026-09-12 review's "copyTree
+// first-segment-only" minor, fixed 2026-09-13 when Face's nested
+// daemon/__pycache__ showed up in the shipped zip.
+export function copyTree(src, dest, exclude = []) {
   fs.mkdirSync(dest, { recursive: true });
+  const names = exclude.filter((e) => !e.includes('/'));
+  const prefixes = exclude.filter((e) => e.includes('/')).map((e) => e.replace(/\/+$/, ''));
   fs.cpSync(src, dest, {
     recursive: true,
     filter: (source) => {
       const rel = path.relative(src, source);
       if (rel === '') return true;
+      const posix = rel.split(path.sep).join('/');
       const first = rel.split(path.sep)[0];
-      return !exclude.includes(first);
+      if (names.includes(first)) return false;
+      return !prefixes.some((p) => posix === p || posix.startsWith(p + '/'));
     },
   });
 }

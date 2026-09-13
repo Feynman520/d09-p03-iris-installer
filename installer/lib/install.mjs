@@ -53,7 +53,10 @@ const LAYOUT = {
   claude: { kind: 'npm-download', dest: (t) => path.join(t, 'claude') },
   codex: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'codex') },
   teamclaude: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'teamclaude') },
-  dash: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'dash') },
+  // `teamclaude-dash`, not `dash`: Face's daemon/paths.mjs dashDir() looks for
+  // <tools>\teamclaude-dash (docs/설계.md 2-2 layout) and hides the limits
+  // drawer / skips the proxy start when it is not there.
+  dash: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'teamclaude-dash') },
   face: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'face') },
   // docs/설계.md 2-2 + 4-1 ③: both guide editions live at <root>\_setup-guides,
   // not under _agent -- the agent is told to read them from there.
@@ -410,8 +413,8 @@ export function defaultVerifiers({ root, manifest, lock, zipRoot, patchRulesFile
     // route until the login step anyway.
     teamclaude: async () => verifyTeamclaudePatches(path.join(t, 'teamclaude'), resolvePatchRules(zipRoot, patchRulesFile)),
     dash: async () => {
-      const d = path.join(t, 'dash');
-      const need = ['dashboard.html', 'launch.mjs', 'server.mjs'];
+      const d = path.join(t, 'teamclaude-dash');
+      const need = ['dashboard.html', 'launch.mjs', 'server.mjs', 'ensure-proxy.mjs', 'ensure-dash.mjs'];
       const gone = need.filter((f) => !exists(d, f));
       return { ok: gone.length === 0, detail: gone.length ? `missing ${gone.join(',')}` : need.join(',') };
     },

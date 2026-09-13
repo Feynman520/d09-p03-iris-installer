@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "package": { "version": "1.0.0", "guideVersion": "10" },
+  "package": { "version": "1.1.0", "guideVersion": "10" },
   "parts": {
     "node": {
       "kind": "url",
@@ -41,8 +41,8 @@
     "claude": {
       "kind": "npm-prefix",
       "npm": "@anthropic-ai/claude-code",
-      "version": "2.1.267",
-      "file": "agents/claude-code-2.1.267.zip",
+      "version": "2.1.270",
+      "file": "agents/claude-code-2.1.270.zip",
       "redistribute": "download",
       "license": "Proprietary (SEE LICENSE IN README.md -- LICENSE.md: (c) Anthropic PBC. All rights reserved)",
       "bin": "bin/claude.exe"
@@ -68,7 +68,7 @@
     "face": {
       "kind": "dir",
       "source": "../P02-아이리스 페이스(IRIS-Face) 〖Local App〗",
-      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "task7-1-module-drawer-open.png"],
+      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "modules", "daemon/__pycache__", ".stack"],
       "npmCi": true,
       "file": "face/iris-face.zip",
       "license": "MIT"
