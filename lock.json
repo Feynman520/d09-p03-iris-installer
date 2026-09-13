@@ -67,7 +67,7 @@
     },
     "face": {
       "kind": "dir",
-      "source": "../P02-IRIS 페이스(IRIS-Face) 〖Local App〗",
+      "source": "../P02-아이리스 페이스(IRIS-Face) 〖Local App〗",
       "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "task7-1-module-drawer-open.png"],
       "npmCi": true,
       "file": "face/iris-face.zip",
