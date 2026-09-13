@@ -20,6 +20,7 @@ created: '2026-09-10'
 - 구조: `installer\`(zip에 들어가는 설치기: bootstrap.ps1·server.mjs·ui) · `build\`(공장: collect·sanitize·manifest·pack) · `verify\`(검사소) · `patches\`(TeamClaude 로컬 패치 규칙) · `lock.json`(부품 잠금표) · `_build\`(자동 출력, AGENTS.md 면제).
 - 원칙: zip을 손으로 고치지 않는다(원본 수정 → 재빌드 → 검사소 통과 → 새 버전). 부품은 전부 버전·SHA-256으로 잠근다(`latest` 금지). 설치기는 사용자 자료를 절대 지우거나 덮어쓰지 않으며, 부품은 `_agent\shared\tools` 안에서만 산다.
 - 관계: IRIS-Face(P02)·TeamClaude 대시보드·세팅가이드(`_setup-guides`)를 **소비**한다 — 그 원본을 여기서 고치지 않는다. 설치기 포트는 3460(3458=Face, 3459=Face 시험 데몬).
+- **공개 저장소**(2026-09-13 밤, Task 20): `https://github.com/Feynman520/d09-p03-iris-installer` public·MIT·`.stack=A`·remote `git@gh-A:`·기본 브랜치 main(dev/v1 병합)·태그 `iris-installer--vX.Y.Z`. 설치 zip은 저장소가 아니라 **GitHub Release 첨부**(`…/releases/latest`)로만 배포한다. **⚠ Release 첨부 이름의 한글은 GitHub가 지우므로 첨부는 영문 이름(`IRIS-Setup_v<판>_<날짜>.zip`+`.sha256`)으로 올린다**(v1.2.0 실측). 새 판 순서 = 재빌드 → `verify/static.mjs`·`reproduce.mjs` → 태그 푸시 → `gh release create --latest`. 푸시 전 R07 가드레일(`.stack`)과 정적 검사 ⑦⑧(저장소·이력 개인 문자열 0건)을 거친다. 홈페이지(P05, `iris-workspace.com`)는 이 저장소의 최신 릴리스만 가리킨다.
 - 고정 사항(2026-09-13 사용자 확정, 설계 11절): 설치 폴더는 **`C:\IRIS` 절대 고정**(사용자에게 이름을 묻지 않음), 바깥에는 바탕화면 「IRIS」 바로가기 하나. 사용자에게 보이는 글은 "IRIS"/"IRIS 창"(IRIS-Face는 내부 명칭). **이 개발 PC에서 설치기를 연습할 때는 반드시 `IRIS_INSTALLER_SOUL_NAME=<임시이름>`(+`IRIS_INSTALLER_NO_USER_ENV=1`)로 띄운다** — 진짜 `C:\IRIS`에 설치가 덮이지 않게. 시험 소울은 끝나면 지운다.
 
 <!-- 상위(루트/R07/D09) AGENTS.md 규칙 재서술 금지 -->
