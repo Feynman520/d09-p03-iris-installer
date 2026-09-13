@@ -89,12 +89,24 @@ footer { color: var(--ink-3); font-size: 11.5px; margin-top: 26px; text-align: c
     <h1>IRIS 설치</h1>
     <span class="ver" id="ver"></span>
   </header>
-  <p class="lead">여섯 단계입니다. 사람이 직접 해야 하는 일은 <b>ⓔ 계정 로그인</b> 하나뿐이고, 나머지는 버튼만 누르면 됩니다.</p>
+  <p class="lead" id="lead">여섯 단계입니다. 사람이 직접 해야 하는 일은 <b>ⓔ 계정 로그인</b> 하나뿐이고, 나머지는 버튼만 누르면 됩니다.</p>
 
-  <div class="bar">
+  <div class="bar" id="bar-wrap">
     <div class="bar-line" id="bar"></div>
     <div class="bar-note" id="bar-note">기준 = 끝난 단계 수 / 전체 6단계</div>
   </div>
+
+  <!-- 자동 업데이트 모드 전용 카드. 평소에는 숨어 있고, 서버가 auto.eligible 이라고
+       할 때만 나타나며 그때는 아래 여섯 카드를 전부 감춘다(사용자가 누를 것이 없다). -->
+  <section class="card active" id="card-auto" hidden>
+    <div class="card-head"><span class="mark">↻</span><h2>업데이트</h2><span class="badge" id="badge-auto">대기</span></div>
+    <div class="card-body">
+      <p class="hint" id="auto-hint">새 판으로 바꾸는 중입니다. 이미 있는 것은 지우지 않고 <code>.prev</code>로 옆에 남기며, 자료·설정·기억은 건드리지 않습니다.</p>
+      <div class="rows" id="auto-rows"></div>
+      <div id="auto-note"></div>
+      <div style="margin-top:10px"><button class="go" id="btn-auto-retry" hidden>다시 시도</button></div>
+    </div>
+  </section>
 
   <section class="card" id="card-precheck">
     <div class="card-head"><span class="mark">ⓐ</span><h2>준비 확인</h2><span class="badge" id="badge-precheck">대기</span></div>
@@ -340,13 +352,17 @@ const PART_LABEL = {
   claude: 'Claude Code', codex: 'Codex', teamclaude: '중계 서버', dash: '한도 화면',
   face: 'IRIS 창', updater: '업데이트 적용기', guides: '세팅가이드', manage: '중계 관리 스크립트',
   shims: '실행 바로가기', 'soul-state': '설치 표지', 'first-run': '첫 실행 준비', env: '환경 변수',
+  // 자동 업데이트 모드에서만 나오는 줄
+  precheck: '준비 확인', login: '계정 로그인', relaunch: 'IRIS 창 다시 열기',
 };
 const partState = {};
 let installSource = null;
+// 부품 줄을 그릴 자리. 평소엔 ⓓ 카드 안, 자동 업데이트 모드에서는 업데이트 카드 안.
+let rowsId = 'install-rows';
 
 function renderInstall() {
   const keys = Object.keys(partState);
-  $('install-rows').innerHTML = keys.map((k) => {
+  $(rowsId).innerHTML = keys.map((k) => {
     const p = partState[k];
     const mark = p.status === 'done' ? '<span class="ok">O</span>'
       : p.status === 'skipped' ? '<span class="idle">-</span>'
@@ -542,6 +558,97 @@ $('btn-handoff').onclick = async () => {
 };
 
 // ---------------------------------------------------------------------------
+// 자동 업데이트 모드 — 이 화면에는 누를 것이 없다. 서버가 준비 확인 → 바뀐 부품 교체
+// → IRIS 창 다시 열기까지 혼자 하고, 화면은 그 진행만 보여 준다.
+// ---------------------------------------------------------------------------
+let autoSource = null;
+
+function autoFail(message) {
+  badge('auto', '막힘', 'bad');
+  note('auto-note', message, 'bad');
+  const b = $('btn-auto-retry');
+  b.hidden = false;
+  b.disabled = false;
+}
+
+function autoDone(result) {
+  badge('auto', '완료', 'done');
+  $('btn-auto-retry').hidden = true;
+  const versions = (result && result.from && result.to) ? ' (v' + esc(result.from) + ' → v' + esc(result.to) + ')' : '';
+  note('auto-note', installProgressNote(100) +
+    '<div class="note ok">업데이트가 끝났습니다' + versions + '. IRIS 창을 엽니다.<br>이 브라우저 탭은 이제 닫으셔도 됩니다.</div>');
+}
+
+function watchAuto() {
+  if (autoSource) return;
+  let sawEvent = false;
+  autoSource = new EventSource('/api/install/events');
+  autoSource.onmessage = (ev) => {
+    sawEvent = true;
+    let e; try { e = JSON.parse(ev.data); } catch { return; }
+    if (e.part) {
+      partState[e.part] = partState[e.part] || {};
+      partState[e.part].pct = e.pct == null ? partState[e.part].pct : e.pct;
+      partState[e.part].status = e.error ? 'error' : e.skipped ? 'skipped' : (e.status || (e.pct === 100 ? 'done' : 'running'));
+      partState[e.part].error = e.error || null;
+      renderInstall();
+    }
+    if (typeof e.pct === 'number' && !e.part && !e.error) note('auto-note', installProgressNote(e.pct));
+    if (e.error) {
+      autoSource.close(); autoSource = null;
+      autoFail('업데이트가 멈췄습니다' + (e.part ? ' — ' + esc(PART_LABEL[e.part] || e.part) : '') +
+        ' (' + esc(e.error) + ').<br>이미 있던 것은 그대로 되돌려 두었습니다. 다시 시도해도 안전합니다.');
+      return;
+    }
+    if (e.done) {
+      autoSource.close(); autoSource = null;
+      api('/api/state').then(({ body }) => autoDone(body && body.autoResult)).catch(() => autoDone(null));
+    }
+  };
+  setTimeout(() => {
+    if (!sawEvent && autoSource) {
+      autoSource.close(); autoSource = null;
+      autoFail('업데이트가 이어지지 않았습니다(설치기가 다시 시작된 것 같습니다). 다시 시도해 주세요.');
+    }
+  }, 5000);
+}
+
+async function startAuto() {
+  badge('auto', '진행중', 'run');
+  $('btn-auto-retry').disabled = true;
+  note('auto-note', installProgressNote(0));
+  const { status, body } = await api('/api/auto', {});
+  if (status >= 400) {
+    autoFail('시작하지 못했습니다(' + esc(body.reason || status) + ').');
+    return;
+  }
+  watchAuto();
+}
+$('btn-auto-retry').onclick = startAuto;
+
+// 자동 모드에서는 여섯 단계 카드와 단계 진행 바를 전부 감춘다 — 누를 것이 없는 화면에
+// 잠긴 카드 여섯 장을 보여 주면 "내가 뭘 해야 하나" 하는 화면이 되어 버린다.
+function enterAutoMode(st) {
+  rowsId = 'auto-rows';
+  for (const s of STEPS) $('card-' + s).hidden = true;
+  $('bar-wrap').hidden = true;
+  $('card-auto').hidden = false;
+  $('lead').innerHTML = '<b>새 판으로 바꾸는 중입니다.</b> 사람이 할 일은 없습니다 — 끝나면 IRIS 창이 저절로 열립니다.';
+
+  if (st.install && st.install.parts) {
+    for (const k of Object.keys(st.install.parts)) partState[k] = { status: st.install.parts[k], pct: null };
+    renderInstall();
+  }
+  if (st.step === 'done' && st.autoResult && st.autoResult.ok) { autoDone(st.autoResult); return; }
+  if (st.installError) {
+    autoFail('지난번 업데이트가 멈췄습니다 (' + esc(st.installError) + ').<br>이미 있던 것은 그대로 되돌려 두었습니다. 다시 시도해도 안전합니다.');
+    return;
+  }
+  if (st.step === 'auto') { badge('auto', '진행중', 'run'); watchAuto(); return; }
+  startAuto();
+}
+
+// ---------------------------------------------------------------------------
 // 새로고침 복원 — 서버가 들고 있는 state를 그대로 다시 그린다
 // ---------------------------------------------------------------------------
 async function restore() {
@@ -552,6 +659,9 @@ async function restore() {
     const h = await (await fetch('/api/health')).json();
     $('ver').textContent = 'v' + (h.version || '?');
   } catch { /* 버전 표시는 없어도 그만 */ }
+
+  // 자동 업데이트 모드는 여기서 갈라진다(아래 마법사 복원은 아예 돌지 않는다).
+  if (st.auto && st.auto.eligible) { enterAutoMode(st); return; }
 
   if (st.precheck) renderPrecheck(st.precheck);
 

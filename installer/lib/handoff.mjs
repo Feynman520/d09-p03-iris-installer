@@ -277,6 +277,47 @@ export function launchFace({
   }
 }
 
+// Reopening the window after an automatic update (2026-09-14), as opposed to
+// launchFace() above which hands a brand-new soul its first setting-up
+// session. There is nothing to hand over here: the soul has been set up for a
+// while, its sessions were resumed from Face's own state, and injecting the
+// "세팅해 줘" first request again would be flatly wrong. So this is the plain
+// launcher, the same one the desktop shortcut runs -- the hidden one when
+// Face ships it (v2.49+), the visible `node launch.mjs` window otherwise.
+export function relaunchFace({
+  root, faceDir, nodeExe, spawnFn = spawn, logFile, env,
+} = {}) {
+  const dir = faceDir ?? faceDirFor(root);
+  const vbs = path.join(dir, 'launch-hidden.vbs');
+  const spawnOpts = {
+    cwd: dir,
+    detached: true,
+    windowsHide: true,
+    env: env ? { ...process.env, ...env } : process.env,
+  };
+  if (fs.existsSync(vbs)) {
+    const child = spawnFn('wscript.exe', ['//nologo', vbs], { ...spawnOpts, stdio: 'ignore' });
+    child.unref?.();
+    return { ok: true, how: 'wscript', pid: child.pid, launcher: vbs };
+  }
+  const exe = nodeExe ?? nodeExeFor(root);
+  const log = logFile ?? faceLogPath(root);
+  let stdio = 'ignore';
+  let fd = null;
+  try {
+    fs.mkdirSync(path.dirname(log), { recursive: true });
+    fd = fs.openSync(log, 'a');
+    stdio = ['ignore', fd, fd];
+  } catch { /* no log file -- still launch */ }
+  try {
+    const child = spawnFn(exe, [path.join(dir, 'launch.mjs')], { ...spawnOpts, stdio });
+    child.unref?.();
+    return { ok: true, how: 'node', pid: child.pid, launcher: path.join(dir, 'launch.mjs'), logFile: log };
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+  }
+}
+
 // Windows path comparison, identical to P02 launch.mjs's own normCwd (which is
 // what decides there whether a session already exists for a folder): forward
 // slashes are separators too, a trailing separator means nothing, and case

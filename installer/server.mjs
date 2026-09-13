@@ -31,6 +31,7 @@ import {
   writeFaceLauncher as defaultWriteFaceLauncher,
   writeFirstSessionSpec as defaultWriteFirstSessionSpec,
   launchFace as defaultLaunchFace,
+  relaunchFace as defaultRelaunchFace,
   waitFaceReady as defaultWaitFaceReady,
   finish as defaultFinish,
 } from './lib/handoff.mjs';
@@ -286,8 +287,10 @@ export function startServer({
   writeFaceLauncherFn = defaultWriteFaceLauncher,
   writeFirstSessionSpecFn = defaultWriteFirstSessionSpec,
   launchFaceFn = defaultLaunchFace,
+  relaunchFaceFn = defaultRelaunchFace,
   waitFaceReadyFn = defaultWaitFaceReady,
   finishFn = defaultFinish,
+  readReceiptFn = readReceipt,
   facePort,
   faceDir,
   faceNodeExe,
@@ -303,6 +306,12 @@ export function startServer({
   // exists only so the developer PC (whose real C:\IRIS must not be touched)
   // can rehearse the installer against a throwaway root.
   soulName = process.env.IRIS_INSTALLER_SOUL_NAME || 'IRIS',
+  // Automatic update mode (2026-09-14): IRIS-설치.cmd --auto, which is how
+  // _agent\shared\tools\updater\apply.mjs starts this installer for a
+  // structural update (P02 docs\설계-업데이트-2026-09-14.md 4-2 / 5-2). The
+  // env var is what actually travels, because the updater spawns the .cmd
+  // with it set; the flag exists so the .cmd can be run by hand the same way.
+  auto = process.env.IRIS_INSTALLER_AUTO === '1',
 } = {}) {
   const uiDir = path.join(HERE, 'ui');
   const version = readPackageVersion(zipRoot);
@@ -331,12 +340,37 @@ export function startServer({
   // really write HKCU\Environment, and a restored state must not claim
   // otherwise in either direction.
   state.userEnvSkipped = userEnvSkipped;
+
+  // --- automatic update mode ------------------------------------------------
+  // Only ever taken over an install that already has a receipt. Anything else
+  // -- the flag on a fresh PC, a soul name that does not validate -- falls
+  // through to the normal six-step wizard, so the automatic flag can never
+  // turn a first install into a silent one.
+  function autoEligibility() {
+    if (!auto) return { requested: false, eligible: false, reason: 'not_requested' };
+    const validation = validateSoulName(soulName);
+    if (!validation.ok) return { requested: true, eligible: false, reason: `name_${validation.reason}` };
+    const prior = readReceiptFn(validation.path);
+    if (!prior) return { requested: true, eligible: false, reason: 'no_receipt', root: validation.path };
+    return {
+      requested: true,
+      eligible: true,
+      name: soulName,
+      root: validation.path,
+      from: prior.package?.version ?? null,
+      to: version,
+      choice: prior.choice ?? null,
+    };
+  }
+  state.auto = autoEligibility();
   saveState(stateFile, state);
 
   const routes = new Map();
 
   routes.set('GET /api/health', async (req, res) => {
-    sendJson(res, 200, { ok: true, name: 'iris-installer', version, step: state.step });
+    sendJson(res, 200, {
+      ok: true, name: 'iris-installer', version, step: state.step, auto: state.auto?.eligible === true,
+    });
   });
 
   routes.set('GET /api/state', async (req, res) => {
@@ -480,6 +514,123 @@ export function startServer({
     sseClients.add(res);
     req.on('close', () => { sseClients.delete(res); });
   });
+
+  // --- automatic update run (ⓐ → ⓓ → ⓕ, no clicks) -------------------------
+  // The whole six-step wizard collapses into one server-side run: the parts
+  // whose version or hash changed are replaced (install()'s own receipt-based
+  // skip check is what decides that -- the same code the interactive
+  // "기존 영혼" path uses), the login step is skipped because the accounts are
+  // already registered, and the window is reopened with the plain launcher
+  // instead of a first-session handoff. Progress rides the same SSE stream the
+  // wizard's copy step uses, so the screen only has to render it.
+  let autoRunning = false;
+
+  async function runAuto(info, manifest, lock) {
+    const root = info.root;
+    const forward = (e) => pushEvent({ part: null, pct: null, error: null, ...e, done: false });
+    const failAuto = (where, reason, detail = null) => {
+      state.step = 'auto';
+      state.installError = reason;
+      state.autoResult = { ok: false, where, reason, detail };
+      saveState(stateFile, state);
+      pushEvent({ part: where, pct: null, skipped: false, status: 'error', error: reason, detail, done: true });
+    };
+
+    try {
+      // ⓐ 준비 확인 -- read-only, and a machine that cannot even go offline-far
+      // must not start swapping folders.
+      forward({ part: 'precheck', pct: 0, status: 'running' });
+      const pre = await precheck();
+      state.precheck = pre;
+      saveState(stateFile, state);
+      if (!pre.allOk && !pre.canProceedOffline) { failAuto('precheck', 'precheck_failed'); return; }
+      forward({ part: 'precheck', pct: 5, status: 'done' });
+
+      // ⓑ 자리 + ⓒ 구독 -- both already answered, by the receipt.
+      state.soul = { name: info.name, root, existing: 'soul' };
+      state.choice = info.choice ?? { subscriptions: ['claude'], leadAgent: 'claude', guideEdition: 'claude' };
+      saveState(stateFile, state);
+
+      // ⓓ 바뀐 부품만 교체 (.prev 보존, 사용자 자료 무접촉)
+      await installFn({
+        root,
+        name: info.name,
+        existing: 'soul',
+        zipRoot: state.zipRoot,
+        manifest,
+        lock,
+        choice: state.choice,
+        ...(userEnvSkipped ? { userpath: recordingUserpath(userEnvRecord) } : {}),
+        // install()'s own terminal event says "the copy step finished", which
+        // in this run is only the middle of the job -- so `done` is stripped
+        // and the one true terminal frame is emitted at the end of runAuto().
+        onProgress: forward,
+      });
+
+      // ⓔ 로그인 -- 이미 등록된 계정이라 건너뛴다.
+      forward({ part: 'login', pct: 96, status: 'skipped', skipped: true });
+
+      // ⓕ IRIS 창 다시 열기. install() already refreshed the receipt.
+      const relaunch = relaunchFaceFn({ root, ...(faceDir ? { faceDir } : {}), ...(faceNodeExe ? { nodeExe: faceNodeExe } : {}) });
+      forward({ part: 'relaunch', pct: 99, status: relaunch?.ok ? 'done' : 'error' });
+
+      finishFn({
+        root,
+        receipt: readReceiptFn(root),
+        ...(workDir ? { workDir } : {}),
+        setStep: (s) => { state.step = s; saveState(stateFile, state); },
+        quit: () => {
+          setTimeout(() => { if (onQuit) onQuit(); else process.exit(0); }, 1500);
+        },
+      });
+
+      state.autoResult = {
+        ok: true, from: info.from, to: info.to, relaunched: relaunch?.ok ?? false, pid: relaunch?.pid ?? null,
+      };
+      state.step = 'done';
+      saveState(stateFile, state);
+      pushEvent({ part: null, pct: 100, skipped: false, status: 'done', error: null, done: true });
+    } catch (err) {
+      failAuto('install', err?.code ?? 'install_failed', String(err?.message ?? err));
+    } finally {
+      autoRunning = false;
+      installRunning = false;
+      saveState(stateFile, state);
+    }
+  }
+
+  routes.set('POST /api/auto', withBody(async (body, req, res) => {
+    const info = state.auto?.eligible ? state.auto : autoEligibility();
+    if (!info.eligible) {
+      sendJson(res, 409, { ok: false, reason: info.reason ?? 'not_eligible' });
+      return;
+    }
+    if (autoRunning) {
+      sendJson(res, 202, { ok: true, running: true });
+      return;
+    }
+    const manifest = readPayloadManifest(state.zipRoot);
+    const lock = readLock(state.zipRoot);
+    if (!manifest || !lock) {
+      sendJson(res, 500, { ok: false, reason: 'payload_unreadable' });
+      return;
+    }
+
+    autoRunning = true;
+    installRunning = true;
+    installEvents.length = 0;
+    state.step = 'auto';
+    state.install = { parts: {} };
+    state.installError = null;
+    state.autoResult = null;
+    state.userEnvSkipped = userEnvSkipped;
+    saveState(stateFile, state);
+    sendJson(res, 202, { ok: true, from: info.from, to: info.to });
+
+    // Deliberately not awaited, exactly like POST /api/install: the response
+    // is already out and the screen now follows /api/install/events.
+    runAuto(info, manifest, lock);
+  }));
 
   // --- login step ----------------------------------------------------------
   // Two-stage flow (task-13-brief.md): ① startCliLogin opens the CLI's own
@@ -829,6 +980,9 @@ function parseArgs(argv) {
     // Rehearsal switch (also IRIS_INSTALLER_NO_USER_ENV=1): run the real
     // install but record the HKCU\Environment writes instead of making them.
     else if (a === '--no-user-env') args.noUserEnv = true;
+    // Automatic update mode (also IRIS_INSTALLER_AUTO=1) -- bootstrap.ps1
+    // passes this through from IRIS-설치.cmd --auto.
+    else if (a === '--auto') args.auto = true;
     else throw new Error(`unknown arg: ${a}`);
   }
   return args;

@@ -6,7 +6,12 @@
 # answer in time.
 param(
   [Parameter(Mandatory)][string]$ZipRoot,
-  [int]$Port = 3460
+  [int]$Port = 3460,
+  # Automatic update mode: passed through to server.mjs as --auto. Set by the
+  # installer .cmd when it is run with --auto, which is how the updater starts
+  # this installer for a structural update. The server still refuses to run
+  # silently unless the target already has an install receipt.
+  [switch]$Auto
 )
 $ErrorActionPreference = 'Stop'
 
@@ -38,7 +43,7 @@ function Log($m) {
   Write-Host $m
 }
 
-Log "Starting. ZipRoot=$ZipRoot Port=$Port"
+Log "Starting. ZipRoot=$ZipRoot Port=$Port Auto=$($Auto.IsPresent)"
 
 # --- Stage: location (exit 10) -------------------------------------------
 # Two symptoms of "the user did not extract the zip first": Windows Explorer
@@ -185,8 +190,10 @@ if (Test-Path -LiteralPath $nodeExe) {
 $server = Join-Path $ZipRoot 'installer\server.mjs'
 $serverOut = Join-Path $work 'server.out.log'
 $serverErr = Join-Path $work 'server.err.log'
+$serverArgs = @("`"$server`"", '--zip-root', "`"$ZipRoot`"", '--port', $Port, '--node-dir', "`"$nodeDir`"")
+if ($Auto) { $serverArgs += '--auto' }
 $proc = Start-Process -FilePath $nodeExe `
-  -ArgumentList @("`"$server`"", '--zip-root', "`"$ZipRoot`"", '--port', $Port, '--node-dir', "`"$nodeDir`"") `
+  -ArgumentList $serverArgs `
   -WindowStyle Hidden -PassThru `
   -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr
 "$($proc.Id)" | Set-Content -LiteralPath $pidFile
