@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { extractZip } from '../lib/zip.mjs';
 import { sanitize } from '../build/sanitize.mjs';
-import { loadRules } from '../build/rules.mjs';
+import { loadRules, splitRepoStackPointers } from '../build/rules.mjs';
 
 // C1 (2026-09-11 Fix round 2): personal strings previously survived in
 // *ancestor* commits' blob content (docs/설계.md, docs/구현계획.md, older
@@ -63,9 +63,12 @@ test('history-clean: sanitize finds 0 hits in every commit reachable from any re
       // an empty tree), so this must fail loudly rather than pass vacuously.
       assert.ok(extracted.length > 0, `commit ${sha}: extraction produced 0 files -- materialization failed, cannot trust a scan of it`);
 
+      // Same repo-root .stack/.supa exception as repo-clean / static ⑦:
+      // these commits are the repository's own history, not a shipped zip.
       const result = await sanitize(treeDir, rules);
-      if (!result.ok) {
-        badCommits.push({ sha, hits: result.hits });
+      const rest = splitRepoStackPointers(result.hits).rest;
+      if (rest.length > 0) {
+        badCommits.push({ sha, hits: rest });
       }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

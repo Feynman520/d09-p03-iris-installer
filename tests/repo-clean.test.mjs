@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { sanitize } from '../build/sanitize.mjs';
-import { loadRules } from '../build/rules.mjs';
+import { loadRules, splitRepoStackPointers, REPO_ROOT_STACK_POINTERS } from '../build/rules.mjs';
 
 // C2: the sanitize gate previously only ever scanned build *output*
 // (payloadDir) -- it never scanned the repo's own tracked files, so a
@@ -39,6 +39,33 @@ test('repo-clean: sanitize finds 0 hits across every git-tracked file', async ()
     localFile: path.join(ROOT_DIR, 'build', 'sanitize-local.json'),
   });
 
+  // The repo's own root .stack/.supa deploy-stack pointers are the single
+  // allowed exception (build/rules.mjs splitRepoStackPointers) -- this is the
+  // repository, not the shipped zip. verify/static.mjs ⑦ does exactly this.
   const result = await sanitize(ROOT_DIR, rules, { files: trackedFiles });
-  assert.deepEqual(result.hits, [], `sanitize found hit(s) in tracked files: ${JSON.stringify(result.hits, null, 2)}`);
+  const { allowed, rest } = splitRepoStackPointers(result.hits);
+  assert.deepEqual(rest, [], `sanitize found hit(s) in tracked files: ${JSON.stringify(rest, null, 2)}`);
+  for (const hit of allowed) {
+    assert.ok(REPO_ROOT_STACK_POINTERS.includes(hit.file), `unexpected allowed exception: ${hit.file}`);
+  }
+});
+
+// The exception is deliberately narrow. If it ever widens -- a `.stack` under
+// a subfolder, or a *content* hit inside the root one -- this repo must fail
+// the gate again.
+test('repo-clean: the .stack exception covers only the repo root, and only the name rule', () => {
+  const hits = [
+    { file: '.stack', rule: 'name:**/.stack' },
+    { file: '.supa', rule: 'name:**/.supa' },
+    { file: 'installer/.stack', rule: 'name:**/.stack' },
+    { file: 'payload/face/iris-face.zip!/.stack', rule: 'name:**/.stack' },
+    { file: '.stack', rule: 'regex:C:[\\\\/]+Users[\\\\/]+[^\\\\/]+', line: 1 },
+  ];
+  const { allowed, rest } = splitRepoStackPointers(hits);
+  assert.deepEqual(allowed.map((h) => h.file), ['.stack', '.supa']);
+  assert.deepEqual(rest.map((h) => h.file), [
+    'installer/.stack',
+    'payload/face/iris-face.zip!/.stack',
+    '.stack', // a content hit in the root pointer is NOT excused
+  ]);
 });

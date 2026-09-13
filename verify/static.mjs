@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { verifyManifest } from '../lib/manifest.mjs';
 import { extractZip } from '../lib/zip.mjs';
 import { sanitize } from '../build/sanitize.mjs';
-import { loadRules } from '../build/rules.mjs';
+import { loadRules, splitRepoStackPointers } from '../build/rules.mjs';
 import { agentShim } from '../installer/lib/shims.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -335,8 +335,23 @@ async function main() {
       .split('\0')
       .map((s) => s.trim())
       .filter(Boolean);
+    //
+    // The repo's own root .stack/.supa deploy-stack pointers are listed as
+    // allowed exceptions rather than failures -- see build/rules.mjs
+    // splitRepoStackPointers() for why, and note that check ② above (the
+    // shipped zip) gets no such exception.
     const repoScan = await sanitize(ROOT_DIR, rules, { files: trackedFiles });
-    record('⑦ repo self-scan (git ls-files)', repoScan.ok, repoScan.ok ? `0 hits across ${trackedFiles.length} tracked file(s)` : JSON.stringify(repoScan.hits));
+    const repoSplit = splitRepoStackPointers(repoScan.hits);
+    const allowedNote = repoSplit.allowed.length
+      ? `; allowed repo-root stack pointer(s): ${repoSplit.allowed.map((h) => h.file).join(', ')}`
+      : '';
+    record(
+      '⑦ repo self-scan (git ls-files)',
+      repoSplit.rest.length === 0,
+      repoSplit.rest.length === 0
+        ? `0 hits across ${trackedFiles.length} tracked file(s)${allowedNote}`
+        : `${JSON.stringify(repoSplit.rest)}${allowedNote}`,
+    );
 
     // ⑧ (C1, 2026-09-11 Fix round 2) git history scan -- check ⑦ only ever
     // scanned the current checkout, so a personal string that was scrubbed
@@ -363,8 +378,11 @@ async function main() {
           badHistoryCommits.push({ sha, error: 'extraction produced 0 files -- materialization failed' });
           continue;
         }
+        // Same repo-root .stack/.supa exception as ⑦: those commits are the
+        // repository's own history, not a shipped artefact.
         const histResult = await sanitize(histTreeDir, rules);
-        if (!histResult.ok) badHistoryCommits.push({ sha, hits: histResult.hits });
+        const histRest = splitRepoStackPointers(histResult.hits).rest;
+        if (histRest.length > 0) badHistoryCommits.push({ sha, hits: histRest });
       } finally {
         fs.rmSync(histTmpDir, { recursive: true, force: true });
       }

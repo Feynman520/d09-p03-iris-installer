@@ -46,3 +46,35 @@ export function loadRules({
     forbiddenRegex: [...(base.forbiddenRegex ?? []), ...(local.forbiddenRegex ?? [])],
   };
 }
+
+// ---------------------------------------------------------------------------
+// the repository's own deploy-stack pointers (2026-09-14)
+// ---------------------------------------------------------------------------
+
+// `<repo root>/.stack` and `<repo root>/.supa` are one-line labels -- a stack
+// letter, an account label -- that say which hosting account this project is
+// bound to. The R07 guardrail reads them before any push, so this repo tracks
+// its own on purpose (added 2026-09-13 when it went public).
+//
+// The `**/.stack` / `**/.supa` forbiddenNames rule exists for the SHIPPED ZIP:
+// a collected part (Face, the dashboard) could carry its own pointer, and that
+// must never travel to a stranger's PC. That rule is untouched -- check ②
+// scans the whole extracted zip with no exception whatsoever.
+//
+// Only the repository-side scans (verify/static.mjs ⑦ and ⑧, and the two tests
+// that mirror them) take these two ROOT files out of the hit list, and they
+// print them as allowed exceptions rather than hiding them. A `.stack` under
+// any other path is still a hit, in the repo as much as in the zip, and so is
+// a *content* hit inside one of these files -- only the name rule is excused.
+export const REPO_ROOT_STACK_POINTERS = ['.stack', '.supa'];
+
+export function splitRepoStackPointers(hits) {
+  const allowed = [];
+  const rest = [];
+  for (const hit of hits ?? []) {
+    const isRootPointer = REPO_ROOT_STACK_POINTERS.includes(String(hit?.file ?? ''))
+      && String(hit?.rule ?? '').startsWith('name:');
+    (isRootPointer ? allowed : rest).push(hit);
+  }
+  return { allowed, rest };
+}
