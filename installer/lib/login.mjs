@@ -100,13 +100,21 @@ export function startCliLogin({
   // instead of readable Korean. Kept ASCII-only here; the real Korean
   // guidance belongs on the installer's own HTML screen (Task 14), which is
   // UTF-8 end to end and does not have this risk.
-  const echoText = 'Log in in the browser, then close this window.';
-  // `cmd /k` keeps the window open after login finishes so the user can see
-  // the result; the whole thing is one quoted command string per cmd.exe's
-  // `start` rule (a quoted title makes `start` treat the NEXT quoted token
-  // as the window title, so the command itself needs its own quoting layer).
-  const inner = `"echo ${echoText} && "${cmdPath}" login"`;
-  const line = `start "${title}" cmd /k ${inner}`;
+  const echoText = 'Log in in the browser. This window closes by itself when the login is done.';
+  // The CLI's real login subcommand (2026-09-13 pre-release review, step ⓔ):
+  //   claude  -> `claude auth login --claudeai`  (Claude Code 2.1.x has no
+  //              top-level `login`; `claude login` prints the general help
+  //              and never authenticates -- caught by `claude --help`)
+  //   codex   -> `codex login`                    (unchanged)
+  const loginArgs = provider === 'claude' ? 'auth login --claudeai' : 'login';
+  // `cmd /c ... || pause`: the window closes by itself on success (a beginner
+  // is not left with a stray console to close), and stays open with "Press
+  // any key" only when the login command failed, so the error is readable.
+  // The whole thing is one quoted command string per cmd.exe's `start` rule
+  // (a quoted title makes `start` treat the NEXT quoted token as the window
+  // title, so the command itself needs its own quoting layer).
+  const inner = `"echo ${echoText} && "${cmdPath}" ${loginArgs} || pause"`;
+  const line = `start "${title}" cmd /c ${inner}`;
   const args = ['/d', '/s', '/c', line];
 
   if (dryRun) {

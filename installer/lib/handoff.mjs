@@ -158,17 +158,27 @@ export async function writeFaceLauncher(root, name, { desktopDir = null, runPs =
     return { cmdPath, lnkPath: null, shortcut: { ok: false, detail: 'skipped' } };
   }
 
-  const lnkPath = desktopDir ? path.join(desktopDir, `${name} Face.lnk`) : null;
+  // Desktop shortcut = "<name>.lnk" ("IRIS" -- the one thing that lives
+  // outside C:\IRIS, 2026-09-13 user decision). The .cmd keeps the
+  // "<name> Face.cmd" shape because setup guide v10 §9 names it as the
+  // default door; renaming it means a guide edition.
+  const lnkPath = desktopDir ? path.join(desktopDir, `${name}.lnk`) : null;
+  // Icon: a shortcut to a .cmd gets the black console icon by default -- not
+  // what "IRIS" on a beginner's desktop should look like. Use Face's own icon
+  // when it ships one (P02 app\iris.ico); until then Windows' default stays.
+  const icoPath = path.join(faceDirFor(root), 'app', 'iris.ico');
+  const iconLine = fs.existsSync(icoPath) ? [`$sc.IconLocation = ${psQuote(`${icoPath},0`)}`] : [];
   const script = [
     '$ErrorActionPreference = \'Stop\'',
     desktopDir ? `$desk = ${psQuote(desktopDir)}` : '$desk = [Environment]::GetFolderPath(\'Desktop\')',
-    `$lnk = Join-Path $desk ${psQuote(`${name} Face.lnk`)}`,
+    `$lnk = Join-Path $desk ${psQuote(`${name}.lnk`)}`,
     '$shell = New-Object -ComObject WScript.Shell',
     '$sc = $shell.CreateShortcut($lnk)',
     `$sc.TargetPath = ${psQuote(cmdPath)}`,
     `$sc.WorkingDirectory = ${psQuote(root)}`,
     '$sc.WindowStyle = 7',
-    '$sc.Description = \'IRIS-Face\'',
+    '$sc.Description = \'IRIS\'',
+    ...iconLine,
     '$sc.Save()',
     'Write-Output $lnk',
   ].join('\n');

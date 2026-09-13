@@ -297,6 +297,12 @@ export function startServer({
   desktopDir,
   workDir,
   noUserEnv = false,
+  // 2026-09-13 user decision: the soul folder is ALWAYS C:\IRIS -- the product
+  // name, the Face header, the desktop shortcut and the folder are one word,
+  // and a beginner is never asked to invent a folder name. The env override
+  // exists only so the developer PC (whose real C:\IRIS must not be touched)
+  // can rehearse the installer against a throwaway root.
+  soulName = process.env.IRIS_INSTALLER_SOUL_NAME || 'IRIS',
 } = {}) {
   const uiDir = path.join(HERE, 'ui');
   const version = readPackageVersion(zipRoot);
@@ -345,22 +351,25 @@ export function startServer({
     sendJson(res, 200, result);
   }));
 
+  // The body's `name` is deliberately ignored: the folder is fixed (see
+  // `soulName` above). The name rules still run so a bad override on the
+  // developer PC is refused instead of producing a broken root.
   routes.set('POST /api/name', withBody(async (body, req, res) => {
-    const name = body?.name;
+    const name = soulName;
     const validation = validateSoulName(name);
     if (!validation.ok) {
-      sendJson(res, 200, { ok: false, reason: validation.reason });
+      sendJson(res, 200, { ok: false, reason: validation.reason, name });
       return;
     }
     const existing = detectExisting(validation.path);
     if (existing === 'conflict') {
-      sendJson(res, 200, { ok: false, reason: 'conflict' });
+      sendJson(res, 200, { ok: false, reason: 'conflict', name, path: validation.path });
       return;
     }
     state.soul = { name, root: validation.path, existing };
     state.step = 'choice';
     saveState(stateFile, state);
-    sendJson(res, 200, { ok: true, path: validation.path, existing });
+    sendJson(res, 200, { ok: true, name, path: validation.path, existing });
   }));
 
   // Decision rule = docs/설계.md D7/§3-3 ⓒ: choosing both subscriptions has
@@ -604,7 +613,12 @@ export function startServer({
     }
 
     const now = Date.now();
-    const REOPEN_AFTER_MS = 60 * 60 * 1000; // 60 minutes, per the brief's "다시 열기" affordance
+    // 2 minutes (was 60 -- 2026-09-13 review): a beginner who closed the black
+    // window by mistake, or whose browser never opened, must not sit for an
+    // hour before the screen offers "다시 열기". A real browser login takes
+    // well under two minutes; a second window is harmless if the first is
+    // still open (same credential file, first one to finish wins).
+    const REOPEN_AFTER_MS = 2 * 60 * 1000;
     const providers = {};
     for (const provider of subs) {
       const entry = state.login[provider];

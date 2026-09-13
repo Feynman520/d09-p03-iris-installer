@@ -11,7 +11,7 @@
       "skipUnder": ["node_modules/", "node-v*-win-x64.zip!", "MinGit-*-64-bit.zip!", "rules.json", "sanitize.test.mjs"]
     },
     {
-      "pattern": "C:[\\\\/]+IRIS",
+      "pattern": "C:[\\\\/]+IRIS[\\\\/]",
       "skipUnder": ["lock.json", "sanitize.test.mjs"]
     },
     {

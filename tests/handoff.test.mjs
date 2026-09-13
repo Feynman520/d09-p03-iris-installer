@@ -160,7 +160,9 @@ test('writeFaceLauncher writes "<name> Face.cmd" at the soul root and a desktop 
 
   assert.equal(res.cmdPath, path.join(root, 'NOVA Face.cmd'));
   assert.equal(fs.readFileSync(res.cmdPath, 'utf8'), faceLauncherContent());
-  assert.equal(res.lnkPath, path.join(desktopDir, 'NOVA Face.lnk'));
+  // Desktop shortcut is just "<name>.lnk" -- "IRIS" on a real install.
+  assert.equal(res.lnkPath, path.join(desktopDir, 'NOVA.lnk'));
+  assert.ok(!calls[0].includes('Face.lnk'), 'the shortcut name must not carry the internal "Face" word');
   assert.equal(res.shortcut.ok, true);
 
   assert.equal(calls.length, 1);

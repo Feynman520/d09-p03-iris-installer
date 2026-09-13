@@ -101,11 +101,17 @@ test('startCliLogin: claude -- argv/env has no ANTHROPIC_BASE_URL, sets CLAUDE_C
     const line = captured.args.join(' ');
     assert.match(line, /claude\.cmd/);
     assert.doesNotMatch(line, /codex\.cmd/);
+    // 2026-09-13: Claude Code 2.1.x authenticates with `claude auth login`
+    // (`claude login` does not exist -- it prints the general help). The
+    // window must close by itself on success and stay open only on failure.
+    assert.match(line, /claude\.cmd" auth login --claudeai/);
+    assert.match(line, /cmd \/c /);
+    assert.match(line, /\|\| pause/);
     // Fix round 1 finding 4: the in-window guidance must be plain ASCII --
-    // Korean text inside a cmd /k line can render as mojibake on a cp949
+    // Korean text inside a cmd line can render as mojibake on a cp949
     // console. Korean guidance belongs on the installer's own HTML screen
     // (Task 14) instead.
-    assert.match(line, /Log in in the browser, then close this window\./);
+    assert.match(line, /Log in in the browser\. This window closes by itself when the login is done\./);
     assert.doesNotMatch(line, /[\u3130-\u318F\uAC00-\uD7A3]/, 'no Hangul characters in the spawned console line');
   } finally {
     if (hadSentinel) process.env.ANTHROPIC_BASE_URL = previousValue;
@@ -134,7 +140,11 @@ test('startCliLogin: codex -- sets CODEX_HOME, no ANTHROPIC_BASE_URL, invokes co
     const line = captured.args.join(' ');
     assert.match(line, /codex\.cmd/);
     assert.doesNotMatch(line, /claude\.cmd/);
-    assert.match(line, /Log in in the browser, then close this window\./);
+    // codex keeps its own `codex login`; the `auth` form is Claude-only.
+    assert.match(line, /codex\.cmd" login/);
+    assert.doesNotMatch(line, /auth login/);
+    assert.match(line, /\|\| pause/);
+    assert.match(line, /Log in in the browser\. This window closes by itself when the login is done\./);
     assert.doesNotMatch(line, /[\u3130-\u318F\uAC00-\uD7A3]/, 'no Hangul characters in the spawned console line');
   } finally {
     if (hadSentinel) process.env.ANTHROPIC_BASE_URL = previousValue;

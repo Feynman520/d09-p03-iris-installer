@@ -48,33 +48,25 @@ test('health 200 with name:iris-installer; POST /api/name validation; POST /api/
   assert.equal(healthBody.step, 'precheck');
   assert.equal(typeof healthBody.version, 'string');
 
-  // 'Windows' collides with the real top-level system folder -> soulname's
-  // 'system' reason (the old Task 10 stub's narrower 'reserved' vocabulary
-  // is gone -- soulname.mjs is now the single source of truth).
-  const systemName = await fetch(`${url}/api/name`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Windows' }),
-  });
-  assert.equal(systemName.status, 200);
-  assert.deepEqual(await systemName.json(), { ok: false, reason: 'system' });
-
-  // 'CON' is a reserved MS-DOS device name -- distinct reason from 'system'.
-  const deviceName = await fetch(`${url}/api/name`, {
+  // The soul folder is fixed (2026-09-13): the request body's name is
+  // ignored. This server was started without a soulName override, so the
+  // default applies -- and that default must be the product name, IRIS.
+  // The route is exercised (not just the default read back) with a body
+  // that would have been rejected under the old free-form rules: 'CON' is a
+  // reserved device name, yet the answer is about C:\IRIS, not about CON.
+  // detectExisting() is read-only, so probing the real C:\IRIS on the
+  // developer PC changes nothing; the answer's `existing` just depends on
+  // the machine, so only the fixed name/path are asserted.
+  const ignoredBody = await fetch(`${url}/api/name`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'CON' }),
   });
-  assert.equal(deviceName.status, 200);
-  assert.deepEqual(await deviceName.json(), { ok: false, reason: 'reserved' });
-
-  const okName = await fetch(`${url}/api/name`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'NOVA' }),
-  });
-  assert.equal(okName.status, 200);
-  assert.deepEqual(await okName.json(), { ok: true, path: 'C:\\NOVA', existing: 'none' });
+  assert.equal(ignoredBody.status, 200);
+  const ignoredJson = await ignoredBody.json();
+  assert.equal(ignoredJson.name, 'IRIS');
+  if (ignoredJson.ok) assert.equal(ignoredJson.path, 'C:\\IRIS');
+  else assert.equal(ignoredJson.reason, 'conflict', 'the only possible refusal for the fixed name is a foreign C:\\IRIS');
 
   const quit = await fetch(`${url}/api/quit`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   assert.equal(quit.status, 200);
@@ -105,31 +97,41 @@ test('POST /api/precheck runs the real precheck and advances state.step to name'
   }
 });
 
-test('POST /api/name: a rejected name leaves state.step on precheck (no soul saved); state.step only advances to choice on ok:true', async () => {
+test('POST /api/name: the fixed soulName is validated (a bad override is refused, no soul saved); ok:true advances to choice with the fixed name, body ignored', async () => {
+  // A bad override (developer-PC rehearsal switch IRIS_INSTALLER_SOUL_NAME /
+  // startServer({soulName})) must be refused by the same name rules -- the
+  // installer never proceeds with a root it could not create.
   const stateFile7 = path.join(tmp, 'state7.json');
-  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFile7 });
+  const bad = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFile7, soulName: 'CON' });
   try {
-    const badName = await fetch(`${url}/api/name`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: '' }),
-    });
-    assert.deepEqual(await badName.json(), { ok: false, reason: 'empty' });
-    const afterBad = await (await fetch(`${url}/api/state`)).json();
-    assert.equal(afterBad.step, 'precheck');
-    assert.equal(afterBad.soul, undefined);
-
-    const goodName = await fetch(`${url}/api/name`, {
+    const badName = await fetch(`${bad.url}/api/name`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'NOVA7' }),
     });
-    assert.deepEqual(await goodName.json(), { ok: true, path: 'C:\\NOVA7', existing: 'none' });
-    const afterGood = await (await fetch(`${url}/api/state`)).json();
+    assert.deepEqual(await badName.json(), { ok: false, reason: 'reserved', name: 'CON' });
+    const afterBad = await (await fetch(`${bad.url}/api/state`)).json();
+    assert.equal(afterBad.step, 'precheck');
+    assert.equal(afterBad.soul, undefined);
+  } finally {
+    await bad.close();
+  }
+
+  const stateFile8 = path.join(tmp, 'state8.json');
+  const good = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFile8, soulName: 'NOVA7' });
+  try {
+    // Body name is ignored: whatever the page sends, the soul is NOVA7.
+    const goodName = await fetch(`${good.url}/api/name`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'SOMETHING-ELSE' }),
+    });
+    assert.deepEqual(await goodName.json(), { ok: true, name: 'NOVA7', path: 'C:\\NOVA7', existing: 'none' });
+    const afterGood = await (await fetch(`${good.url}/api/state`)).json();
     assert.equal(afterGood.step, 'choice');
     assert.deepEqual(afterGood.soul, { name: 'NOVA7', root: 'C:\\NOVA7', existing: 'none' });
   } finally {
-    await close();
+    await good.close();
   }
 });
 
@@ -189,11 +191,12 @@ test('login: POST /api/login + GET /api/login/status advance cli -> relay -> han
     relayStatusFn: async ({ provider }) => relayStatusByProvider[provider],
     countProviderAccountsFn: async () => 0,
     teamclaudeConfigPath: path.join(tmp, 'fake-teamclaude.json'),
+    soulName: 'NOVA-LOGIN-TEST', // fixed-name override (the body below is ignored)
   });
   try {
     await fetch(`${url}/api/name`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'NOVA-LOGIN-TEST' }),
+      body: JSON.stringify({}),
     });
     await fetch(`${url}/api/choice`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -341,7 +344,9 @@ test('static handler blocks path traversal: ../, %2e%2e/, %5c, and raw backslash
 // other requests afterward; a body just under the limit must go through
 // normally.
 test('body-size boundary: over BODY_LIMIT -> 413 JSON and server keeps serving; under BODY_LIMIT -> accepted', async () => {
-  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state5.json') });
+  // A name no machine has at C:\ -- detectExisting() reads the real drive,
+  // and the developer PC may well have a rehearsal C:\NOVA lying around.
+  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state5.json'), soulName: 'NOVA7-BODY-TEST' });
   try {
     const BODY_LIMIT = 1024 * 1024; // must track installer/server.mjs's BODY_LIMIT
 
@@ -363,7 +368,7 @@ test('body-size boundary: over BODY_LIMIT -> 413 JSON and server keeps serving; 
       body: JSON.stringify({ name: 'NOVA', pad: 'a'.repeat(BODY_LIMIT - 1000) }),
     });
     assert.equal(under.status, 200);
-    assert.deepEqual(await under.json(), { ok: true, path: 'C:\\NOVA', existing: 'none' });
+    assert.deepEqual(await under.json(), { ok: true, name: 'NOVA7-BODY-TEST', path: 'C:\\NOVA7-BODY-TEST', existing: 'none' });
   } finally {
     await close();
   }
@@ -403,11 +408,12 @@ test('install: 202 + SSE progress frames, replayed for a late subscriber, step -
 
   const { url, close } = await startServer({
     port: 0, zipRoot: zr, nodeDir, stateFile: path.join(tmp, 'state-install.json'), installFn,
+    soulName: 'NOVA-SSE-TEST',
   });
   try {
     await fetch(`${url}/api/name`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'NOVA-SSE-TEST' }),
+      body: JSON.stringify({}),
     });
     await fetch(`${url}/api/choice`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -518,7 +524,9 @@ test('/api guard: foreign Origin is 403 bad_origin, own origin and no Origin pas
 
 test('/api guard: a POST that is not application/json is 415', async () => {
   const stateFileC = path.join(tmp, 'state-ctype.json');
-  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFileC });
+  // soulName '' -> the fixed-name route answers reason:'empty' without touching
+  // any real folder, which is all this content-type test needs from it.
+  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFileC, soulName: '' });
   try {
     const form = await fetch(`${url}/api/name`, {
       method: 'POST',
@@ -539,7 +547,7 @@ test('/api guard: a POST that is not application/json is 415', async () => {
       body: JSON.stringify({ name: '' }),
     });
     assert.equal(withCharset.status, 200);
-    assert.deepEqual(await withCharset.json(), { ok: false, reason: 'empty' });
+    assert.deepEqual(await withCharset.json(), { ok: false, reason: 'empty', name: '' });
   } finally {
     await close();
   }

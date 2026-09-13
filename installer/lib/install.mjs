@@ -9,6 +9,7 @@ import {
 } from './receipt.mjs';
 import { writeShims, shimsDir } from './shims.mjs';
 import { writeMinimalSoulState } from './soulstate.mjs';
+import { seedFirstRun } from './firstrun.mjs';
 import { portableTeamclaudeConfigDir, portableTeamclaudeConfigPath } from './login.mjs';
 import * as userpathDefault from './userpath.mjs';
 
@@ -435,6 +436,23 @@ export function defaultVerifiers({ root, manifest, lock, zipRoot, patchRulesFile
     },
     guides: async () => {
       const dir = path.join(root, '_setup-guides');
+      // Exact manifest names, not a head-count: the handoff step opens the
+      // guide by its manifest basename, so a guide whose Korean name was
+      // mangled on the way in (a zip tool decoding the entry names with the
+      // wrong code page -- seen 2026-09-13 in a rehearsal) must fail HERE,
+      // with the name, instead of at ⓕ with "no guide in manifest".
+      const wanted = Object.keys(manifest?.parts ?? {})
+        .filter((k) => k.startsWith('guides:'))
+        .map((k) => k.slice('guides:'.length));
+      if (wanted.length > 0) {
+        const missing = wanted.filter((b) => !fs.existsSync(path.join(dir, b)));
+        return {
+          ok: missing.length === 0,
+          detail: missing.length
+            ? `missing by exact name: ${missing.join(', ')}`
+            : `${wanted.length} guide file(s) present under their manifest names`,
+        };
+      }
       const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith('.md')) : [];
       const min = lock?.parts?.guides?.minCount ?? 2;
       return { ok: files.length >= min, detail: `${files.length} guide file(s)` };
@@ -746,8 +764,36 @@ export async function install({
   emit({ part: 'shims', pct: 100, status: 'done' });
 
   // --- 3. minimal soul-state (never over an existing one) -----------------
-  const soul = writeMinimalSoulState(root, { edition: choice.guideEdition ?? 'claude', name });
+  // sourceGuide.version = the bundled guide edition ("10"), per docs/설계.md
+  // 4-1 ② and guide v10 appendix A ("10" = installed by the package). The
+  // default '7' in soulstate.mjs is the bare v7-engine value and was being
+  // written by mistake (2026-09-13 rehearsal, C:\NOVA soul-state.json).
+  const soul = writeMinimalSoulState(root, {
+    edition: choice.guideEdition ?? 'claude',
+    name,
+    guideVersion: String(manifest?.package?.guideVersion ?? lock?.package?.guideVersion ?? '7'),
+  });
   emit({ part: 'soul-state', pct: 100, status: soul.written ? 'done' : 'skipped', skipped: !soul.written });
+
+  // --- 3b. first-run answers (2026-09-13) -----------------------------------
+  // Answer the CLIs' one-time first-run questions (Claude Code onboarding
+  // wizard, "trust this folder?") for the soul folder we just made, so the
+  // first thing the person sees in the IRIS window is the setting-up
+  // conversation, not an English wizard. Add-only; see firstrun.mjs.
+  let firstRun = null;
+  try {
+    firstRun = seedFirstRun(root, {
+      agents: activeAgents.length ? activeAgents : ['claude'],
+      claudeVersion: expectedIdentity('claude', manifest, lock).version,
+    });
+    log(`first-run seeded: ${JSON.stringify(firstRun)}`);
+    emit({ part: 'first-run', pct: 100, status: 'done' });
+  } catch (err) {
+    // Never fatal: the worst case is the wizard the person would have seen anyway.
+    log(`first-run seeding skipped: ${String(err?.message ?? err)}`);
+    emit({ part: 'first-run', pct: 100, status: 'skipped', skipped: true });
+  }
+  receipt.firstRun = firstRun;
 
   // --- 4. user PATH + env -------------------------------------------------
   const env = {

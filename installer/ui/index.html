@@ -107,11 +107,10 @@ footer { color: var(--ink-3); font-size: 11.5px; margin-top: 26px; text-align: c
   </section>
 
   <section class="card" id="card-name">
-    <div class="card-head"><span class="mark">ⓑ</span><h2>이름 정하기</h2><span class="badge" id="badge-name">대기</span></div>
+    <div class="card-head"><span class="mark">ⓑ</span><h2>설치 위치</h2><span class="badge" id="badge-name">대기</span></div>
     <div class="card-body">
-      <p class="hint">앞으로 이 비서가 살 폴더의 이름입니다. <code>C:\</code> 바로 아래에 그 이름으로 만들어집니다. 한글도 됩니다.</p>
-      <input type="text" id="name-input" placeholder="예: NOVA" autocomplete="off">
-      <button class="go" id="btn-name">이 이름으로</button>
+      <p class="hint">모든 것은 <code>C:\IRIS</code> 폴더 하나에 들어갑니다. 바탕화면에는 「IRIS」 바로가기 하나만 만듭니다. 정할 것은 없고, 그 자리를 쓸 수 있는지만 확인합니다.</p>
+      <button class="go" id="btn-name" hidden>다시 확인</button>
       <div id="name-note"></div>
     </div>
   </section>
@@ -119,9 +118,9 @@ footer { color: var(--ink-3); font-size: 11.5px; margin-top: 26px; text-align: c
   <section class="card" id="card-choice">
     <div class="card-head"><span class="mark">ⓒ</span><h2>구독 고르기</h2><span class="badge" id="badge-choice">대기</span></div>
     <div class="card-body">
-      <p class="hint">가지고 계신 구독을 모두 고르세요. 둘 다 고르면 Claude 쪽이 첫 세팅을 맡습니다.</p>
-      <label class="pick"><input type="checkbox" id="sub-claude" value="claude"><span><b>Claude 구독</b><span class="sub">Claude Code로 일합니다. 둘 다 있으면 이쪽이 첫 세팅을 맡습니다.</span></span></label>
-      <label class="pick"><input type="checkbox" id="sub-chatgpt" value="chatgpt"><span><b>ChatGPT 구독</b><span class="sub">Codex로 일합니다.</span></span></label>
+      <p class="hint">가지고 계신 <b>유료 구독</b>을 모두 고르세요. 무료 계정으로는 비서가 일할 수 없습니다. 둘 다 고르면 Claude 쪽이 첫 세팅을 맡고, 그 뒤로는 둘 다 씁니다.</p>
+      <label class="pick"><input type="checkbox" id="sub-claude" value="claude"><span><b>Claude 구독</b> — claude.ai 유료 요금제(예: Pro, Max)<span class="sub">비서가 Claude로 일합니다(도구 이름: Claude Code). 둘 다 있으면 이쪽이 첫 세팅을 맡습니다.</span></span></label>
+      <label class="pick"><input type="checkbox" id="sub-chatgpt" value="chatgpt"><span><b>ChatGPT 구독</b> — chatgpt.com 유료 요금제(예: Plus, Pro)<span class="sub">비서가 ChatGPT로 일합니다(도구 이름: Codex).</span></span></label>
       <button class="go" id="btn-choice">이걸로 정하기</button>
       <div id="choice-note"></div>
     </div>
@@ -130,7 +129,7 @@ footer { color: var(--ink-3); font-size: 11.5px; margin-top: 26px; text-align: c
   <section class="card" id="card-install">
     <div class="card-head"><span class="mark">ⓓ</span><h2>설치</h2><span class="badge" id="badge-install">대기</span></div>
     <div class="card-body">
-      <p class="hint">동봉된 프로그램들을 영혼 폴더 안으로 옮겨 놓습니다. 이미 있는 파일은 지우지 않고 <code>.prev</code>로 옆에 남깁니다. 몇 분 걸립니다.</p>
+      <p class="hint">동봉된 프로그램들을 위에서 정한 폴더 안으로 옮겨 놓습니다. 이미 있는 파일은 지우지 않고 <code>.prev</code>로 옆에 남깁니다. 몇 분 걸립니다.</p>
       <button class="go" id="btn-install">설치 시작</button>
       <div class="rows" id="install-rows"></div>
       <div id="install-note"></div>
@@ -140,7 +139,7 @@ footer { color: var(--ink-3); font-size: 11.5px; margin-top: 26px; text-align: c
   <section class="card" id="card-login">
     <div class="card-head"><span class="mark">ⓔ</span><h2>계정 로그인</h2><span class="badge" id="badge-login">대기</span></div>
     <div class="card-body">
-      <p class="hint">여기만 사람이 직접 합니다. 버튼을 누르면 검은 창이 열리고, 그 안내를 따라 브라우저에서 로그인하면 됩니다. 창은 저절로 닫힙니다.</p>
+      <p class="hint">여기만 사람이 직접 합니다. 「로그인 시작」을 누르면 검은 창이 잠깐 열리고, 곧 브라우저에 로그인 화면이 뜹니다. <b>평소 쓰는 그 계정으로 로그인하고 「허용(Authorize)」을 누르세요.</b> 끝나면 검은 창은 저절로 닫히고 이 화면이 다음 줄로 넘어갑니다. 브라우저가 코드를 보여 주면 복사해서 검은 창에 붙여 넣고 Enter를 누르세요. 창을 닫아 버렸거나 브라우저가 안 뜨면 잠시 뒤 나타나는 「다시 열기」를 누르면 됩니다.</p>
       <div id="login-boxes"></div>
       <div id="login-note"></div>
     </div>
@@ -149,13 +148,13 @@ footer { color: var(--ink-3); font-size: 11.5px; margin-top: 26px; text-align: c
   <section class="card" id="card-handoff">
     <div class="card-head"><span class="mark">ⓕ</span><h2>첫 세션 넘기기</h2><span class="badge" id="badge-handoff">대기</span></div>
     <div class="card-body">
-      <p class="hint">IRIS-Face 창을 열고, 세팅을 이어받을 첫 대화를 만들어 줍니다. 그러고 나면 이 설치 창은 저절로 닫힙니다.</p>
-      <button class="go" id="btn-handoff">Face 열고 넘기기</button>
+      <p class="hint">IRIS 창을 열고, 세팅을 이어받을 첫 대화를 만들어 줍니다. 그러고 나면 설치기는 할 일을 마치고 꺼지므로, 이 브라우저 탭은 닫으셔도 됩니다.</p>
+      <button class="go" id="btn-handoff">IRIS 열고 넘기기</button>
       <div id="handoff-note"></div>
     </div>
   </section>
 
-  <footer>이 창은 이 컴퓨터 안에서만 돕니다(127.0.0.1). 설치가 끝나면 저절로 닫힙니다.</footer>
+  <footer>이 창은 이 컴퓨터 안에서만 돕니다(127.0.0.1). 설치가 끝나면 설치기는 꺼지고, 이 탭은 닫으셔도 됩니다.</footer>
 </div>
 
 <script>
@@ -242,13 +241,16 @@ function renderPrecheck(result) {
   } else if (result.canProceedOffline) {
     done.precheck = true;
     badge('precheck', '경고', 'run');
-    note('precheck-note', '인터넷이 닿지 않는 곳이 있습니다. 설치(ⓓ)까지는 그대로 할 수 있지만, <b>로그인(ⓔ)에서는 인터넷이 반드시 있어야 합니다.</b>');
+    note('precheck-note', '인터넷이 닿지 않는 곳이 있습니다. <b>Claude Code 내려받기(ⓓ)와 로그인(ⓔ)에는 인터넷이 반드시 필요합니다.</b> 인터넷을 연결한 뒤 「확인 시작」을 다시 눌러 주세요. 그래도 안 되면 이 창을 닫지 말고 회사·학교 망이 claude.ai·chatgpt.com을 막는지 확인해 보세요.');
   } else {
     done.precheck = false;
     badge('precheck', '막힘', 'bad');
     note('precheck-note', '이 컴퓨터에서는 설치를 이어갈 수 없습니다. 위에서 X 표시가 난 항목을 해결한 뒤 다시 확인을 눌러 주세요.', 'bad');
   }
   relock();
+  // ⓑ 는 묻는 것이 없으므로 ⓐ 가 통과하면 바로 자리를 확인한다(새로고침 복원 때는
+  // restore() 가 st.soul 로 먼저 채우므로 done.name 이 이미 참이면 건너뛴다).
+  if (done.precheck && !done.name) confirmLocation();
 }
 
 $('btn-precheck').onclick = async () => {
@@ -267,41 +269,47 @@ $('btn-precheck').onclick = async () => {
 };
 
 // ---------------------------------------------------------------------------
-// ⓑ 이름
+// ⓑ 설치 위치 — 폴더는 C:\IRIS 로 고정(2026-09-13 사용자 결정). 사용자는 아무것도
+// 정하지 않는다: ⓐ가 통과하면 저절로 자리를 확인하고, 막힐 때만 「다시 확인」이 보인다.
 // ---------------------------------------------------------------------------
 const NAME_REASON = {
-  empty: '이름을 적어 주세요.',
-  chars: '\\ / : * ? " &lt; &gt; | 같은 글자는 폴더 이름에 쓸 수 없습니다.',
-  trailing: '이름 끝에 점이나 빈칸을 두면 안 됩니다.',
-  reserved: '윈도우가 장치 이름으로 예약해 둔 말입니다(CON, PRN, COM1 …). 다른 이름으로 해 주세요.',
-  system: '윈도우가 이미 쓰는 폴더 이름입니다. 다른 이름으로 해 주세요.',
-  korean: '영문·숫자·- _ 만 쓸 수 있습니다.',
-  conflict: '그 이름의 폴더가 이미 있고, 비어 있지도 않습니다. 그 안의 자료를 지우지 않기 위해 다른 이름을 받습니다.',
+  conflict: '<code>C:\\IRIS</code> 폴더가 이미 있는데, IRIS 비서가 아닌 다른 자료가 들어 있습니다. 그 안의 것을 지우지 않기 위해 여기서 멈춥니다. ' +
+    '그 폴더의 이름을 바꾸거나 다른 곳으로 옮긴 뒤 「다시 확인」을 눌러 주세요.',
 };
 
-$('btn-name').onclick = async () => {
-  const name = $('name-input').value.trim();
+let locating = false;
+async function confirmLocation() {
+  if (locating || done.name) return;
+  locating = true;
   $('btn-name').disabled = true;
+  badge('name', '진행중', 'run');
   try {
-    const { body } = await api('/api/name', { name });
+    const { body } = await api('/api/name', {});
     if (!body.ok) {
       badge('name', '막힘', 'bad');
-      note('name-note', NAME_REASON[body.reason] || ('쓸 수 없는 이름입니다(' + esc(body.reason) + ').'), 'bad');
+      note('name-note', NAME_REASON[body.reason] || ('이 자리를 쓸 수 없습니다(' + esc(body.reason) + ').'), 'bad');
       done.name = false;
+      $('btn-name').hidden = false;
     } else {
       done.name = true;
       badge('name', '완료', 'done');
-      note('name-note', '이 폴더에 만듭니다: <span class="path">' + esc(body.path) + '</span>' +
-        (body.existing === 'soul' ? '<br>이미 IRIS 영혼이 있는 폴더입니다. 지우지 않고 부족한 것만 채웁니다.' : ''), 'ok');
+      $('btn-name').hidden = true;
+      note('name-note', '여기에 설치합니다: <span class="path">' + esc(body.path) + '</span>' +
+        (body.existing === 'soul'
+          ? '<br>이미 IRIS 비서가 설치된 폴더입니다. 그 안의 것은 지우지 않고, 부족한 것만 채웁니다.'
+          : '<br>새 폴더입니다.'), 'ok');
     }
   } catch (e) {
-    note('name-note', '처리하지 못했습니다: ' + esc(e.message), 'bad');
+    badge('name', '막힘', 'bad');
+    note('name-note', '확인하지 못했습니다: ' + esc(e.message), 'bad');
+    $('btn-name').hidden = false;
   } finally {
+    locating = false;
     $('btn-name').disabled = false;
     relock();
   }
-};
-$('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-name').click(); });
+}
+$('btn-name').onclick = confirmLocation;
 
 // ---------------------------------------------------------------------------
 // ⓒ 구독
@@ -311,7 +319,7 @@ $('btn-choice').onclick = async () => {
   if ($('sub-claude').checked) subs.push('claude');
   if ($('sub-chatgpt').checked) subs.push('chatgpt');
   if (subs.length === 0) {
-    note('choice-note', '적어도 하나는 골라야 합니다. 구독이 하나도 없으면 이 설치는 끝까지 갈 수 없습니다.', 'bad');
+    note('choice-note', '적어도 하나는 골라야 합니다. 유료 구독이 아직 없다면 <b>claude.ai</b> 또는 <b>chatgpt.com</b>에서 먼저 구독한 뒤 이 화면으로 돌아오세요. 이 설치 창은 그대로 두어도 됩니다.', 'bad');
     return;
   }
   const { body } = await api('/api/choice', { subscriptions: subs });
@@ -330,8 +338,8 @@ $('btn-choice').onclick = async () => {
 const PART_LABEL = {
   node: '노드 런타임', python: '파이썬', pyyaml: '파이썬 부품(yaml)', git: 'Git',
   claude: 'Claude Code', codex: 'Codex', teamclaude: '중계 서버', dash: '한도 화면',
-  face: 'IRIS-Face', guides: '세팅가이드', manage: '중계 관리 스크립트',
-  shims: '실행 바로가기', 'soul-state': '영혼 표지', env: '환경 변수',
+  face: 'IRIS 창', guides: '세팅가이드', manage: '중계 관리 스크립트',
+  shims: '실행 바로가기', 'soul-state': '설치 표지', 'first-run': '첫 실행 준비', env: '환경 변수',
 };
 const partState = {};
 let installSource = null;
@@ -431,8 +439,8 @@ function renderLoginBoxes() {
   $('login-boxes').innerHTML = chosenSubs.map((p) =>
     '<div class="login-box" id="lb-' + p + '">' +
       '<h3>' + PROVIDER_LABEL[p] + '</h3>' +
-      '<div class="stage"><span class="st idle" id="st1-' + p + '">.</span><span>① 로그인 창 — 검은 창이 열리면 안내대로 브라우저에서 로그인</span><span id="re-' + p + '"></span></div>' +
-      '<div class="stage"><span class="st idle" id="st2-' + p + '">.</span><span>② 중계 등록 — 로그인한 계정을 이 컴퓨터의 중계에 등록</span><span></span></div>' +
+      '<div class="stage"><span class="st idle" id="st1-' + p + '">.</span><span>① 브라우저 로그인 — 평소 쓰는 ' + (p === 'claude' ? 'Claude' : 'ChatGPT') + ' 계정으로 로그인하고 허용</span><span id="re-' + p + '"></span></div>' +
+      '<div class="stage"><span class="st idle" id="st2-' + p + '">.</span><span>② 계정 등록 — 로그인한 계정을 이 컴퓨터의 비서가 쓰도록 등록(자동)</span><span></span></div>' +
       '<div style="margin-top:10px"><button class="go" id="btn-login-' + p + '">로그인 시작</button></div>' +
     '</div>').join('');
   for (const p of chosenSubs) $('btn-login-' + p).onclick = () => startLogin(p);
@@ -499,15 +507,15 @@ function pollLogin() {
 const HANDOFF_WHERE = {
   'first-request': '첫 요청문을 쓰는 중',
   launcher: '소환기를 만드는 중',
-  launch: 'IRIS-Face를 켜는 중',
-  ready: 'IRIS-Face가 준비되기를 기다리는 중',
+  launch: 'IRIS 창을 켜는 중',
+  ready: 'IRIS 창이 준비되기를 기다리는 중',
   finish: '마무리하는 중',
 };
 
 $('btn-handoff').onclick = async () => {
   $('btn-handoff').disabled = true;
   badge('handoff', '진행중', 'run');
-  note('handoff-note', 'IRIS-Face를 켜고 첫 대화가 만들어질 때까지 기다립니다(최대 1분).');
+  note('handoff-note', 'IRIS 창을 켜고 첫 대화가 만들어질 때까지 기다립니다(최대 1분).');
   try {
     const { body } = await api('/api/handoff', {});
     if (!body.ok) {
@@ -520,8 +528,11 @@ $('btn-handoff').onclick = async () => {
     }
     done.handoff = true;
     badge('handoff', '완료', 'done');
-    note('handoff-note', '끝났습니다. IRIS-Face 창에서 세팅이 이어집니다.<br>다음부터는 <span class="path">' + esc(body.launcher || '') + '</span> 를 두 번 누르면 됩니다.' +
-      (body.shortcut ? '<br>바탕화면에도 바로가기를 두었습니다.' : ''), 'ok');
+    note('handoff-note', '<b>설치가 모두 끝났습니다.</b> 이제 IRIS 창에서 비서가 세팅을 이어갑니다 — 그 창의 질문에 답해 주시면 됩니다.<br>' +
+      (body.shortcut
+        ? '다음부터는 바탕화면의 「IRIS」 아이콘을 두 번 누르면 됩니다.'
+        : '다음부터는 <span class="path">' + esc(body.launcher || '') + '</span> 를 두 번 누르면 됩니다(바탕화면 바로가기는 만들지 못했습니다).') +
+      '<br>이 브라우저 탭은 이제 닫으셔도 됩니다.', 'ok');
     relock();
   } catch (e) {
     badge('handoff', '막힘', 'bad');
@@ -546,9 +557,9 @@ async function restore() {
 
   if (st.soul && st.soul.root) {
     done.name = true;
-    $('name-input').value = st.soul.name || '';
     badge('name', '완료', 'done');
-    note('name-note', '이 폴더에 만듭니다: <span class="path">' + esc(st.soul.root) + '</span>', 'ok');
+    note('name-note', '여기에 설치합니다: <span class="path">' + esc(st.soul.root) + '</span>' +
+      (st.soul.existing === 'soul' ? '<br>이미 IRIS 비서가 설치된 폴더입니다. 그 안의 것은 지우지 않고, 부족한 것만 채웁니다.' : ''), 'ok');
   }
 
   if (st.choice && st.choice.subscriptions && st.choice.subscriptions.length) {
