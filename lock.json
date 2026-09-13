@@ -73,6 +73,12 @@
       "file": "face/iris-face.zip",
       "license": "MIT"
     },
+    "updater": {
+      "kind": "dir",
+      "source": "./updater",
+      "file": "updater/iris-updater.zip",
+      "license": "MIT"
+    },
     "dash": {
       "kind": "dir",
       "source": "C:/IRIS/_agent/claude/tools/teamclaude-dash",

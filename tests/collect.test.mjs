@@ -53,6 +53,28 @@ test('cacheDir inside stageDir throws before stageDir is wiped', async () => {
   assert.ok(fs.existsSync(canary), 'stageDir must not have been wiped before the guard fires');
 });
 
+// The `updater` part's source is `./updater` -- a folder inside this repo,
+// not a sibling project. Before 2026-09-14 a relative `source` only worked
+// because every build happened to start in the repo root; partSource() now
+// resolves against the project root, so this collects the same from anywhere.
+test('dir part with a repo-relative source collects from the project root, whatever the cwd is', async () => {
+  const lock = {
+    package: { version: '0' },
+    parts: { updater: { kind: 'dir', source: './updater', file: 'updater/iris-updater.zip' } },
+  };
+  const cwdBefore = process.cwd();
+  process.chdir(os.tmpdir());
+  let r;
+  try {
+    r = await collect({ lock, cacheDir: path.join(tmp, 'c3'), stageDir: path.join(tmp, 's3'), log: () => {} });
+  } finally {
+    process.chdir(cwdBefore);
+  }
+  await extractZip(path.join(r.payloadDir, 'updater/iris-updater.zip'), path.join(tmp, 'x3'));
+  const text = fs.readFileSync(path.join(tmp, 'x3', 'apply.mjs'), 'utf8');
+  assert.match(text, /export async function applyPlan/);
+});
+
 test('glob part with two files lands as payload/guides/<basename> for both', async () => {
   const srcDir = path.join(tmp, 'guides-src');
   fs.mkdirSync(srcDir, { recursive: true });

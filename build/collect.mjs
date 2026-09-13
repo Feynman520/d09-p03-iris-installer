@@ -132,8 +132,16 @@ export function copyTree(src, dest, exclude = []) {
 // this development PC's own folders, so a second machine (fresh clone, CI,
 // another checkout) has to be able to point at its own copy without editing
 // a tracked file. Unset (the normal case) = exactly the lock value.
+//
+// Relative values resolve against the project root, not process.cwd() (2026-
+// 09-14): the `updater` part's source is `./updater`, a folder *inside* this
+// repo, and `face`'s is a sibling `../P02-...`. Both used to work only
+// because every build happened to be started from the repo root. verify/
+// static.mjs's own partSource() has always resolved against ROOT_DIR; this
+// makes the two agree. Absolute values (dash, guides) are unaffected.
 export function partSource(name, p) {
-  return process.env[`IRIS_${name.toUpperCase()}_SOURCE`] || p.source;
+  const value = process.env[`IRIS_${name.toUpperCase()}_SOURCE`] || p.source;
+  return value ? path.resolve(ROOT_DIR, value) : value;
 }
 
 function globMatch(name, pattern) {

@@ -24,7 +24,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 // agents, then the relay and the two apps, then the plain files.
 export const PART_ORDER = [
   'node', 'python', 'pyyaml', 'git',
-  'claude', 'codex', 'teamclaude', 'dash', 'face',
+  'claude', 'codex', 'teamclaude', 'dash', 'face', 'updater',
   'guides', 'manage',
 ];
 
@@ -59,6 +59,9 @@ const LAYOUT = {
   // drawer / skips the proxy start when it is not there.
   dash: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'teamclaude-dash') },
   face: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'face') },
+  // The updater lives on its own, next to face rather than inside it: it is
+  // what replaces <tools>\face, so it must not be part of what it replaces.
+  updater: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'updater') },
   // docs/설계.md 2-2 + 4-1 ③: both guide editions live at <root>\_setup-guides,
   // not under _agent -- the agent is told to read them from there.
   guides: { kind: 'files', dest: (t, root) => path.join(root, '_setup-guides') },
@@ -433,6 +436,18 @@ export function defaultVerifiers({ root, manifest, lock, zipRoot, patchRulesFile
         return { ok: false, detail: `manifest carries no face version (shipped package.json=${version}) -- cannot verify` };
       }
       return { ok: version === wanted, detail: `package.json=${version} manifest=${wanted}` };
+    },
+    // File-based like `dash`: apply.mjs is only ever run by the Face daemon
+    // with a plan, and running it here (with no plan) would do nothing useful.
+    // What must be true is that the entry point is present and importable --
+    // a zero-dependency ESM file, so "it parses" is checkable without running
+    // anything that could touch the soul.
+    updater: async () => {
+      const entry = path.join(t, 'updater', 'apply.mjs');
+      if (!fs.existsSync(entry)) return { ok: false, detail: `missing ${entry}` };
+      const text = fs.readFileSync(entry, 'utf8');
+      const ok = text.includes('export async function applyPlan');
+      return { ok, detail: ok ? entry : `${entry} does not export applyPlan` };
     },
     guides: async () => {
       const dir = path.join(root, '_setup-guides');
