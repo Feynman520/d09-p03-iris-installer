@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { EventEmitter } from 'node:events';
 import {
   applyPlan, waitForDaemonStop, parseArgs, insideDownloads,
   preserveAside as updaterPreserveAside, carryOver as updaterCarryOver,
   updateResultPath, updateLogPath, receiptPath, toolsDir,
+  defaultNpmInstall, normalizeLockText,
 } from '../updater/apply.mjs';
 import {
   preserveAside as installerPreserveAside, carryOver as installerCarryOver,
@@ -139,7 +141,7 @@ test('updater: .prev-2 on a second update (no earlier copy is ever clobbered)', 
   assert.equal(JSON.parse(fs.readFileSync(path.join(`${face}.prev-2`, 'package.json'), 'utf8')).version, '2.57.1');
 });
 
-test('updater: a changed package-lock.json runs the bundled npm ci --omit=dev', async () => {
+test('updater: a changed package-lock.json runs the bundled npm ci', async () => {
   const { root, face } = makeSoul('case-npm');
   const dir = makeNewFace(root, { lock: '{"lockfileVersion":3,"new":true}' });
   const npmCalls = [];
@@ -160,6 +162,59 @@ test('updater: a changed package-lock.json runs the bundled npm ci --omit=dev', 
   assert.equal(npmCalls[0].nodeDir, path.join(toolsDir(root), 'node'));
   // the previous node_modules stays under .prev -- nothing is deleted
   assert.ok(fs.existsSync(path.join(`${face}.prev`, 'node_modules', 'node-pty', 'pty.node')));
+});
+
+// The bug this pins: Face lists `electron` under devDependencies, but the
+// collector that stages Face for the zip (build/collect.mjs `npmCi`) runs a
+// plain `npm ci`. `--omit=dev` here would install a Face with no Electron --
+// no window could ever open -- found in a live end-to-end test (2026-09-14).
+test('updater: the actual npm command line has no --omit=dev', async () => {
+  const calls = [];
+  const fakeSpawnFn = (exe, args, opts) => {
+    calls.push({ exe, args, opts });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    process.nextTick(() => child.emit('close', 0));
+    return child;
+  };
+
+  const result = await defaultNpmInstall({
+    npmCmd: 'C:\\fake\\node\\npm.cmd', cwd: 'C:\\fake\\cwd', nodeDir: 'C:\\fake\\node', spawnFn: fakeSpawnFn,
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(calls.length, 1);
+  const line = calls[0].args.at(-1);
+  assert.match(line, /\bnpm\.cmd"\s+ci"$/, `expected a bare "ci", got: ${line}`);
+  assert.ok(!line.includes('--omit=dev'), `npm args must not contain --omit=dev: ${line}`);
+});
+
+test('normalizeLockText: CRLF/LF and trailing whitespace do not count as a change', () => {
+  const lf = '{\n  "lockfileVersion": 3,\n  "same": true\n}\n';
+  const crlf = lf.replace(/\n/g, '\r\n');
+  const trailingSpace = lf.replace('"same": true', '"same": true   ');
+  assert.equal(normalizeLockText(lf), normalizeLockText(crlf));
+  assert.equal(normalizeLockText(lf), normalizeLockText(trailingSpace));
+  assert.notEqual(normalizeLockText(lf), normalizeLockText(lf.replace('true', 'false')));
+});
+
+test('updater: a package-lock.json that differs only by CRLF vs LF reuses node_modules', async () => {
+  const lockLF = '{\n  "lockfileVersion": 3,\n  "same": true\n}\n';
+  const lockCRLF = lockLF.replace(/\n/g, '\r\n');
+  const { root, face } = makeSoul('case-crlf', { lock: lockLF });
+  const dir = makeNewFace(root, { lock: lockCRLF });
+  const npmCalls = [];
+
+  const result = await applyPlan({
+    plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
+    npmInstall: async (a) => { npmCalls.push(a); return { code: 0 }; },
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(npmCalls.length, 0, 'npm must not run when the lock differs only by line endings');
+  assert.equal(fs.readFileSync(path.join(face, 'node_modules', 'node-pty', 'pty.node'), 'utf8'), 'old binary');
+  assert.equal(fs.existsSync(path.join(`${face}.prev`, 'node_modules')), false, 'node_modules was moved, not copied');
 });
 
 test('updater: npm ci failure rolls back -- the previous face is restored and the result says why', async () => {

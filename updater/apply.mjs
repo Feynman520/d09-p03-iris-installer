@@ -238,12 +238,19 @@ const COMSPEC = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
 // arguments, so the npm wrapper goes through cmd.exe with a hand-built
 // verbatim command line. The bundled node folder goes to the FRONT of PATH so
 // npm.cmd finds the runtime it belongs to.
-export function defaultNpmInstall({ npmCmd, cwd, nodeDir }) {
-  const line = `""${npmCmd}" ci --omit=dev"`;
+//
+// No `--omit=dev`: the collector (build/collect.mjs `npmCi`) runs a plain
+// `npm ci` when it stages Face for the zip, and Face lists `electron` under
+// devDependencies. `--omit=dev` here would install a Face with no Electron
+// -- no window could ever open again -- while the shipped copy has the full
+// set. The two must always install the same dependency set (2026-09-14
+// review, found in a live end-to-end test).
+export function defaultNpmInstall({ npmCmd, cwd, nodeDir, spawnFn = spawn }) {
+  const line = `""${npmCmd}" ci"`;
   const env = { ...process.env };
   if (nodeDir) env.PATH = `${nodeDir};${env.PATH ?? ''}`;
   return new Promise((resolve) => {
-    const child = spawn(COMSPEC, ['/d', '/s', '/c', line], {
+    const child = spawnFn(COMSPEC, ['/d', '/s', '/c', line], {
       cwd,
       env,
       windowsHide: true,
@@ -266,6 +273,20 @@ export function defaultNpmInstall({ npmCmd, cwd, nodeDir }) {
 
 function readTextOrNull(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+}
+
+// Two package-lock.json files that differ only by line-ending style (a
+// checkout or editor turning LF into CRLF or back) or trailing whitespace
+// describe the exact same dependency set. Comparing the raw bytes would run
+// npm ci for nothing whenever that happens, throwing away a perfectly good
+// node_modules (2026-09-14 review).
+export function normalizeLockText(text) {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+$/, ''))
+    .join('\n')
+    .replace(/\n+$/, '');
 }
 
 // Carried over from the previous install because they are the user's, not the
@@ -331,8 +352,9 @@ export async function applyFaceItem({
     // folders have been moved into it, deleting it would destroy them.
     const prevModules = moved ? path.join(moved, 'node_modules') : null;
     const oldLock = moved ? readTextOrNull(path.join(moved, 'package-lock.json')) : null;
+    const lockUnchanged = oldLock !== null && normalizeLockText(oldLock) === normalizeLockText(newLock);
     let npm = null;
-    if (prevModules && fs.existsSync(prevModules) && oldLock !== null && oldLock === newLock) {
+    if (prevModules && fs.existsSync(prevModules) && lockUnchanged) {
       try {
         moveDir(prevModules, path.join(slot, 'node_modules'));
         log('face: node_modules reused (package-lock.json unchanged)');
@@ -343,7 +365,7 @@ export async function applyFaceItem({
     } else {
       const nodeDir = path.join(tools, 'node');
       const npmCmd = path.join(nodeDir, 'npm.cmd');
-      log('face: package-lock.json changed (or no previous node_modules) -> npm ci --omit=dev');
+      log('face: package-lock.json changed (or no previous node_modules) -> npm ci');
       try {
         npm = await npmInstall({ npmCmd, cwd: slot, nodeDir });
       } catch (err) {
