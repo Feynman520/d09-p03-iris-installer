@@ -455,6 +455,7 @@ function handoffServerFixture(label, overrides = {}) {
   const stateFile = path.join(base, 'state.json');
   fs.writeFileSync(stateFile, JSON.stringify({
     step: 'handoff',
+    packageVersion: MANIFEST.package.version, // 1.4.4+: a saved state is resumed only by the package that wrote it
     zipRoot,
     nodeDir: path.join(base, 'node'),
     soul: { name: 'NOVA', root: soulRoot, existing: 'none' },

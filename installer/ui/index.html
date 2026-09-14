@@ -471,7 +471,8 @@ async function startLogin(provider) {
     $('btn-login-' + provider).disabled = false;
     return;
   }
-  note('login-note', '검은 창에서 로그인을 마치면 이 화면이 저절로 다음 줄로 넘어갑니다. 2초마다 확인합니다.');
+  if (body.reused) note('login-note', '이 컴퓨터에 이미 등록된 계정이라 로그인을 건너뜁니다.', 'ok');
+  else note('login-note', '검은 창에서 로그인을 마치면 이 화면이 저절로 다음 줄로 넘어갑니다. 2초마다 확인합니다.');
   pollLogin();
 }
 

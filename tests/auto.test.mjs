@@ -284,6 +284,7 @@ function writeStaleState(file, extra) {
     nodeDir: 'C:\\somewhere-old\\node',
     soul: { name: SOUL, root: `C:\\${SOUL}`, existing: 'soul' },
     install: { parts: { face: 'error', node: 'done' } },
+    packageVersion: '1.3.0', // 1.4.4+: a saved state is resumed only by the package version that wrote it (makeZipRoot default)
     ...extra,
   }, null, 2), 'utf8');
 }

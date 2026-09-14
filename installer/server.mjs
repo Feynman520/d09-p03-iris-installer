@@ -341,6 +341,13 @@ export function startServer({
     console.log(`[iris-installer] saved progress is from package ${state.packageVersion ?? '?'}; this zip is ${version} -- starting over`);
     state = null;
   }
+  // A finished run is finished: re-running the same zip by hand means the
+  // person wants to install or repair again, not to look at last time's
+  // "done" screen (the automatic-update path resets below on its own).
+  if (state && state.step === 'done' && !auto) {
+    console.log('[iris-installer] previous run had finished -- starting over');
+    state = null;
+  }
   if (!state) {
     state = initialState({ zipRoot, nodeDir });
   } else {
@@ -719,6 +726,27 @@ export function startServer({
       ensureProxyFn({ root, nodeDir: state.nodeDir, teamclaudeConfigPath: configPath }),
       countProviderAccountsFn({ teamclaudeConfigPath: configPath, provider }).catch(() => 0),
     ]);
+
+    // Already registered (2026-09-14 audit): a re-run over an installed PC has
+    // this provider's credential file AND its account in the relay already.
+    // Starting the CLI login again would open a browser for nothing, and the
+    // relay stage waits for the account COUNT TO GROW -- which it never does
+    // for an account that is already there -- so the wizard would hang here.
+    // The automatic update path skips login for the same reason; do the same.
+    const priorLogin = readReceiptFn(root)?.login?.[provider];
+    const registered = !!priorLogin && (priorLogin.relay === true || priorLogin.relay === 'done')
+      && accountsBefore > 0 && cliLoginStatusFn({ provider, root }) === 'done';
+    if (registered) {
+      state.login = state.login ?? {};
+      state.login[provider] = {
+        startedAt: new Date().toISOString(), accountsBefore, cli: 'done', relay: 'done',
+        relayMethod: priorLogin.relayMethod ?? 'receipt', relayError: null, pid: null, reused: true,
+      };
+      saveState(stateFile, state);
+      sendJson(res, 200, { ok: true, reused: true, proxy: proxyResult });
+      return;
+    }
+
     const { pid } = startCliLoginFn({
       root, nodeDir: state.nodeDir, provider, teamclaudeConfigPath: configPath,
     });

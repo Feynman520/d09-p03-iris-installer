@@ -79,3 +79,34 @@ test('handoff refuses when the receipt on disk carries a different guide version
   assert.equal(wrote, 0, 'no first request may be written for a guide that is not on disk');
   await s.close();
 });
+
+test('login: a provider already registered on this PC is reused -- no CLI login, no waiting for the count to grow', async () => {
+  const zr = fakeZip('zip-login-reuse', '1.4.4');
+  const root = path.join(tmp, 'IRIS-login');
+  fs.mkdirSync(root, { recursive: true });
+  const stateFile = path.join(tmp, 'state-c.json');
+  saveState(stateFile, {
+    step: 'login', zipRoot: zr, nodeDir, packageVersion: '1.4.4',
+    soul: { name: 'IRIS', root, existing: 'soul' }, choice: { subscriptions: ['claude'], leadAgent: 'claude', guideEdition: 'claude' },
+  });
+  let cliStarted = 0;
+  const s = await startServer({
+    port: 0, zipRoot: zr, nodeDir, stateFile,
+    readReceiptFn: () => ({ package: { version: '1.4.0', guideVersion: '13' }, login: { claude: { cli: true, relay: true, relayMethod: 'import' } } }),
+    ensureProxyFn: async () => ({ alive: true, started: false }),
+    countProviderAccountsFn: async () => 1,                 // the account is already in the relay
+    cliLoginStatusFn: () => 'done',                          // the credential file exists
+    startCliLoginFn: () => { cliStarted += 1; return { pid: 1 }; },
+    relayImportFn: async () => { throw new Error('must not import again'); },
+    relayStatusFn: async () => 'pending',                    // would never become done: count cannot grow
+    teamclaudeConfigPath: path.join(tmp, 'fake-teamclaude.json'),
+  });
+  const hdr = { 'content-type': 'application/json', origin: s.url };
+  const start = await (await fetch(`${s.url}/api/login`, { method: 'POST', headers: hdr, body: JSON.stringify({ provider: 'claude' }) })).json();
+  assert.equal(start.ok, true);
+  assert.equal(start.reused, true);
+  assert.equal(cliStarted, 0, 'the CLI login must not be started for a registered account');
+  const status = await (await fetch(`${s.url}/api/login/status`)).json();
+  assert.equal(status.step, 'handoff', 'a reused login completes the step immediately');
+  await s.close();
+});
