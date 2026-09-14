@@ -254,3 +254,43 @@ test('pack: throws when installerDir has no IRIS-설치.cmd', async () => {
     /IRIS-설치\.cmd not found/,
   );
 });
+
+// 2026-09-14 field report: a user's second PC could not open the shipped
+// v1.3.1 zip with Windows Explorer ("The Compressed (zipped) Folder is
+// invalid"). Root cause: zipDir packed with `tar -C dir .`, which names every
+// entry `./…` plus a bare `./` entry -- Explorer's zipfldr then sees an empty
+// archive. Two guards: (1) no entry name may start with `./` (any OS, via
+// `tar -tf`, whose ASCII prefix survives the console re-encoding noted above);
+// (2) on Windows, Explorer's own engine (Shell.Application) must list the
+// root items -- that is the exact call "Extract All" makes.
+test('pack: zip entries have no ./ prefix and Windows Explorer can list the archive', async () => {
+  const installerDir = path.join(tmp, 'fake-installer-explorer');
+  fs.mkdirSync(installerDir, { recursive: true });
+  fs.writeFileSync(path.join(installerDir, 'IRIS-설치.cmd'), '@echo off\r\n');
+
+  const stageDir = path.join(tmp, 'stage-explorer');
+  fs.mkdirSync(path.join(stageDir, 'payload'), { recursive: true });
+  fs.writeFileSync(path.join(stageDir, 'payload', 'manifest.json'), '{}');
+
+  const { zipPath } = await pack({
+    stageDir, outDir: path.join(tmp, 'out-explorer'), manifest: { package: { version: '0.0.4' } }, installerDir,
+  });
+
+  const { execFileSync } = await import('node:child_process');
+  const listing = execFileSync('C:\\Windows\\System32\\tar.exe', ['-tf', zipPath], { encoding: 'latin1' })
+    .split(/\r?\n/).filter(Boolean);
+  assert.ok(listing.length >= 4, `unexpectedly short listing: ${listing.join(', ')}`);
+  const dotted = listing.filter((n) => n === './' || n.startsWith('./') || n.startsWith('/'));
+  assert.deepEqual(dotted, [], 'zip entries must not carry a ./ (or /) prefix -- Windows Explorer treats such a zip as empty');
+
+  if (process.platform !== 'win32') return;
+  // Zip path travels via env var, not argv (see lib/zip.mjs getShortPath for why).
+  const ps = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $s = New-Object -ComObject Shell.Application; $ns = $s.NameSpace($env:IRIS_TEST_ZIP); if ($null -eq $ns) { 'NULL' } else { ($ns.Items() | ForEach-Object { $_.Name }) -join '|' }";
+  const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    encoding: 'utf8', env: { ...process.env, IRIS_TEST_ZIP: zipPath },
+  }).trim();
+  assert.notEqual(out, 'NULL', 'Explorer could not open the zip at all');
+  const names = out ? out.split('|') : [];
+  assert.ok(names.length >= 4, `Explorer sees ${names.length} root item(s) (${out || 'none'}) -- "Extract All" would fail`);
+  assert.ok(names.some((n) => /^IRIS-설치/.test(n)), `Explorer listing lacks IRIS-설치.cmd: ${out}`);
+});

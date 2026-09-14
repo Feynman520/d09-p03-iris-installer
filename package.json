@@ -7,6 +7,6 @@
   "scripts": {
     "test": "node --test",
     "build": "node build/build.mjs",
-    "verify": "node verify/static.mjs && node verify/reproduce.mjs"
+    "verify": "node verify/static.mjs && node verify/reproduce.mjs && node verify/extract-matrix.mjs"
   }
 }
