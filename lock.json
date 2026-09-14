@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "package": { "version": "1.3.2", "guideVersion": "10" },
+  "package": { "version": "1.3.2", "guideVersion": "11" },
   "parts": {
     "node": {
       "kind": "url",
@@ -72,6 +72,16 @@
       "npmCi": true,
       "file": "face/iris-face.zip",
       "license": "MIT"
+    },
+    "messenger": {
+      "kind": "url",
+      "version": "0.3.2",
+      "url": "https://github.com/Feynman520/d06-p04-iris-messenger/releases/download/iris-messenger--v0.3.2/iris-messenger-v0.3.2.zip",
+      "sha256": "33889f23b39213fc4ce27306d60e3e7f8d33fe257fb0f753a30c637d6a77556b",
+      "sha256Source": "vendor",
+      "file": "face/iris-messenger-v0.3.2.zip",
+      "license": "MIT",
+      "note": "IRIS Messenger module, installed into face\\modules\\messenger through Face's own signed-module installer (default since 1.4.0, user decision 2026-09-14)"
     },
     "updater": {
       "kind": "dir",

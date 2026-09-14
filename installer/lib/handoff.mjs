@@ -203,9 +203,14 @@ export async function writeFaceLauncher(root, name, { desktopDir = null, runPs =
 // Model/effort defaults mirror P02 daemon/agents.mjs AGENTS[...].default, with
 // effort pinned to 'high' for the setting-up session (task-14-brief). Both are
 // overridable so a rehearsal can pick a cheap model.
+// permission/approval/sandbox: the setting-up session starts with maximum
+// agent permissions, stated explicitly rather than left to the config files
+// (user decision 2026-09-14). Face's launch.mjs (v2.59+) forwards these to
+// POST /api/sessions; an older Face ignores them and falls back to the
+// settings the installer seeded (firstrun.mjs seedPermissions).
 const AGENT_DEFAULTS = {
-  claude: { agent: 'claude', model: 'opus', effort: 'high' },
-  codex: { agent: 'codex', model: 'gpt-5.6-terra', effort: 'high' },
+  claude: { agent: 'claude', model: 'opus', effort: 'high', permission: 'bypassPermissions' },
+  codex: { agent: 'codex', model: 'gpt-5.6-terra', effort: 'high', approval: 'never', sandbox: 'danger-full-access' },
 };
 
 export function defaultSpecFor(leadAgent = 'claude') {
@@ -220,6 +225,9 @@ export function writeFirstSessionSpec(root, { leadAgent = 'claude', promptFile, 
     agent: base.agent,
     model: model ?? base.model,
     effort: effort ?? base.effort,
+    ...(base.permission ? { permission: base.permission } : {}),
+    ...(base.approval ? { approval: base.approval } : {}),
+    ...(base.sandbox ? { sandbox: base.sandbox } : {}),
     promptFile: promptFile ?? firstRequestPath(root),
   };
   const dest = firstSessionSpecPath(root);

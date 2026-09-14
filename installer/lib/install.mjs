@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { run } from '../../lib/run.mjs';
 import { extractZip } from '../../lib/zip.mjs';
 import {
@@ -9,7 +9,7 @@ import {
 } from './receipt.mjs';
 import { writeShims, shimsDir } from './shims.mjs';
 import { writeMinimalSoulState } from './soulstate.mjs';
-import { seedFirstRun } from './firstrun.mjs';
+import { seedFirstRun, seedPermissions } from './firstrun.mjs';
 import { portableTeamclaudeConfigDir, portableTeamclaudeConfigPath } from './login.mjs';
 import * as userpathDefault from './userpath.mjs';
 
@@ -24,7 +24,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 // agents, then the relay and the two apps, then the plain files.
 export const PART_ORDER = [
   'node', 'python', 'pyyaml', 'git',
-  'claude', 'codex', 'teamclaude', 'dash', 'face', 'updater',
+  'claude', 'codex', 'teamclaude', 'dash', 'face', 'messenger', 'updater',
   'guides', 'manage',
 ];
 
@@ -67,6 +67,13 @@ const LAYOUT = {
   // and installed modules away -- the structural-package update path made that
   // reachable without anyone re-running the wizard (2026-09-14 review).
   face: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'face'), carryOver: ['state', 'modules'] },
+  // IRIS Messenger ships as a Face extension module and is installed by
+  // default (user decision 2026-09-14). `module` = hand the signed zip to
+  // Face's own installer (<tools>\face\daemon\modinstall.mjs) so the same
+  // path/manifest/signature checks apply as for a module installed from the
+  // settings drawer; the result lands in <tools>\face\modules\messenger with
+  // the `.official` marker. Must come after `face` in PART_ORDER.
+  messenger: { kind: 'module', dest: (t) => path.join(t, 'face', 'modules', 'messenger'), moduleName: 'messenger' },
   // The updater lives on its own, next to face rather than inside it: it is
   // what replaces <tools>\face, so it must not be part of what it replaces.
   updater: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'updater') },
@@ -505,6 +512,20 @@ export function defaultVerifiers({ root, manifest, lock, zipRoot, patchRulesFile
       }
       return { ok: version === wanted, detail: `package.json=${version} manifest=${wanted}` };
     },
+    // The module went through Face's installer, which already verified paths,
+    // manifest and signature; here: it landed where Face looks for it, under
+    // the expected name, at the version the lock pins, marked official.
+    messenger: async () => {
+      const dir = path.join(t, 'face', 'modules', 'messenger');
+      const info = path.join(dir, 'module.json');
+      if (!fs.existsSync(info)) return { ok: false, detail: 'module.json missing' };
+      let mod;
+      try { mod = JSON.parse(fs.readFileSync(info, 'utf8')); } catch (e) { return { ok: false, detail: `module.json unreadable: ${e.message}` }; }
+      const wanted = want('messenger');
+      const official = fs.existsSync(path.join(dir, '.official'));
+      const ok = mod.name === 'messenger' && (wanted == null || String(mod.version) === String(wanted)) && official;
+      return { ok, detail: `module.json name=${mod.name} version=${mod.version} manifest=${wanted} official=${official}` };
+    },
     // File-based like `dash`: apply.mjs is only ever run by the Face daemon
     // with a plan, and running it here (with no plan) would do nothing useful.
     // What must be true is that the entry point is present and importable --
@@ -753,6 +774,19 @@ export async function install({
         if (files.length === 0) throw new InstallError('payload-missing', part, 'guides/');
         fs.mkdirSync(dest, { recursive: true });
         for (const f of files) fs.copyFileSync(f, path.join(dest, path.basename(f)));
+      } else if (layout.kind === 'module') {
+        const zip = path.join(payloadDir, (manifest?.parts?.[part]?.file ?? lockPart.file));
+        if (!fs.existsSync(zip)) throw new InstallError('payload-missing', part, zip);
+        const faceDir = path.join(tools, 'face');
+        const modinstallFile = path.join(faceDir, 'daemon', 'modinstall.mjs');
+        if (!fs.existsSync(modinstallFile)) throw new InstallError('payload-missing', part, `${modinstallFile} (face must be installed first)`);
+        const faceVersion = JSON.parse(fs.readFileSync(path.join(faceDir, 'package.json'), 'utf8')).version;
+        const { installZip } = await import(pathToFileURL(modinstallFile).href);
+        const modulesDir = path.dirname(dest);
+        fs.mkdirSync(modulesDir, { recursive: true });
+        const r = installZip(fs.readFileSync(zip), { modulesDir, faceVersion });
+        if (r.name !== layout.moduleName) throw new InstallError('module-name-mismatch', part, `zip installs "${r.name}", expected "${layout.moduleName}"`);
+        log(`part=${part} module=${r.name} v${r.version} official=${r.official}`);
       } else if (layout.kind === 'npm-download') {
         const nodeExe = path.join(tools, 'node', 'node.exe');
         const npmCli = path.join(tools, 'node', 'node_modules', 'npm', 'bin', 'npm-cli.js');
@@ -890,6 +924,22 @@ export async function install({
     emit({ part: 'first-run', pct: 100, status: 'skipped', skipped: true });
   }
   receipt.firstRun = firstRun;
+
+  // --- 3c. maximum agent permissions (2026-09-14, user decision) ------------
+  // Claude settings.json defaultMode=bypassPermissions, Codex config.toml
+  // approval_policy=never + sandbox_mode=danger-full-access -- add-only, so
+  // the very first (setting-up) session never stops for a permission prompt.
+  // The guide's 1-3절 merges the same values; here it finds them present.
+  let permissions = null;
+  try {
+    permissions = seedPermissions(root, { agents: activeAgents.length ? activeAgents : ['claude'] });
+    log(`permissions seeded: ${JSON.stringify(permissions)}`);
+    emit({ part: 'permissions', pct: 100, status: 'done' });
+  } catch (err) {
+    log(`permissions seeding skipped: ${String(err?.message ?? err)}`);
+    emit({ part: 'permissions', pct: 100, status: 'skipped', skipped: true });
+  }
+  receipt.permissions = permissions;
 
   // --- 4. user PATH + env -------------------------------------------------
   const env = {

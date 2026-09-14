@@ -195,10 +195,15 @@ test('writeFirstSessionSpec: Face-shaped spec (cwd/agent/model/effort/promptFile
   const claude = writeFirstSessionSpec(root, { leadAgent: 'claude', promptFile });
   assert.equal(claude.path, path.join(root, '_agent', 'setup', 'first-session.json'));
   const spec = JSON.parse(fs.readFileSync(claude.path, 'utf8'));
-  assert.deepEqual(spec, { cwd: root, agent: 'claude', model: 'opus', effort: 'high', promptFile });
+  // 2026-09-14: the setting-up session states maximum permissions explicitly.
+  assert.deepEqual(spec, { cwd: root, agent: 'claude', model: 'opus', effort: 'high', permission: 'bypassPermissions', promptFile });
 
   const codex = writeFirstSessionSpec(root, { leadAgent: 'chatgpt', promptFile });
-  assert.equal(JSON.parse(fs.readFileSync(codex.path, 'utf8')).agent, 'codex');
+  const codexSpec = JSON.parse(fs.readFileSync(codex.path, 'utf8'));
+  assert.equal(codexSpec.agent, 'codex');
+  assert.equal(codexSpec.approval, 'never');
+  assert.equal(codexSpec.sandbox, 'danger-full-access');
+  assert.equal(codexSpec.permission, undefined, 'Claude-only field stays off a Codex spec');
   assert.equal(defaultSpecFor('chatgpt').model, 'gpt-5.6-terra');
 
   // Overrides (used by the rehearsal to pick a cheap model).

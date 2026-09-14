@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   seedClaudeFirstRun, seedCodexFirstRun, seedFirstRun,
+  seedClaudePermissions, seedCodexPermissions, seedPermissions, claudeSettingsPath,
   claudeProjectKey, codexProjectKey, claudeConfigJsonPath, codexConfigTomlPath,
 } from '../installer/lib/firstrun.mjs';
 
@@ -109,6 +110,88 @@ test('seedFirstRun: seeds only the agents asked for', () => {
   assert.equal(r.codex, undefined);
   assert.ok(!fs.existsSync(codexConfigTomlPath(root)));
   const r2 = seedFirstRun(root, { agents: ['claude', 'codex'] });
+  assert.equal(r2.claude.written, 'unchanged');
+  assert.equal(r2.codex.written, 'created');
+});
+
+// 2026-09-14 (user decision): the first session already runs with maximum
+// permissions -- the installer seeds them, add-only, before Face opens.
+test('claude permissions: fresh settings.json created with bypassPermissions; existing keys kept; second run unchanged', () => {
+  const root = freshRoot('perm-c');
+  const r = seedClaudePermissions(root);
+  assert.equal(r.written, 'created');
+  assert.deepEqual(r.added, ['permissions.defaultMode', 'skipDangerousModePermissionPrompt']);
+  const data = JSON.parse(fs.readFileSync(claudeSettingsPath(root), 'utf8'));
+  assert.equal(data.permissions.defaultMode, 'bypassPermissions');
+  assert.equal(data.skipDangerousModePermissionPrompt, true);
+  assert.equal(seedClaudePermissions(root).written, 'unchanged');
+
+  // an existing settings.json with its own keys (and an allow list) keeps them all
+  const root2 = freshRoot('perm-c2');
+  const file2 = claudeSettingsPath(root2);
+  fs.mkdirSync(path.dirname(file2), { recursive: true });
+  fs.writeFileSync(file2, JSON.stringify({ model: 'opus', permissions: { allow: ['Bash(git *)'], defaultMode: 'acceptEdits' } }), 'utf8');
+  const r2 = seedClaudePermissions(root2);
+  assert.equal(r2.written, 'merged');
+  const d2 = JSON.parse(fs.readFileSync(file2, 'utf8'));
+  assert.equal(d2.model, 'opus');
+  assert.deepEqual(d2.permissions.allow, ['Bash(git *)']);
+  assert.equal(d2.permissions.defaultMode, 'bypassPermissions', 'a weaker mode is raised to the maximum');
+  assert.equal(d2.skipDangerousModePermissionPrompt, true);
+
+  // unreadable JSON is left alone
+  const root3 = freshRoot('perm-c3');
+  const file3 = claudeSettingsPath(root3);
+  fs.mkdirSync(path.dirname(file3), { recursive: true });
+  fs.writeFileSync(file3, '{ not json', 'utf8');
+  assert.equal(seedClaudePermissions(root3).written, 'unchanged');
+  assert.equal(fs.readFileSync(file3, 'utf8'), '{ not json');
+});
+
+test('codex permissions: top-level keys land ABOVE any [table]; present keys untouched; second run unchanged', () => {
+  const root = freshRoot('perm-x');
+  assert.equal(seedCodexPermissions(root).written, 'created');
+  const text = fs.readFileSync(codexConfigTomlPath(root), 'utf8');
+  assert.equal(text, 'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n');
+  assert.equal(seedCodexPermissions(root).written, 'unchanged');
+
+  // the trust table the first-run seeding wrote must stay a table of its own:
+  // keys go before it, never after it
+  const root2 = freshRoot('perm-x2');
+  seedCodexFirstRun(root2);
+  const r2 = seedCodexPermissions(root2);
+  assert.equal(r2.written, 'merged');
+  const text2 = fs.readFileSync(codexConfigTomlPath(root2), 'utf8');
+  assert.ok(text2.startsWith('approval_policy = "never"\nsandbox_mode = "danger-full-access"\n'), text2);
+  assert.ok(text2.indexOf('approval_policy') < text2.indexOf('[projects.'), 'keys must precede the table');
+  assert.equal((text2.match(/trust_level = "trusted"/g) || []).length, 1);
+
+  // a key already set at top level (any value) is respected; only the missing one is added
+  const root3 = freshRoot('perm-x3');
+  const file3 = codexConfigTomlPath(root3);
+  fs.mkdirSync(path.dirname(file3), { recursive: true });
+  fs.writeFileSync(file3, 'approval_policy = "on-request"\n[projects.\'c:\\x\']\ntrust_level = "trusted"\n', 'utf8');
+  const r3 = seedCodexPermissions(root3);
+  assert.deepEqual(r3.added, ['sandbox_mode']);
+  const text3 = fs.readFileSync(file3, 'utf8');
+  assert.equal((text3.match(/approval_policy/g) || []).length, 1);
+  assert.match(text3, /^sandbox_mode = "danger-full-access"\n/);
+
+  // a same-named key INSIDE a table does not count as the top-level setting
+  const root4 = freshRoot('perm-x4');
+  const file4 = codexConfigTomlPath(root4);
+  fs.mkdirSync(path.dirname(file4), { recursive: true });
+  fs.writeFileSync(file4, '[profiles.x]\napproval_policy = "never"\nsandbox_mode = "read-only"\n', 'utf8');
+  assert.deepEqual(seedCodexPermissions(root4).added, ['approval_policy', 'sandbox_mode']);
+});
+
+test('seedPermissions: seeds only the agents asked for', () => {
+  const root = freshRoot('perm-both');
+  const r = seedPermissions(root, { agents: ['claude'] });
+  assert.ok(r.claude);
+  assert.equal(r.codex, undefined);
+  assert.ok(!fs.existsSync(codexConfigTomlPath(root)));
+  const r2 = seedPermissions(root, { agents: ['claude', 'codex'] });
   assert.equal(r2.claude.written, 'unchanged');
   assert.equal(r2.codex.written, 'created');
 });
