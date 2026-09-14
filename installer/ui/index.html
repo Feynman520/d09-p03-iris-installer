@@ -536,6 +536,7 @@ $('btn-handoff').onclick = async () => {
     const { body } = await api('/api/handoff', {});
     if (!body.ok) {
       badge('handoff', '막힘', 'bad');
+      if (body.reason === 'guide_version_mismatch') { note('handoff-note', '설치된 안내서와 이 패키지의 안내서 판이 다릅니다.<br>' + esc(body.detail || '') + '<br>위 「설치」 단계를 다시 실행해 주세요 — 같은 부품은 건너뛰고 안내서만 새 판으로 바뀝니다.', 'bad'); badge('handoff', '실패', 'failed'); return; }
       note('handoff-note', (HANDOFF_WHERE[body.where] || body.where) + ' 실패했습니다' +
         (body.reason ? ' (' + esc(body.reason) + ')' : '') + '.<br>' + esc(body.detail || '') +
         '<br>기록: <span class="path">' + esc(body.log || '') + '</span>', 'bad');

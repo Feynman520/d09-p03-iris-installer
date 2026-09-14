@@ -330,12 +330,24 @@ export function startServer({
   // zipRoot/nodeDir -- the invocation just told us where those actually are
   // right now.
   let state = loadState(stateFile);
+  // A saved state belongs to the package that wrote it. Re-running a NEWER zip
+  // over a PC whose previous run had reached login/handoff/done used to resume
+  // right there (2026-09-14, second PC): the copy step never ran, the guides
+  // stayed at the old version, yet the handoff wrote a first request naming the
+  // new guide -- the agent then found no such file. A different package version
+  // therefore starts from the beginning (install() itself still skips parts
+  // that are already at the same version, so this costs nothing).
+  if (state && state.packageVersion !== version) {
+    console.log(`[iris-installer] saved progress is from package ${state.packageVersion ?? '?'}; this zip is ${version} -- starting over`);
+    state = null;
+  }
   if (!state) {
     state = initialState({ zipRoot, nodeDir });
   } else {
     state.zipRoot = zipRoot;
     state.nodeDir = nodeDir;
   }
+  state.packageVersion = version;
   // Always this run's value: the screen shows a notice when the install did not
   // really write HKCU\Environment, and a restored state must not claim
   // otherwise in either direction.
@@ -867,6 +879,19 @@ export function startServer({
       const manifest = readPayloadManifest(state.zipRoot);
       const edition = state.choice?.guideEdition ?? 'claude';
       const leadAgent = state.choice?.leadAgent ?? 'claude';
+
+      // ⓪ 안내서 판 대조: 첫 요청문은 이 zip 의 안내서 이름을 가리키므로, 영수증(= 실제로 복사된 것)의
+      // 안내서 판이 다르면 인계하지 않는다 -- 에이전트가 없는 파일을 찾게 되기 때문(2026-09-14 실기).
+      const receiptNow = readReceiptFn(root);
+      const wantGuide = manifest?.package?.guideVersion == null ? null : String(manifest.package.guideVersion);
+      const haveGuide = receiptNow?.package?.guideVersion == null ? null : String(receiptNow.package.guideVersion);
+      if (wantGuide && haveGuide && wantGuide !== haveGuide) {
+        fail('guide-version', Object.assign(
+          new Error(`설치된 안내서는 v${haveGuide}, 이 패키지의 안내서는 v${wantGuide}입니다 -- 설치(복사) 단계를 다시 실행한 뒤 인계합니다`),
+          { code: 'guide_version_mismatch' },
+        ));
+        return;
+      }
 
       // ① 첫 요청문 + ② 첫 세션 spec
       let first;
