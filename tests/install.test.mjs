@@ -145,10 +145,12 @@ test('install: unpacks parts, writes shims/soul-state/receipt, then skips on re-
   assert.equal(receipt1.env.applied, true);
   assert.equal(receipt1.env.skippedReason, undefined);
 
-  // shims: only the chosen agent's .cmd, plus node.cmd
+  // shims: only the chosen agent's .cmd, plus the bundled-runtime forwarders
+  // (node · git · python · py -- 2026-09-14, so the guide's foundations checker
+  // sees the pinned bundled versions before anything on the system PATH)
   const shimDir = path.join(root, '_agent', 'shared', 'shims');
   const shims = fs.readdirSync(shimDir).sort();
-  assert.deepEqual(shims, ['claude.cmd', 'node.cmd']);
+  assert.deepEqual(shims, ['claude.cmd', 'git.cmd', 'node.cmd', 'py.cmd', 'python.cmd']);
   const claudeShim = fs.readFileSync(path.join(shimDir, 'claude.cmd'), 'utf8');
   assert.ok(claudeShim.includes('ANTHROPIC_BASE_URL=http://127.0.0.1:3456'));
   assert.ok(claudeShim.includes('CLAUDE_CONFIG_DIR=%~dp0..\\..\\claude'));
@@ -517,16 +519,22 @@ test('install: a throwing onProgress listener cannot take the install down', asy
   }), /npm-unreachable/); // the install's own error, not the listener's
 });
 
-test('writeShims: no agent chosen -> node.cmd only; both -> three shims', () => {
+test('writeShims: no agent chosen -> runtime shims only; both -> plus two agent shims', () => {
   const root = path.join(tmp, 'shims-none');
   writeShims(root, []);
-  assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'shared', 'shims')), ['node.cmd']);
+  assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'shared', 'shims')).sort(), ['git.cmd', 'node.cmd', 'py.cmd', 'python.cmd']);
+  for (const f of ['git.cmd', 'python.cmd', 'py.cmd']) {
+    const text = fs.readFileSync(path.join(root, '_agent', 'shared', 'shims', f), 'utf8');
+    assert.ok(/^[\x00-\x7F]*$/.test(text) && /\r\n$/.test(text) && !/[^\r]\n/.test(text), `${f} must be ASCII + CRLF`);
+  }
+  assert.match(fs.readFileSync(path.join(root, '_agent', 'shared', 'shims', 'git.cmd'), 'utf8'), /tools\\git\\cmd\\git\.exe" %\*/);
+  assert.match(fs.readFileSync(path.join(root, '_agent', 'shared', 'shims', 'py.cmd'), 'utf8'), /tools\\python\\python\.exe" %args%/);
 
   const root2 = path.join(tmp, 'shims-both');
   writeShims(root2, ['claude', 'codex']);
   assert.deepEqual(
     fs.readdirSync(path.join(root2, '_agent', 'shared', 'shims')).sort(),
-    ['claude.cmd', 'codex.cmd', 'node.cmd'],
+    ['claude.cmd', 'codex.cmd', 'git.cmd', 'node.cmd', 'py.cmd', 'python.cmd'],
   );
   const codex = fs.readFileSync(path.join(root2, '_agent', 'shared', 'shims', 'codex.cmd'), 'utf8');
   assert.ok(codex.includes('CODEX_HOME=%~dp0..\\..\\codex'));

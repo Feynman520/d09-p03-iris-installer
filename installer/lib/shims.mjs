@@ -43,6 +43,48 @@ function nodeShim() {
   ]);
 }
 
+// git / python / py shims (2026-09-14, field report from a second PC): the
+// setup guide's v7 foundations checker finds `git`, `node`, `python` and `py`
+// on PATH. That PC had a system Git 2.51 ahead of ours on PATH, the checker
+// judged it "older than the pinned 2.54.0.windows.1" and tried a WinGet
+// upgrade to that exact version, which the WinGet source no longer carried
+// -- setup stopped. The bundled Git/Node/Python ARE the pinned versions, so
+// putting them first on PATH (Face prepends <shims>, <tools>\node, <tools>\git\cmd,
+// <tools>\python for every session and for the finalize pipeline) makes the
+// checker pass without touching the system. These shims cover the shim dir
+// itself, which is the one directory the installer adds to the user PATH.
+// `py` mimics the Windows launcher just enough for `py -3.12 --version`:
+// a leading -3* selector is dropped and the bundled 3.12 runs.
+function gitShim() {
+  return crlf([
+    '@echo off',
+    'setlocal',
+    '"%~dp0..\\tools\\git\\cmd\\git.exe" %*',
+    'exit /b %errorlevel%',
+  ]);
+}
+function pythonShim() {
+  return crlf([
+    '@echo off',
+    'setlocal',
+    '"%~dp0..\\tools\\python\\python.exe" %*',
+    'exit /b %errorlevel%',
+  ]);
+}
+function pyShim() {
+  return crlf([
+    '@echo off',
+    'setlocal',
+    'set "first=%~1"',
+    'set "args=%*"',
+    'if "%first:~0,2%"=="-3" (',
+    '  if "%args%"=="%first%" (set "args=") else (call set "args=%%args:*%first% =%%")',
+    ')',
+    '"%~dp0..\\tools\\python\\python.exe" %args%',
+    'exit /b %errorlevel%',
+  ]);
+}
+
 // Exported (not just used internally by writeShims below) so verify/static.mjs
 // check ⑥ can byte-compare this template against its P02 daemon/wake.mjs
 // sibling copy (agentShimText()) -- the two must never drift (see that file's
@@ -76,6 +118,11 @@ export function writeShims(root, activeAgents = []) {
   const nodeCmd = path.join(dir, 'node.cmd');
   fs.writeFileSync(nodeCmd, nodeShim(), 'ascii');
   written.push(nodeCmd);
+  for (const [name, text] of [['git.cmd', gitShim()], ['python.cmd', pythonShim()], ['py.cmd', pyShim()]]) {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, text, 'ascii');
+    written.push(file);
+  }
 
   for (const agent of ['claude', 'codex']) {
     if (!activeAgents.includes(agent)) continue;
