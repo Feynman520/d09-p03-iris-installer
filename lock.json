@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "package": { "version": "1.3.2", "guideVersion": "11" },
+  "package": { "version": "1.4.0", "guideVersion": "11" },
   "parts": {
     "node": {
       "kind": "url",
