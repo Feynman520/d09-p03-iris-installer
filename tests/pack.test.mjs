@@ -3,9 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { pack, renderNotices } from '../build/pack.mjs';
-import { sha256File } from '../lib/manifest.mjs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { pack, renderNotices, buildPackManifest } from '../build/pack.mjs';
+import { sha256File, verifyManifest } from '../lib/manifest.mjs';
 import { extractZip } from '../lib/zip.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO = path.resolve(HERE, '..');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-pack-'));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
@@ -122,7 +127,7 @@ test('pack: ships patches/teamclaude/rules.json into installer/, and nothing els
 // lock.json that server.mjs's readLock() reads. Without either, every user
 // PC failed -- ERR_MODULE_NOT_FOUND at startup (bootstrap exit 13), or 500
 // payload_unreadable on POST /api/install.
-test('pack: ships lib/{run,zip}.mjs and lock.json at the zip root', async () => {
+test('pack: ships lib/{run,zip,net}.mjs and lock.json at the zip root', async () => {
   const installerDir = path.join(tmp, 'fake-installer-lib');
   fs.mkdirSync(installerDir, { recursive: true });
   fs.writeFileSync(path.join(installerDir, 'IRIS-설치.cmd'), '@echo off\r\n');
@@ -131,6 +136,9 @@ test('pack: ships lib/{run,zip}.mjs and lock.json at the zip root', async () => 
   fs.mkdirSync(libDir, { recursive: true });
   fs.writeFileSync(path.join(libDir, 'run.mjs'), 'export const run = () => {};\n', 'utf8');
   fs.writeFileSync(path.join(libDir, 'zip.mjs'), 'export const zipDir = () => {};\n', 'utf8');
+  // net.mjs: the network-0 choke point installer/lib/{install,online,precheck}.mjs
+  // import as assertOnline/isOffline (Task 9) -- must travel too.
+  fs.writeFileSync(path.join(libDir, 'net.mjs'), 'export const isOffline = () => false;\nexport const assertOnline = () => {};\n', 'utf8');
   fs.writeFileSync(path.join(libDir, 'glob.mjs'), 'export const globMatch = () => {};\n', 'utf8');
 
   const lockFile = path.join(tmp, 'fake-lock.json');
@@ -157,8 +165,9 @@ test('pack: ships lib/{run,zip}.mjs and lock.json at the zip root', async () => 
 
   assert.ok(fs.existsSync(path.join(extractDir, 'lib', 'run.mjs')), 'zip missing lib/run.mjs');
   assert.ok(fs.existsSync(path.join(extractDir, 'lib', 'zip.mjs')), 'zip missing lib/zip.mjs');
+  assert.ok(fs.existsSync(path.join(extractDir, 'lib', 'net.mjs')), 'zip missing lib/net.mjs');
   // Deliberately minimal: only what installer/ actually imports travels.
-  assert.deepEqual(fs.readdirSync(path.join(extractDir, 'lib')).sort(), ['run.mjs', 'zip.mjs']);
+  assert.deepEqual(fs.readdirSync(path.join(extractDir, 'lib')).sort(), ['net.mjs', 'run.mjs', 'zip.mjs']);
 
   assert.ok(fs.existsSync(path.join(extractDir, 'lock.json')), 'zip missing lock.json');
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(extractDir, 'lock.json'), 'utf8')), lock);
@@ -167,8 +176,9 @@ test('pack: ships lib/{run,zip}.mjs and lock.json at the zip root', async () => 
   const resolved = path.resolve(path.join(extractDir, 'installer', 'lib'), '..', '..', 'lib', 'run.mjs');
   assert.equal(resolved, path.join(extractDir, 'lib', 'run.mjs'));
 
-  // I4: per-part notices generated from the lock.
-  const notices = fs.readFileSync(path.join(extractDir, 'payload', 'licenses', 'NOTICES.md'), 'utf8');
+  // I4: per-part notices generated from the lock. T08 moved them next to the
+  // harvested licence texts (payload\policy\licenses\, 설계 3-1).
+  const notices = fs.readFileSync(path.join(extractDir, 'payload', 'policy', 'licenses', 'NOTICES.md'), 'utf8');
   assert.match(notices, /\| node \| 24\.17\.0 \| MIT \| https:\/\/example\.invalid\/node\.zip \|/);
   assert.match(notices, /\| codex \| 0\.154\.0 \| Apache-2\.0 \| https:\/\/www\.npmjs\.com\/package\/@openai\/codex \|/);
   assert.match(notices, /claude: NOT bundled/);
@@ -293,4 +303,305 @@ test('pack: zip entries have no ./ prefix and Windows Explorer can list the arch
   const names = out ? out.split('|') : [];
   assert.ok(names.length >= 4, `Explorer sees ${names.length} root item(s) (${out || 'none'}) -- "Extract All" would fail`);
   assert.ok(names.some((n) => /^IRIS-설치/.test(n)), `Explorer listing lacks IRIS-설치.cmd: ${out}`);
+});
+
+// ---------------------------------------------------------------------------
+// T08: the v2 zip tree (설계 3-1)
+// ---------------------------------------------------------------------------
+
+// A fake installer dir shaped like the real one in the ways this test is
+// about: a dev-only mock backend, a unit test file, and one real asset.
+function fakeInstaller(dir) {
+  fs.mkdirSync(path.join(dir, 'ui'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'IRIS-설치.cmd'), '@echo off\r\n');
+  fs.writeFileSync(path.join(dir, 'server.mjs'), 'export const x = 1;\n');
+  fs.writeFileSync(path.join(dir, 'ui', 'index.html'), '<!doctype html>\n');
+  fs.writeFileSync(path.join(dir, 'ui', 'mock-server.mjs'), 'export const mock = 1;\n');
+  fs.writeFileSync(path.join(dir, 'lib', 'paths.mjs'), 'export const p = 1;\n');
+  fs.writeFileSync(path.join(dir, 'lib', 'paths.test.mjs'), 'export const t = 1;\n');
+  return dir;
+}
+
+test('pack: zip tree is 설계 3-1 -- 설치가 안 되면.txt at the root (BOM kept), policy templates without the folder README, presets.json + fixtures under setup\\, no mock-server / *.test.*', async () => {
+  const installerDir = fakeInstaller(path.join(tmp, 'fake-installer-tree'));
+
+  const stageDir = path.join(tmp, 'stage-tree');
+  const payload = path.join(stageDir, 'payload');
+  // The nine payload folders collect() produces (설계 3-1) -- one token file
+  // each is enough for a tree-shape assertion.
+  for (const d of ['runtime', 'agents', 'relay', 'face', 'dash', 'tools', 'setup', 'policy/licenses', 'updater']) {
+    fs.mkdirSync(path.join(payload, ...d.split('/')), { recursive: true });
+  }
+  fs.writeFileSync(path.join(payload, 'runtime', 'node.zip'), 'x');
+  fs.writeFileSync(path.join(payload, 'policy', 'licenses', 'node-LICENSE'), 'MIT\n');
+  fs.writeFileSync(path.join(payload, 'manifest.json'), JSON.stringify({ schema: 1, parts: {} }));
+
+  const { zipPath } = await pack({
+    stageDir, outDir: path.join(tmp, 'out-tree'), manifest: { package: { version: '2.0.0' } }, installerDir,
+  });
+  const extractDir = path.join(tmp, 'extracted-tree');
+  await extractZip(zipPath, extractDir);
+  const at = (...p) => path.join(extractDir, ...p);
+
+  // --- zip root
+  assert.ok(fs.existsSync(at('IRIS-설치.cmd')), 'zip root missing IRIS-설치.cmd');
+  assert.ok(fs.existsSync(at('설치가 안 되면.txt')), 'zip root missing 설치가 안 되면.txt');
+  assert.ok(fs.existsSync(at('installer')) && fs.existsSync(at('payload')));
+  // Byte-identical to payload-src\policy\install-notice.txt -- including the
+  // UTF-8 BOM, without which Notepad shows mojibake for the Korean.
+  const noticeSrc = fs.readFileSync(path.join(REPO, 'payload-src', 'policy', 'install-notice.txt'));
+  const noticePacked = fs.readFileSync(at('설치가 안 되면.txt'));
+  assert.deepEqual([...noticePacked.slice(0, 3)], [0xef, 0xbb, 0xbf], '설치가 안 되면.txt lost its UTF-8 BOM');
+  assert.ok(noticeSrc.equals(noticePacked), '설치가 안 되면.txt is not a byte copy of policy/install-notice.txt');
+
+  // --- installer\ : dev-only files must not travel
+  assert.ok(fs.existsSync(at('installer', 'server.mjs')));
+  assert.ok(fs.existsSync(at('installer', 'ui', 'index.html')));
+  assert.ok(!fs.existsSync(at('installer', 'ui', 'mock-server.mjs')), 'installer/ui/mock-server.mjs must be excluded');
+  assert.ok(!fs.existsSync(at('installer', 'lib', 'paths.test.mjs')), '*.test.* under installer/ must be excluded');
+  assert.ok(fs.existsSync(at('installer', 'lib', 'paths.mjs')), 'a normal installer lib file must still travel');
+
+  // --- payload\policy\ : every template except the folder's own README
+  for (const f of ['root-AGENTS.md', 'mini-AGENTS.md', 'mini-AGENTS-util.md', 'policy-summary.md', 'CLAUDE.md', 'ontology-registry-template.yml', 'install-notice.txt']) {
+    assert.ok(fs.existsSync(at('payload', 'policy', f)), `payload/policy/${f} missing`);
+  }
+  assert.ok(!fs.existsSync(at('payload', 'policy', 'README.md')), 'payload-src/policy/README.md is a note to us; it must not ship');
+  assert.ok(fs.existsSync(at('payload', 'policy', 'licenses', 'README.md')), 'policy/licenses/README.md explains the folder to the user and must ship');
+  assert.ok(fs.existsSync(at('payload', 'policy', 'licenses', 'NOTICES.md')));
+  assert.ok(fs.existsSync(at('payload', 'policy', 'licenses', 'node-LICENSE')), 'harvested licences must survive the policy copy');
+
+  // --- payload\setup\ : presets + fixtures placeholder
+  const presets = JSON.parse(fs.readFileSync(at('payload', 'setup', 'presets.json'), 'utf8'));
+  assert.deepEqual(
+    presets,
+    JSON.parse(fs.readFileSync(path.join(REPO, 'installer', 'ui', 'presets.json'), 'utf8')),
+    'payload/setup/presets.json must be the same content the UI reads',
+  );
+  assert.ok(fs.existsSync(at('payload', 'setup', 'fixtures', 'README.md')), 'setup/fixtures placeholder missing');
+
+  // --- the nine folders of 설계 3-1 all present
+  const payloadDirs = fs.readdirSync(at('payload'), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  assert.deepEqual(payloadDirs, ['agents', 'dash', 'face', 'policy', 'relay', 'runtime', 'setup', 'tools', 'updater']);
+});
+
+test('pack: manifest.json is schema 2 -- every payload file fingerprinted, part meta from collect, folder parts fanned out, download parts kept out of parts{}', async () => {
+  const installerDir = fakeInstaller(path.join(tmp, 'fake-installer-manifest'));
+
+  const stageDir = path.join(tmp, 'stage-manifest');
+  const payload = path.join(stageDir, 'payload');
+  fs.mkdirSync(path.join(payload, 'runtime'), { recursive: true });
+  fs.mkdirSync(path.join(payload, 'tools', 'wheelhouse'), { recursive: true });
+  fs.writeFileSync(path.join(payload, 'runtime', 'node.zip'), 'node bytes');
+  fs.writeFileSync(path.join(payload, 'tools', 'wheelhouse', 'a-1-py3-none-any.whl'), 'wheel a');
+  fs.writeFileSync(path.join(payload, 'tools', 'wheelhouse', 'b-1-py3-none-any.whl'), 'wheel b');
+  fs.writeFileSync(path.join(payload, 'manifest.json'), '{}');
+
+  // exactly the shape build/collect.mjs writes to _build\stage\parts-meta.json
+  fs.writeFileSync(path.join(stageDir, 'parts-meta.json'), JSON.stringify({
+    node: {
+      kind: 'url', version: '24.21.0', dest: '_agent/shared/tools/node', file: 'runtime/node.zip',
+      license: 'MIT', licenseNotice: null, redistribute: 'bundle', licenseFiles: ['node-LICENSE'],
+      sha256: 'deadbeef', url: 'https://example.invalid/node.zip',
+    },
+    'document-mcp-wheelhouse': {
+      kind: 'wheelhouse', version: null, dest: '_agent/shared/tools/python-wheelhouse/document-mcp',
+      file: 'tools/wheelhouse/', license: 'various', redistribute: 'bundle', licenseFiles: [],
+      requirementsLock: 'payload-src/manifests/python-locks/document-mcp/requirements.lock', wheelCount: 2,
+    },
+    claude: {
+      kind: 'claude-release', version: '2.1.272', dest: '_agent/shared/tools/claude',
+      file: 'agents/claude-code-2.1.272.zip', license: 'Proprietary', redistribute: 'download', licenseFiles: [],
+      download: { url: 'https://example.invalid/claude.exe', manifestUrl: 'https://example.invalid/m.json', sha256: 'abc', fallback: { npm: '@anthropic-ai/claude-code' } },
+    },
+  }, null, 2));
+
+  const { zipPath } = await pack({
+    stageDir, outDir: path.join(tmp, 'out-manifest'), manifest: { package: { version: '2.0.0' }, built: '2026-09-15T00:00:00.000Z' }, installerDir,
+  });
+  const extractDir = path.join(tmp, 'extracted-manifest');
+  await extractZip(zipPath, extractDir);
+  const payloadDir = path.join(extractDir, 'payload');
+  const m = JSON.parse(fs.readFileSync(path.join(payloadDir, 'manifest.json'), 'utf8'));
+
+  assert.equal(m.schema, 2);
+  assert.equal(m.package.version, '2.0.0');
+  assert.equal(m.package.name, 'IRIS');
+
+  // part meta survives collect -> manifest untouched
+  assert.equal(m.parts.node.kind, 'url');
+  assert.equal(m.parts.node.dest, '_agent/shared/tools/node');
+  assert.equal(m.parts.node.license, 'MIT');
+  assert.deepEqual(m.parts.node.licenseFiles, ['node-LICENSE']);
+  assert.equal(m.parts.node.bytes, 'node bytes'.length);
+  assert.match(m.parts.node.sha256, /^[0-9a-f]{64}$/, 'the manifest sha256 must be the FILE hash, not the lock value');
+
+  // a folder part fans out into "<name>:<basename>" keys (v1 behaviour kept:
+  // lib/manifest.mjs verifyManifest and verify/static.mjs ③ rely on it)
+  const wheelKeys = Object.keys(m.parts).filter((k) => k.startsWith('document-mcp-wheelhouse:')).sort();
+  assert.deepEqual(wheelKeys, ['document-mcp-wheelhouse:a-1-py3-none-any.whl', 'document-mcp-wheelhouse:b-1-py3-none-any.whl']);
+  assert.equal(m.parts['document-mcp-wheelhouse:a-1-py3-none-any.whl'].file, 'tools/wheelhouse/a-1-py3-none-any.whl');
+
+  // download parts have no file in payload\: they belong in downloads{}, or
+  // verifyManifest would report each of them as a missing file.
+  assert.ok(!('claude' in m.parts), 'a redistribute:download part must not be in parts{}');
+  assert.equal(m.downloads.claude.download.url, 'https://example.invalid/claude.exe');
+  assert.equal(m.downloads.claude.redistribute, 'download');
+
+  // every payload file (including the ones no part owns) is fingerprinted
+  for (const rel of ['policy/root-AGENTS.md', 'policy/licenses/NOTICES.md', 'setup/presets.json', 'setup/fixtures/README.md', 'runtime/node.zip']) {
+    assert.ok(m.files[rel], `manifest.files is missing ${rel}`);
+    assert.match(m.files[rel].sha256, /^[0-9a-f]{64}$/);
+    assert.equal(m.files[rel].sha256, await sha256File(path.join(payloadDir, rel)));
+  }
+  assert.ok(!('manifest.json' in m.files), 'manifest.json cannot fingerprint itself');
+
+  // and the hashes are true of the zip that was actually written
+  const mv = await verifyManifest(payloadDir, m);
+  assert.equal(mv.ok, true, JSON.stringify(mv.mismatches));
+
+  // the stage copy is the same bytes as the shipped one (verify/reproduce.mjs
+  // compares stage manifests)
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(payload, 'manifest.json'), 'utf8')),
+    m,
+    'stage payload/manifest.json must equal the packed one',
+  );
+});
+
+test('buildPackManifest: a part that names a file which was never staged fails loudly', async () => {
+  const payloadDir = path.join(tmp, 'manifest-missing', 'payload');
+  fs.mkdirSync(payloadDir, { recursive: true });
+  fs.writeFileSync(path.join(payloadDir, 'there.txt'), 'x');
+  await assert.rejects(
+    buildPackManifest({ payloadDir, lock: { package: { version: '1' } }, partsMeta: { ghost: { kind: 'url', file: 'runtime/ghost.zip' } } }),
+    /part ghost declares runtime\/ghost\.zip but it is not in payload/,
+  );
+  await assert.rejects(
+    buildPackManifest({ payloadDir, lock: { package: { version: '1' } }, partsMeta: { ghosts: { kind: 'wheelhouse', file: 'tools/nothing/' } } }),
+    /part ghosts declares tools\/nothing\/ but no file was staged there/,
+  );
+});
+
+// T08 ruling 4: the shipped gen-image.py is a generalized copy in this repo
+// (payload-src\tools\), not this PC's live tool, which hardcodes the agent
+// config folder. lock.json must point at the copy, the copy must carry no
+// rooted install path, and it must still be valid Python.
+test('gen-image: the shipped copy derives its paths from the environment and compiles', () => {
+  const copyPath = path.join(REPO, 'payload-src', 'tools', 'gen-image.py');
+  assert.ok(fs.existsSync(copyPath), 'payload-src/tools/gen-image.py is missing');
+
+  const lock = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
+  assert.equal(lock.parts['gen-image'].source, 'payload-src/tools/gen-image.py');
+
+  const text = fs.readFileSync(copyPath, 'utf8');
+  // No rooted path literal anywhere: that is exactly what the sanitize rule
+  // C:[\\/]+IRIS[\\/] looks for, and this copy exists to have none.
+  assert.equal(/C:[\\/]+IRIS[\\/]/.test(text), false, 'the shipped copy still carries a rooted install path');
+  assert.match(text, /os\.environ\.get\("CLAUDE_CONFIG_DIR"\)/);
+  assert.match(text, /os\.environ\.get\("IRIS_ROOT"/);
+  assert.match(text, /os\.environ\.get\("CODEX_HOME"\)/);
+  // behaviour otherwise identical: the tool's own entry points are intact
+  assert.match(text, /def main\(/);
+  assert.match(text, /gpt-image/);
+
+  let python = null;
+  for (const [cmd, args] of [['python', ['-c', 'pass']], ['py', ['-3', '-c', 'pass']]]) {
+    try { execFileSync(cmd, args, { stdio: 'ignore' }); python = [cmd, args.slice(0, -2)]; break; } catch { /* try next */ }
+  }
+  if (!python) return; // no interpreter on this machine: the text checks above still ran
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-pycompile-'));
+  try {
+    execFileSync(python[0], [...python[1], '-m', 'py_compile', copyPath], {
+      stdio: 'pipe', env: { ...process.env, PYTHONPYCACHEPREFIX: scratch, PYTHONUTF8: '1' },
+    });
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task 24a: 내용 지문 (contentFingerprint)
+// ---------------------------------------------------------------------------
+//
+// Why this exists: the zip's own sha256 changes on EVERY build, because
+// payload\manifest.json carries a `built` timestamp. The release gate
+// (iris-release.mjs) builds and then demands that docs\시험행렬.md's rows
+// already carry the fingerprint of that just-made build -- unsatisfiable with
+// a zip sha, hence the deadlock this fingerprint fixes. So the two properties
+// below are the contract, not incidental behaviour:
+//   (1) nothing changed  -> SAME contentFingerprint, DIFFERENT zip sha
+//   (2) anything shipped changed -> DIFFERENT contentFingerprint
+// (2) is deliberately wider than manifest.files (payload\ only): a change to
+// installer\ must invalidate the rows too, which is the whole point of
+// "re-run the scenarios after a code change".
+
+function fingerprintCase(name) {
+  const installerDir = fakeInstaller(path.join(tmp, `fp-installer-${name}`));
+  const stageDir = path.join(tmp, `fp-stage-${name}`);
+  const payload = path.join(stageDir, 'payload');
+  fs.mkdirSync(path.join(payload, 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(payload, 'runtime', 'node.zip'), 'node bytes');
+  fs.writeFileSync(path.join(payload, 'manifest.json'), '{}');
+  return { installerDir, stageDir, payload };
+}
+
+function packFp(c, label, built) {
+  return pack({
+    stageDir: c.stageDir,
+    outDir: path.join(tmp, `fp-out-${label}`),
+    manifest: { package: { version: '2.0.0' }, built },
+    installerDir: c.installerDir,
+  });
+}
+
+test('pack: contentFingerprint is 64 hex, travels in manifest+return, and is STABLE across rebuilds whose only difference is `built` (the zip sha is not)', async () => {
+  const c = fingerprintCase('stable');
+
+  const a = await packFp(c, 'stable-a', '2026-09-15T00:00:00.000Z');
+  const b = await packFp(c, 'stable-b', '2026-09-15T09:30:00.000Z');
+
+  assert.match(a.contentFingerprint, /^[0-9a-f]{64}$/, 'contentFingerprint must be 64 lowercase hex');
+  assert.equal(a.manifest.contentFingerprint, a.contentFingerprint, 'the manifest must carry the same value pack() returned');
+  assert.equal(a.manifest.schema, 2, 'schema stays 2 -- contentFingerprint is one more field, not a new schema');
+
+  assert.equal(b.contentFingerprint, a.contentFingerprint,
+    '내용 지문 must not change when only the built timestamp differs (otherwise the release gate deadlocks again)');
+  assert.notEqual(a.manifest.built, b.manifest.built, 'this test is meaningless unless the two builds really differ in `built`');
+  assert.notEqual(await sha256File(a.zipPath), await sha256File(b.zipPath),
+    'the zip sha256 SHOULD differ between the two builds -- that is the whole reason contentFingerprint exists');
+
+  // and it is inside the shipped zip, not just in the return value
+  const extractDir = path.join(tmp, 'fp-extracted');
+  await extractZip(a.zipPath, extractDir);
+  const shipped = JSON.parse(fs.readFileSync(path.join(extractDir, 'payload', 'manifest.json'), 'utf8'));
+  assert.equal(shipped.contentFingerprint, a.contentFingerprint);
+  // the stage copy stays byte-identical to the shipped one (reproduce.mjs reads
+  // the stage) -- for the build that ran LAST, which is b.
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(c.payload, 'manifest.json'), 'utf8')), b.manifest);
+});
+
+test('pack: contentFingerprint CHANGES when a shipped payload file changes', async () => {
+  const c = fingerprintCase('payload-change');
+  const before = await packFp(c, 'payload-change-a', '2026-09-15T00:00:00.000Z');
+
+  fs.writeFileSync(path.join(c.payload, 'runtime', 'node.zip'), 'node bytes -- different');
+  const after = await packFp(c, 'payload-change-b', '2026-09-15T00:00:00.000Z'); // same `built` on purpose
+
+  assert.notEqual(after.contentFingerprint, before.contentFingerprint,
+    'a changed payload file must invalidate the 시험행렬 rows');
+});
+
+test('pack: contentFingerprint CHANGES when an installer\\ file changes (manifest.files alone would miss this)', async () => {
+  const c = fingerprintCase('installer-change');
+  const before = await packFp(c, 'installer-change-a', '2026-09-15T00:00:00.000Z');
+
+  // installer\server.mjs is shipped code, but it is NOT in manifest.files
+  // (which walks payload\ only) -- the fingerprint covers the whole zip root
+  // precisely so that a code change like this one forces a re-run.
+  fs.writeFileSync(path.join(c.installerDir, 'server.mjs'), 'export const x = 2;\n');
+  const after = await packFp(c, 'installer-change-b', '2026-09-15T00:00:00.000Z');
+
+  assert.notEqual(after.contentFingerprint, before.contentFingerprint,
+    'a changed installer file must invalidate the 시험행렬 rows');
 });

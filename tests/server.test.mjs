@@ -1,13 +1,22 @@
-import { test, after } from 'node:test'; import assert from 'node:assert/strict';
-import fs from 'node:fs'; import path from 'node:path'; import os from 'node:os'; import http from 'node:http';
-import { fileURLToPath } from 'node:url';
+import { test, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import http from 'node:http';
 import { startServer } from '../installer/server.mjs';
+import { SETUP_STAGE_IDS, readReceipt, writeReceipt } from '../installer/lib/receipt.mjs';
+import { readDecisions } from '../installer/lib/structure-rules.mjs';
+import { createSetupRunner } from '../installer/lib/adapters/setup-runner.mjs';
+
+// v2 서버 계약 시험 (정본 = docs/설치기-API-v2.md).
+//
+// 진짜 C:\ 아래는 읽지도 쓰지도 않는다 — 모든 서버는 `soulRoot` 시험 이음매로
+// 임시 폴더를 영혼 루트 삼고, 세팅 엔진·온라인 묶음은 가짜를 주입한다.
 
 // Sends a raw HTTP request with `rawPath` used verbatim as the request-target
-// (no client-side URL normalization) so tests can exercise exactly what
-// server.mjs's `new URL(req.url, ...)` + serveStatic see on the wire --
-// fetch()/the WHATWG URL constructor would otherwise collapse literal ".."
-// and backslash segments before the request ever left the client.
+// so the test exercises exactly what server.mjs's URL parsing sees on the wire
+// (fetch()/WHATWG URL would collapse ".." and "\" before it ever left).
 function rawRequest(port, rawPath, { method = 'GET' } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port, path: rawPath, method }, (res) => {
@@ -21,547 +30,953 @@ function rawRequest(port, rawPath, { method = 'GET' } = {}) {
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-server-'));
-const zipRoot = path.join(tmp, 'zip-root');
-const nodeDir = path.join(tmp, 'node-dir');
-fs.mkdirSync(zipRoot, { recursive: true });
-fs.mkdirSync(nodeDir, { recursive: true });
-const stateFile = path.join(tmp, 'state.json');
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
-test('health 200 with name:iris-installer; POST /api/name validation; POST /api/quit closes the server', async () => {
-  let closedByQuit = false;
-  const { url, close } = await startServer({
+const zipRoot = path.join(tmp, 'zip-root');
+fs.mkdirSync(path.join(zipRoot, 'payload'), { recursive: true });
+fs.writeFileSync(path.join(zipRoot, 'payload', 'manifest.json'),
+  JSON.stringify({ schema: 1, package: { name: 'IRIS', version: '2.0.0' }, parts: {} }), 'utf8');
+fs.writeFileSync(path.join(zipRoot, 'lock.json'),
+  JSON.stringify({ schema: 1, package: { version: '2.0.0' }, parts: {} }), 'utf8');
+const nodeDir = path.dirname(process.execPath);
+
+const OK_PRECHECK = { blockers: [], warnings: [], info: {}, recorded: { os: { ok: true, build: 26200 } } };
+const BLOCKED_PRECHECK = {
+  blockers: [{ id: 'disk', message: 'C 드라이브 여유 공간이 3GB 미만입니다.' }],
+  warnings: [], info: {}, recorded: {},
+};
+
+const JSON_HDR = { 'Content-Type': 'application/json' };
+const post = (url, p, body) => fetch(`${url}${p}`, { method: 'POST', headers: JSON_HDR, body: JSON.stringify(body ?? {}) });
+const getJson = async (url, p) => (await fetch(`${url}${p}`)).json();
+
+const okEngine = (extra = {}) => ({
+  async runSetup(ctx, { onStage }) {
+    for (const id of SETUP_STAGE_IDS) onStage({ id, status: 'done' });
+    return { ok: true, pending: [], ...extra };
+  },
+});
+
+const okOnline = () => ({
+  checkNet: async () => ({ ok: true, blocked: [] }),
+  installClaude: async () => ({ ok: true, source: 'claude.ai' }),
+  installDocumentSkills: async () => ({ ok: true, state: 'done', commit: 'deadbee' }),
+  startLogin: async () => ({ ok: true, state: 'waiting', cli: 'pending', relay: 'pending' }),
+  loginStatus: async () => ({ state: 'done', cli: 'done', relay: 'done', reason: null }),
+  startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }),
+});
+
+let seq = 0;
+async function start(opts = {}) {
+  const id = `s${++seq}`;
+  const soulRoot = path.join(tmp, 'souls', id);
+  const server = await startServer({
     port: 0,
     zipRoot,
     nodeDir,
-    stateFile,
-    // Injected quit hook so this test process survives POST /api/quit
-    // instead of the real CLI path's process.exit(0).
-    onQuit: () => { closedByQuit = true; close(); },
+    stateFile: path.join(tmp, `state-${id}.json`),
+    soulRoot,
+    workDir: path.join(tmp, 'logs', id),
+    precheckFn: async () => OK_PRECHECK,
+    setupRunner: okEngine(),
+    onlineRunner: okOnline(),
+    ...opts,
   });
+  return { ...server, soulRoot };
+}
 
-  const health = await fetch(`${url}/api/health`);
-  assert.equal(health.status, 200);
-  const healthBody = await health.json();
-  assert.equal(healthBody.ok, true);
-  assert.equal(healthBody.name, 'iris-installer');
-  assert.equal(healthBody.step, 'precheck');
-  assert.equal(typeof healthBody.version, 'string');
+// 질문 세 개를 통과시켜 ④(작업 폴더 구성) 앞까지 온다.
+async function answerQuestions(url, subscriptions = ['claude']) {
+  await post(url, '/api/precheck');
+  await post(url, '/api/locate');
+  await post(url, '/api/choice', { subscriptions });
+}
 
-  // The soul folder is fixed (2026-09-13): the request body's name is
-  // ignored. This server was started without a soulName override, so the
-  // default applies -- and that default must be the product name, IRIS.
-  // The route is exercised (not just the default read back) with a body
-  // that would have been rejected under the old free-form rules: 'CON' is a
-  // reserved device name, yet the answer is about C:\IRIS, not about CON.
-  // detectExisting() is read-only, so probing the real C:\IRIS on the
-  // developer PC changes nothing; the answer's `existing` just depends on
-  // the machine, so only the fixed name/path are asserted.
-  const ignoredBody = await fetch(`${url}/api/name`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'CON' }),
-  });
-  assert.equal(ignoredBody.status, 200);
-  const ignoredJson = await ignoredBody.json();
-  assert.equal(ignoredJson.name, 'IRIS');
-  if (ignoredJson.ok) assert.equal(ignoredJson.path, 'C:\\IRIS');
-  else assert.equal(ignoredJson.reason, 'conflict', 'the only possible refusal for the fixed name is a foreign C:\\IRIS');
+const TREE = [
+  { id: 'r1', parentId: null, level: 'R', nameKo: '교사', nameEn: 'Teacher', order: 1 },
+  { id: 'd1', parentId: 'r1', level: 'D', nameKo: '수업', nameEn: 'Teaching', order: 1 },
+  { id: 'd2', parentId: 'r1', level: 'D', nameKo: '담임', nameEn: '', order: 2 },
+  { id: 'p1', parentId: 'd1', level: 'P', nameKo: '이번 학기 준비', nameEn: 'Semester Prep', order: 1 },
+];
 
-  const quit = await fetch(`${url}/api/quit`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+async function waitForProgress(url, pred, what) {
+  for (let i = 0; i < 300; i++) {
+    const body = await getJson(url, '/api/setup/progress');
+    if (pred(body)) return body;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.fail(`setup never reached: ${what}`);
+}
+
+async function waitForOnline(url, pred, what) {
+  for (let i = 0; i < 300; i++) {
+    const body = await getJson(url, '/api/online/status');
+    if (pred(body)) return body;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.fail(`online never reached: ${what}`);
+}
+
+// ---------------------------------------------------------------------------
+// ① health / quit
+// ---------------------------------------------------------------------------
+test('health 200 with name:iris-installer; POST /api/quit closes the server', async () => {
+  let closedByQuit = false;
+  let handle;
+  handle = await start({ onQuit: () => { closedByQuit = true; handle.close(); } });
+
+  const health = await getJson(handle.url, '/api/health');
+  assert.equal(health.ok, true);
+  assert.equal(health.name, 'iris-installer');
+  assert.equal(health.step, 'precheck');
+  assert.equal(health.version, '2.0.0');
+  assert.equal(health.auto, false);
+
+  const quit = await post(handle.url, '/api/quit');
   assert.equal(quit.status, 200);
   assert.deepEqual(await quit.json(), { ok: true });
 
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  await new Promise((r) => setTimeout(r, 400));
   assert.equal(closedByQuit, true, 'onQuit hook was not invoked');
-  await assert.rejects(fetch(`${url}/api/health`), 'server should have stopped listening after quit');
+  await assert.rejects(fetch(`${handle.url}/api/health`), 'server should have stopped listening');
 });
 
-test('POST /api/precheck runs the real precheck and advances state.step to name', async () => {
-  const stateFile6 = path.join(tmp, 'state6.json');
-  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFile6 });
+// ---------------------------------------------------------------------------
+// ② 정상 전이 전체
+// ---------------------------------------------------------------------------
+test('happy path: precheck → locate → choice → structure → summary → setup → online → done', async () => {
+  const engineCtx = [];
+  const onlineCalls = [];
+  const s = await start({
+    setupRunner: {
+      async runSetup(ctx, { onStage }) {
+        engineCtx.push(ctx);
+        onStage({ id: 'unpack', status: 'running' });
+        onStage({ id: 'unpack', sub: { part: 'node', done: 3, total: 11 } });
+        for (const id of SETUP_STAGE_IDS) onStage({ id, status: 'done' });
+        return { ok: true, pending: [{ capability: '브라우저 조작', reason: 'Edge 없음' }] };
+      },
+    },
+    onlineRunner: {
+      checkNet: async (a) => { onlineCalls.push(['checkNet', a]); return { ok: true, blocked: [] }; },
+      installClaude: async (a) => { onlineCalls.push(['installClaude', a]); return { ok: true, source: 'claude.ai' }; },
+      installDocumentSkills: async (a) => { onlineCalls.push(['installDocumentSkills', a]); return { ok: true, state: 'done', commit: 'deadbee' }; },
+      startLogin: async (a) => { onlineCalls.push(['startLogin', a]); return { ok: true, state: 'waiting' }; },
+      loginStatus: async (a) => { onlineCalls.push(['loginStatus', a]); return { state: 'done', cli: 'done', relay: 'done' }; },
+      startRelay: async (a) => { onlineCalls.push(['startRelay', a]); return { ok: true, state: 'done', accounts: 2 }; },
+    },
+  });
+  const { url, soulRoot } = s;
   try {
-    const res = await fetch(`${url}/api/precheck`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(typeof body.os.ok, 'boolean');
-    assert.equal(body.arch.value, 'x64');
-    assert.equal(typeof body.allOk, 'boolean');
-    assert.equal(typeof body.canProceedOffline, 'boolean');
+    // ① 준비 확인
+    const pre = await (await post(url, '/api/precheck')).json();
+    assert.equal(pre.ok, true);
+    assert.equal(pre.canProceed, true);
+    assert.deepEqual(pre.result.blockers, []);
+    assert.equal((await getJson(url, '/api/state')).step, 'locate');
 
-    const state = await (await fetch(`${url}/api/state`)).json();
-    assert.equal(state.step, 'name');
-    assert.deepEqual(state.precheck, body);
+    // ② 설치 위치
+    const loc = await (await post(url, '/api/locate')).json();
+    assert.equal(loc.ok, true);
+    assert.equal(loc.mode, 'empty');
+    assert.equal(loc.root, soulRoot);
+    assert.ok(loc.message.length > 0);
+    assert.equal((await getJson(url, '/api/state')).step, 'choice');
+
+    // ③ 구독 -- 옛 guideEdition 은 폐지
+    const choice = await (await post(url, '/api/choice', { subscriptions: ['claude', 'chatgpt'] })).json();
+    assert.deepEqual(choice, { ok: true, leadAgent: 'claude' });
+    const afterChoice = await getJson(url, '/api/state');
+    assert.deepEqual(afterChoice.choice, { subscriptions: ['claude', 'chatgpt'], leadAgent: 'claude' });
+    assert.ok(!('guideEdition' in afterChoice.choice), 'guideEdition 은 v2 에 없다');
+    assert.equal(afterChoice.step, 'structure');
+
+    // ④ 작업 폴더 구성 -- 서버가 번호를 매기고 decisions.json 을 원자 저장한다
+    const st = await (await post(url, '/api/structure', { nodes: TREE, later: false })).json();
+    assert.equal(st.ok, true);
+    const byId = Object.fromEntries(st.decisions.nodes.map((n) => [n.id, n]));
+    assert.equal(byId.r1.folderName, 'R01-교사(Teacher)');
+    assert.equal(byId.d1.folderName, 'D01-수업(Teaching)');
+    assert.equal(byId.d2.folderName, 'D02-담임', '영어 칸은 비워도 된다');
+    assert.equal(byId.p1.folderName, 'P01-이번 학기 준비(Semester Prep)');
+    assert.deepEqual(st.decisions.deferred, ['S', 'T', 'tags']);
+    assert.deepEqual(st.decisions.nameEnMissing, ['D02-담임']);
+    assert.deepEqual(readDecisions(soulRoot), st.decisions, 'decisions.json 이 영혼 폴더에 저장됐다');
+    assert.equal((await getJson(url, '/api/state')).step, 'summary');
+
+    // ⑤ 요약 확인 -- 영수증 schema 2 가 이때 만들어진다
+    assert.deepEqual(await (await post(url, '/api/summary/confirm')).json(), { ok: true });
+    const receipt = readReceipt(soulRoot);
+    assert.equal(receipt.schema, 2);
+    assert.deepEqual(receipt.precheck.recorded, OK_PRECHECK.recorded);
+    assert.deepEqual(receipt.choice, { subscriptions: ['claude', 'chatgpt'], leadAgent: 'claude' });
+    assert.equal(receipt.decisionsPath, path.join(soulRoot, '_agent', 'setup', 'decisions.json'));
+    assert.deepEqual(receipt.setup, {});
+    assert.deepEqual(receipt.online, {});
+    assert.equal(receipt.steps.summary, 'done');
+    assert.equal((await getJson(url, '/api/state')).step, 'setup');
+
+    // ⑥ 세팅 엔진
+    const started = await post(url, '/api/setup/start');
+    assert.equal(started.status, 202);
+    assert.deepEqual(await started.json(), { ok: true, running: true });
+    const setupDone = await waitForProgress(url, (b) => b.percent === 100, '100%');
+    assert.equal(setupDone.error, null);
+    assert.deepEqual(setupDone.stages.map((x) => x.id), SETUP_STAGE_IDS);
+    assert.ok(setupDone.stages.every((x) => x.status === 'done'));
+    assert.deepEqual(setupDone.pending, [{ capability: '브라우저 조작', reason: 'Edge 없음' }]);
+    assert.equal((await getJson(url, '/api/state')).step, 'online');
+
+    // 엔진에 넘긴 ctx 가 계약대로다
+    assert.equal(engineCtx.length, 1);
+    assert.equal(engineCtx[0].root, soulRoot);
+    assert.equal(engineCtx[0].offline, true);
+    assert.equal(engineCtx[0].payloadDir, path.join(zipRoot, 'payload'));
+    assert.equal(engineCtx[0].toolsDir, path.join(soulRoot, '_agent', 'shared', 'tools'));
+    assert.deepEqual(engineCtx[0].decisions, st.decisions);
+    assert.deepEqual(engineCtx[0].choice, { subscriptions: ['claude', 'chatgpt'], leadAgent: 'claude' });
+    assert.deepEqual(engineCtx[0].precheck, OK_PRECHECK.recorded);
+    assert.equal(typeof engineCtx[0].log, 'function');
+    assert.equal(typeof engineCtx[0].run, 'function');
+
+    // ⑦ 온라인
+    await post(url, '/api/online/start');
+    // 인터넷 확인 → Claude 내려받기 가 끝나면 로그인 국면으로 넘어간다. 폴링이
+    // 곧바로 로그인까지 done 으로 만들 수 있으므로 두 국면을 함께 기다린다.
+    await waitForOnline(url, (b) => b.stage === 'login' || b.stage === 'relay', 'the login phase');
+    const afterNet = await getJson(url, '/api/online/status');
+    assert.equal(afterNet.net.ok, true);
+    assert.equal(afterNet.claude.state, 'done');
+    assert.equal(afterNet.claude.source, 'claude.ai');
+
+    for (const provider of ['claude', 'chatgpt']) {
+      const login = await (await post(url, '/api/online/login', { provider })).json();
+      assert.equal(login.ok, true, provider);
+    }
+    const logins = await getJson(url, '/api/online/status');
+    assert.equal(logins.logins.claude.state, 'done');
+    assert.equal(logins.logins.chatgpt.state, 'done');
+
+    const relay = await (await post(url, '/api/online/relay')).json();
+    assert.deepEqual(relay, { ok: true, accounts: 2 });
+
+    // ⑧ 완료
+    assert.equal((await getJson(url, '/api/state')).step, 'done');
+    assert.equal(readReceipt(soulRoot).steps.online, 'done');
+    assert.ok(onlineCalls.some(([n]) => n === 'startRelay'));
+
+    // 완료 보고 -- 엔진이 아직 파일을 쓰지 않았으므로 내용은 null 이지만
+    // 라우트는 대기 기능 목록을 돌려준다.
+    const report = await getJson(url, '/api/report');
+    assert.equal(report.ok, true);
+    assert.equal(report.markdown, null);
+    assert.equal(report.handoff, null);
+    assert.deepEqual(report.pendingCapabilities, [{ capability: '브라우저 조작', reason: 'Edge 없음' }]);
   } finally {
-    await close();
+    await s.close();
   }
 });
 
-test('POST /api/name: the fixed soulName is validated (a bad override is refused, no soul saved); ok:true advances to choice with the fixed name, body ignored', async () => {
-  // A bad override (developer-PC rehearsal switch IRIS_INSTALLER_SOUL_NAME /
-  // startServer({soulName})) must be refused by the same name rules -- the
-  // installer never proceeds with a root it could not create.
-  const stateFile7 = path.join(tmp, 'state7.json');
-  const bad = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFile7, soulName: 'CON' });
+test('「나중에 비서와 정하기」는 R01-나(Me) 하나만 만들고 D·P 까지 미룬다', async () => {
+  const s = await start();
   try {
-    const badName = await fetch(`${bad.url}/api/name`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'NOVA7' }),
-    });
-    assert.deepEqual(await badName.json(), { ok: false, reason: 'reserved', name: 'CON' });
-    const afterBad = await (await fetch(`${bad.url}/api/state`)).json();
-    assert.equal(afterBad.step, 'precheck');
-    assert.equal(afterBad.soul, undefined);
+    await answerQuestions(s.url);
+    const st = await (await post(s.url, '/api/structure', { nodes: [], later: true })).json();
+    assert.equal(st.ok, true);
+    assert.equal(st.decisions.nodes.length, 1);
+    assert.equal(st.decisions.nodes[0].folderName, 'R01-나(Me)');
+    assert.deepEqual(st.decisions.deferred, ['D', 'P', 'S', 'T', 'tags']);
   } finally {
-    await bad.close();
-  }
-
-  const stateFile8 = path.join(tmp, 'state8.json');
-  const good = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFile8, soulName: 'NOVA7' });
-  try {
-    // Body name is ignored: whatever the page sends, the soul is NOVA7.
-    const goodName = await fetch(`${good.url}/api/name`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'SOMETHING-ELSE' }),
-    });
-    assert.deepEqual(await goodName.json(), { ok: true, name: 'NOVA7', path: 'C:\\NOVA7', existing: 'none' });
-    const afterGood = await (await fetch(`${good.url}/api/state`)).json();
-    assert.equal(afterGood.step, 'choice');
-    assert.deepEqual(afterGood.soul, { name: 'NOVA7', root: 'C:\\NOVA7', existing: 'none' });
-  } finally {
-    await good.close();
+    await s.close();
   }
 });
 
-// Task 14 replaced the last 501 stub (/api/handoff) with the real handoff.
-// What stays true: a route that needs a soul root refuses before one exists,
-// and nothing answers 501 any more. (The handoff's own happy/sad paths live
-// in tests/handoff.test.mjs.)
-test('no route answers 501 any more; /api/handoff needs a soul root first', async () => {
-  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state2.json') });
+// ---------------------------------------------------------------------------
+// ③ 검증 오류 6종
+// ---------------------------------------------------------------------------
+test('POST /api/structure: 검증 오류 6종 (R 없음·부모 없음·중복·금지 문자·자리표시자·잘못된 영어)', async () => {
+  const s = await start();
   try {
-    const handoff = await fetch(`${url}/api/handoff`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
-    assert.equal(handoff.status, 409);
-    assert.deepEqual(await handoff.json(), { ok: false, reason: 'no_soul' });
+    await answerQuestions(s.url);
+    const codes = async (nodes) => {
+      const r = await (await post(s.url, '/api/structure', { nodes })).json();
+      assert.equal(r.ok, false, `expected refusal for ${JSON.stringify(nodes)}`);
+      for (const e of r.errors) {
+        assert.ok(/[가-힣]/.test(e.message), `오류 문구는 한국어 한 문장이어야 한다: ${e.message}`);
+      }
+      return r.errors.map((e) => e.code);
+    };
+    const R = { id: 'r1', parentId: null, level: 'R', nameKo: '교사', nameEn: 'Teacher', order: 1 };
+
+    assert.ok((await codes([{ id: 'd1', parentId: null, level: 'D', nameKo: '수업', nameEn: '', order: 1 }])).includes('no-root'));
+    assert.ok((await codes([R, { id: 'd1', parentId: 'ghost', level: 'D', nameKo: '수업', nameEn: '', order: 1 }])).includes('orphan'));
+    assert.ok((await codes([R, { ...R, id: 'r2', order: 2 }])).includes('duplicate'));
+    assert.ok((await codes([{ ...R, nameKo: '교사/부장' }])).includes('bad-char'));
+    assert.ok((await codes([{ ...R, nameKo: '기타' }])).includes('placeholder'));
+    assert.ok((await codes([{ ...R, nameEn: '교사!!' }])).includes('bad-name-en'));
+
+    // 거절된 제출은 아무것도 저장하지 않는다
+    assert.equal(readDecisions(s.soulRoot), null);
+    assert.equal((await getJson(s.url, '/api/state')).step, 'structure');
   } finally {
-    await close();
+    await s.close();
   }
 });
 
-// Task 13 wiring: POST /api/login validates the provider, snapshots
-// accountsBefore, ensures the proxy, and starts the CLI login -- all via
-// injected fns so this test never spawns a process or touches a real
-// TeamClaude config. GET /api/login/status then drives stage 1 (cli) ->
-// stage 2 (relay) per provider and flips state.step to 'handoff' once every
-// chosen subscription is fully done.
-test('login: POST /api/login + GET /api/login/status advance cli -> relay -> handoff per provider', async () => {
-  const stateFile8 = path.join(tmp, 'state8.json');
-  const zr8 = path.join(tmp, 'zip-login');
-  fs.mkdirSync(path.join(zr8, 'payload'), { recursive: true });
-  fs.writeFileSync(
-    path.join(zr8, 'payload', 'manifest.json'),
-    JSON.stringify({ schema: 1, package: { name: 'IRIS', version: '1.0.0' }, parts: {} }),
-    'utf8',
-  );
-  const cliStatusByProvider = { claude: 'pending', chatgpt: 'pending' };
-  const relayStatusByProvider = { claude: 'pending', chatgpt: 'pending' };
-  const ensureProxyCalls = [];
-  const startCliLoginCalls = [];
-  const relayImportCalls = [];
+// ---------------------------------------------------------------------------
+// ④ 순서 가드
+// ---------------------------------------------------------------------------
+test('순서 가드: 구독·구성 없이 요약을 확정할 수 없다', async () => {
+  const s = await start();
+  try {
+    await post(s.url, '/api/precheck');
+    await post(s.url, '/api/locate');
+    const noChoice = await post(s.url, '/api/summary/confirm');
+    assert.equal(noChoice.status, 409);
+    assert.equal((await noChoice.json()).reason, 'no_choice');
 
-  // Login only ever runs after install finishes (state.step -> 'login') --
-  // an injected no-op installFn advances that without writing anything.
-  const installFn = async ({ onProgress }) => {
-    onProgress({ part: 'node', pct: 100, status: 'done' });
-    return { steps: { copy: 'done' } };
-  };
+    await post(s.url, '/api/choice', { subscriptions: ['chatgpt'] });
+    const noDecisions = await post(s.url, '/api/summary/confirm');
+    assert.equal(noDecisions.status, 409);
+    assert.equal((await noDecisions.json()).reason, 'no_decisions');
 
-  const { url, close } = await startServer({
-    port: 0,
-    zipRoot: zr8,
-    nodeDir,
-    stateFile: stateFile8,
-    installFn,
-    ensureProxyFn: async (opts) => { ensureProxyCalls.push(opts); return { alive: true, started: false }; },
-    startCliLoginFn: (opts) => { startCliLoginCalls.push(opts); return { pid: 4242 }; },
-    cliLoginStatusFn: ({ provider }) => cliStatusByProvider[provider],
-    relayImportFn: async (opts) => { relayImportCalls.push(opts); return { ok: true, method: 'import' }; },
-    relayStatusFn: async ({ provider }) => relayStatusByProvider[provider],
-    countProviderAccountsFn: async () => 0,
-    teamclaudeConfigPath: path.join(tmp, 'fake-teamclaude.json'),
-    soulName: 'NOVA-LOGIN-TEST', // fixed-name override (the body below is ignored)
+    // ChatGPT 만 고르면 주도 에이전트는 codex 쪽이다
+    assert.deepEqual((await getJson(s.url, '/api/state')).choice, { subscriptions: ['chatgpt'], leadAgent: 'chatgpt' });
+  } finally {
+    await s.close();
+  }
+});
+
+// 고치기 1회차 ①: 쓰는 라우트는 위치 확인을 건너뛸 수 없다.
+test('순서 가드: locate 없이 structure·summary·setup 은 409 no_locate 이고 아무것도 쓰지 않는다', async () => {
+  let engineRan = 0;
+  const s = await start({ setupRunner: { runSetup: async () => { engineRan += 1; return { ok: true, pending: [] }; } } });
+  try {
+    await post(s.url, '/api/precheck'); // locate 는 일부러 건너뛴다
+
+    for (const [p, body] of [
+      ['/api/structure', { nodes: TREE }],
+      ['/api/summary/confirm', {}],
+      ['/api/setup/start', {}],
+      ['/api/setup/retry', {}],
+    ]) {
+      const r = await post(s.url, p, body);
+      assert.equal(r.status, 409, p);
+      const j = await r.json();
+      assert.equal(j.reason, 'no_locate', p);
+      assert.match(j.message, /설치 위치 확인/);
+    }
+    assert.equal(readDecisions(s.soulRoot), null, 'decisions.json 이 만들어지면 안 된다');
+    assert.equal(readReceipt(s.soulRoot), null, '영수증이 만들어지면 안 된다');
+    assert.equal(engineRan, 0, '엔진이 돌면 안 된다');
+    assert.equal(fs.existsSync(s.soulRoot), false, '영혼 폴더 자체가 생기면 안 된다');
+  } finally {
+    await s.close();
+  }
+});
+
+// 고치기 1회차 ①: 한 번 거절당한 폴더는 계속 거절당한다(확인이 취소된다).
+test('순서 가드: foreign 판정 뒤에는 setup/start·structure 가 409 no_locate', async () => {
+  const soulRoot = path.join(tmp, 'foreign-guard');
+  fs.mkdirSync(soulRoot, { recursive: true });
+  fs.writeFileSync(path.join(soulRoot, '가족사진.jpg'), 'x', 'utf8');
+  let engineRan = 0;
+  const s = await start({
+    soulRoot,
+    setupRunner: { runSetup: async () => { engineRan += 1; return { ok: true, pending: [] }; } },
   });
   try {
-    await fetch(`${url}/api/name`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    await fetch(`${url}/api/choice`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subscriptions: ['claude', 'chatgpt'] }),
-    });
-    await fetch(`${url}/api/install`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-    for (let i = 0; i < 50; i++) {
-      const s = await (await fetch(`${url}/api/state`)).json();
-      if (s.step === 'login') break;
-      await new Promise((r) => setTimeout(r, 20));
+    await post(s.url, '/api/precheck');
+    const loc = await (await post(s.url, '/api/locate')).json();
+    assert.equal(loc.ok, false);
+    assert.equal(loc.mode, 'foreign');
+
+    for (const p of ['/api/structure', '/api/setup/start']) {
+      const r = await post(s.url, p, { nodes: TREE });
+      assert.equal(r.status, 409, p);
+      assert.equal((await r.json()).reason, 'no_locate', p);
     }
-
-    const badProvider = await fetch(`${url}/api/login`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'bogus' }),
-    });
-    assert.deepEqual(await badProvider.json(), { ok: false, reason: 'bad_provider' });
-
-    const loginClaude = await fetch(`${url}/api/login`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'claude' }),
-    });
-    assert.equal(loginClaude.status, 200);
-    assert.deepEqual(await loginClaude.json(), { ok: true, alive: true, started: false, pid: 4242 });
-
-    const loginChatgpt = await fetch(`${url}/api/login`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'chatgpt' }),
-    });
-    assert.equal(loginChatgpt.status, 200);
-
-    assert.equal(ensureProxyCalls.length, 2);
-    assert.equal(startCliLoginCalls.length, 2);
-    assert.equal(startCliLoginCalls[0].provider, 'claude');
-    assert.equal(startCliLoginCalls[1].provider, 'chatgpt');
-
-    let statusBody = await (await fetch(`${url}/api/login/status`)).json();
-    assert.equal(statusBody.step, 'login');
-    assert.equal(statusBody.providers.claude.cli, 'pending');
-    assert.equal(statusBody.providers.chatgpt.cli, 'pending');
-    assert.equal(relayImportCalls.length, 0);
-
-    // Flip claude's CLI login to done -> the next poll starts stage 2
-    // (relayImport) for claude only.
-    cliStatusByProvider.claude = 'done';
-    statusBody = await (await fetch(`${url}/api/login/status`)).json();
-    assert.equal(statusBody.providers.claude.cli, 'done');
-    assert.equal(statusBody.providers.chatgpt.cli, 'pending');
-
-    // The route fires relayImport without awaiting it -- poll until it lands.
-    for (let i = 0; i < 50 && relayImportCalls.length < 1; i++) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    assert.equal(relayImportCalls.length, 1);
-    assert.equal(relayImportCalls[0].provider, 'claude');
-
-    statusBody = await (await fetch(`${url}/api/login/status`)).json();
-    assert.equal(statusBody.providers.claude.relayMethod, 'import');
-    assert.equal(statusBody.providers.claude.relay, 'pending');
-    assert.equal(statusBody.step, 'login');
-
-    // Finish both providers.
-    cliStatusByProvider.chatgpt = 'done';
-    relayStatusByProvider.claude = 'done';
-    await fetch(`${url}/api/login/status`);
-    for (let i = 0; i < 50 && relayImportCalls.length < 2; i++) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    relayStatusByProvider.chatgpt = 'done';
-
-    let finalBody;
-    for (let i = 0; i < 50; i++) {
-      finalBody = await (await fetch(`${url}/api/login/status`)).json();
-      if (finalBody.step === 'handoff') break;
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    assert.equal(finalBody.step, 'handoff');
-    assert.equal(finalBody.providers.claude.relay, 'done');
-    assert.equal(finalBody.providers.chatgpt.relay, 'done');
-
-    const state = await (await fetch(`${url}/api/state`)).json();
-    assert.equal(state.step, 'handoff');
+    assert.equal(engineRan, 0);
+    assert.equal(readDecisions(soulRoot), null, '남의 폴더에 답안을 쓰면 안 된다');
+    assert.deepEqual(fs.readdirSync(soulRoot), ['가족사진.jpg'], '남의 폴더는 그대로여야 한다');
   } finally {
-    await close();
+    await s.close();
   }
 });
 
-test('login: POST /api/login before a soul root is chosen -> 409', async () => {
-  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state9.json') });
+// 최종 검토 C3: ⑦ 온라인 묶음과 「IRIS 열기」도 같은 가드 뒤에 있다.
+// 둘 다 영혼 폴더에 쓴다(claude.exe·설정·영수증·실행기) — 위치 확인을 건너뛴
+// 채로는 한 바이트도 쓰지 않는다.
+test('순서 가드: foreign 판정 뒤에는 online/start·login·relay·open-face 가 409 no_locate', async () => {
+  const soulRoot = path.join(tmp, 'foreign-guard-online');
+  fs.mkdirSync(soulRoot, { recursive: true });
+  fs.writeFileSync(path.join(soulRoot, '연말정산.pdf'), 'x', 'utf8');
+  const touched = [];
+  const s = await start({
+    soulRoot,
+    onlineRunner: {
+      checkNet: async () => { touched.push('checkNet'); return { ok: true, blocked: [] }; },
+      installClaude: async () => { touched.push('installClaude'); return { ok: true }; },
+      installDocumentSkills: async () => { touched.push('installDocumentSkills'); return { ok: true, state: 'done' }; },
+      startLogin: async () => { touched.push('startLogin'); return { ok: true, state: 'waiting' }; },
+      loginStatus: async () => ({ state: 'waiting' }),
+      startRelay: async () => { touched.push('startRelay'); return { ok: true, state: 'done', accounts: 1 }; },
+    },
+    openFaceFn: async () => { touched.push('openFace'); return { ok: true, pid: 1 }; },
+  });
   try {
-    const res = await fetch(`${url}/api/login`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'claude' }),
-    });
-    assert.equal(res.status, 409);
-    assert.deepEqual(await res.json(), { ok: false, reason: 'no_soul' });
-  } finally {
-    await close();
-  }
-});
+    await post(s.url, '/api/precheck');
+    assert.equal((await (await post(s.url, '/api/locate')).json()).mode, 'foreign');
 
-test('GET / serves the Task 14 wizard from installer/ui; no-store on every response', async () => {
-  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state3.json') });
-  try {
-    const root = await fetch(`${url}/`);
-    assert.equal(root.status, 200);
-    assert.match(root.headers.get('content-type') ?? '', /text\/html/);
-    assert.ok((await root.text()).includes('IRIS'));
-    assert.equal(root.headers.get('cache-control'), 'no-store');
-
-    const health = await fetch(`${url}/api/health`);
-    assert.equal(health.headers.get('cache-control'), 'no-store');
-  } finally {
-    await close();
-  }
-});
-
-// fix round 1, finding 3(a): the static handler must not let any of these
-// escape installer/ui/ to serve a real file one level up (installer/
-// bootstrap.ps1). "../" and a raw, unescaped "\" both get neutralized
-// earlier by the WHATWG URL parser itself (it collapses dot-segments and,
-// for a special scheme like http, treats "\" as a path separator too), so
-// they are expected to 404 harmlessly; "%2e%2e/" and the encoded backslash
-// "%5c" survive URL parsing untouched and must be caught by serveStatic's
-// own prefix check (403). Either safe outcome is acceptable here -- what
-// must never happen is 200 with bootstrap.ps1's actual content.
-test('static handler blocks path traversal: ../, %2e%2e/, %5c, and raw backslash all miss bootstrap.ps1', async () => {
-  const { port, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state4.json') });
-  try {
-    const payloads = [
-      '/../bootstrap.ps1',
-      '/%2e%2e/bootstrap.ps1',
-      '/..%5cbootstrap.ps1',
-      '/..\\bootstrap.ps1',
+    const calls = [
+      ['/api/online/start', {}],
+      ['/api/online/login', { provider: 'claude' }],
+      ['/api/online/login/retry', { provider: 'claude' }],
+      ['/api/online/relay', {}],
+      ['/api/open-face', {}],
     ];
-    for (const rawPath of payloads) {
-      const { status, body } = await rawRequest(port, rawPath);
-      assert.ok(status === 403 || status === 404, `expected 403 or 404 for ${JSON.stringify(rawPath)}, got ${status}`);
-      assert.ok(!body.includes('Mandatory'), `response for ${JSON.stringify(rawPath)} leaked bootstrap.ps1 content: ${body}`);
+    for (const [p, body] of calls) {
+      const r = await post(s.url, p, body);
+      assert.equal(r.status, 409, p);
+      assert.equal((await r.json()).reason, 'no_locate', p);
     }
+    assert.deepEqual(touched, [], '거절된 폴더에 대고 온라인 묶음이 한 번도 돌면 안 된다');
+    assert.deepEqual(fs.readdirSync(soulRoot), ['연말정산.pdf'], '남의 폴더는 그대로여야 한다');
   } finally {
-    await close();
+    await s.close();
   }
 });
 
-// fix round 1, finding 3(b): a body just over BODY_LIMIT (1 MiB, matching
-// installer/server.mjs) must get the coded 413 JSON response -- not a
-// connection reset (that was finding 1) -- and the server must keep serving
-// other requests afterward; a body just under the limit must go through
-// normally.
-test('body-size boundary: over BODY_LIMIT -> 413 JSON and server keeps serving; under BODY_LIMIT -> accepted', async () => {
-  // A name no machine has at C:\ -- detectExisting() reads the real drive,
-  // and the developer PC may well have a rehearsal C:\NOVA lying around.
-  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: path.join(tmp, 'state5.json'), soulName: 'NOVA7-BODY-TEST' });
+// 고치기 1회차 ③: 1.x 영수증은 덮어쓰기 전에 옆에 사본을 남긴다 (S09).
+test('summary/confirm: 1.x 영수증은 package-receipt.v1.json 으로 보존한 뒤 v2 로 바꾼다', async () => {
+  const soulRoot = path.join(tmp, 'legacy-soul');
+  const legacy = {
+    schema: 1,
+    package: { name: 'IRIS', version: '1.4.5', guideVersion: '14' },
+    soul: { name: 'IRIS', createdBy: 'package-installer' },
+    installed: { face: { version: '2.65.0', verified: true } },
+    login: { claude: { cli: true, relay: true } },
+    steps: { copy: 'done', login: 'done', handoff: 'done' },
+  };
+  fs.mkdirSync(path.join(soulRoot, '_agent', 'setup'), { recursive: true });
+  fs.writeFileSync(path.join(soulRoot, '_agent', 'setup', 'package-receipt.json'), JSON.stringify(legacy), 'utf8');
+  const backupPath = path.join(soulRoot, '_agent', 'setup', 'package-receipt.v1.json');
+
+  const s = await start({ soulRoot });
   try {
-    const BODY_LIMIT = 1024 * 1024; // must track installer/server.mjs's BODY_LIMIT
+    await post(s.url, '/api/precheck');
+    const loc = await (await post(s.url, '/api/locate')).json();
+    assert.equal(loc.mode, 'iris-legacy', '1.x 영수증이 있는 폴더는 이어 설치 대상');
+    await post(s.url, '/api/choice', { subscriptions: ['claude'] });
+    await post(s.url, '/api/structure', { nodes: TREE });
+    assert.deepEqual(await (await post(s.url, '/api/summary/confirm')).json(), { ok: true });
 
-    const over = await fetch(`${url}/api/precheck`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: 'a'.repeat(BODY_LIMIT + 1024),
-    });
-    assert.equal(over.status, 413);
-    assert.deepEqual(await over.json(), { ok: false, reason: 'bad_request' });
-
-    // The server (and this connection's listener) must still be alive.
-    const health = await fetch(`${url}/api/health`);
-    assert.equal(health.status, 200);
-
-    const under = await fetch(`${url}/api/name`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'NOVA', pad: 'a'.repeat(BODY_LIMIT - 1000) }),
-    });
-    assert.equal(under.status, 200);
-    assert.deepEqual(await under.json(), { ok: true, name: 'NOVA7-BODY-TEST', path: 'C:\\NOVA7-BODY-TEST', existing: 'none' });
+    // 사본이 원본 그대로 남았다
+    assert.ok(fs.existsSync(backupPath), '1.x 영수증 사본이 없다');
+    assert.deepEqual(JSON.parse(fs.readFileSync(backupPath, 'utf8')), legacy);
+    assert.ok(!fs.existsSync(`${backupPath}.tmp`), '원자 저장이라 .tmp 가 남으면 안 된다');
+    // 자리의 영수증은 v2 로 바뀌었다
+    assert.equal(readReceipt(soulRoot).schema, 2);
   } finally {
-    await close();
+    await s.close();
+  }
+
+  // 두 번째 실행이 (이미 v2 가 된) 영수증으로 사본을 덮어쓰지 않는다
+  const s2 = await start({ soulRoot });
+  try {
+    await post(s2.url, '/api/precheck');
+    await post(s2.url, '/api/locate');
+    await post(s2.url, '/api/choice', { subscriptions: ['claude'] });
+    await post(s2.url, '/api/structure', { nodes: TREE });
+    await post(s2.url, '/api/summary/confirm');
+    assert.deepEqual(JSON.parse(fs.readFileSync(backupPath, 'utf8')), legacy, '사본은 첫 번째 것이 그대로여야 한다');
+  } finally {
+    await s2.close();
   }
 });
 
-// Task 12 wiring: POST /api/install answers 202 immediately and runs the copy
-// in the background; GET /api/install/events streams one SSE frame per
-// progress event with the {part, pct, done, error} shape the screen consumes,
-// and replays what a late/refreshed client missed. installFn is injected so
-// this test never writes anything under C:\.
-test('install: 202 + SSE progress frames, replayed for a late subscriber, step -> login', async () => {
-  const zr = path.join(tmp, 'zip-install');
-  fs.mkdirSync(path.join(zr, 'payload'), { recursive: true });
-  fs.writeFileSync(
-    path.join(zr, 'payload', 'manifest.json'),
-    JSON.stringify({ schema: 1, package: { name: 'IRIS', version: '1.0.0' }, parts: {} }),
-    'utf8',
-  );
+test('precheck: 막는 항목이 하나라도 있으면 canProceed=false 이고 단계가 넘어가지 않는다', async () => {
+  const s = await start({ precheckFn: async () => BLOCKED_PRECHECK });
+  try {
+    const body = await (await post(s.url, '/api/precheck')).json();
+    assert.equal(body.ok, true);
+    assert.equal(body.canProceed, false);
+    assert.equal(body.result.blockers.length, 1);
+    assert.equal((await getJson(s.url, '/api/state')).step, 'precheck');
+  } finally {
+    await s.close();
+  }
+});
 
+test('locate: 남의 자료가 있으면 ok:false 로 막고 단계를 넘기지 않는다', async () => {
+  const soulRoot = path.join(tmp, 'foreign-soul');
+  fs.mkdirSync(soulRoot, { recursive: true });
+  fs.writeFileSync(path.join(soulRoot, '세금계산서.xlsx'), 'x', 'utf8');
+  const s = await start({ soulRoot });
+  try {
+    await post(s.url, '/api/precheck');
+    const loc = await (await post(s.url, '/api/locate')).json();
+    assert.equal(loc.ok, false);
+    assert.equal(loc.mode, 'foreign');
+    assert.match(loc.message, /IRIS가 아닌 자료/);
+    assert.equal((await getJson(s.url, '/api/state')).step, 'locate');
+  } finally {
+    await s.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ⑤ setup 진행 · 실패 · 재시도 · 미구현
+// ---------------------------------------------------------------------------
+async function atSetupStep(opts = {}) {
+  const s = await start(opts);
+  await answerQuestions(s.url);
+  await post(s.url, '/api/structure', { nodes: TREE });
+  await post(s.url, '/api/summary/confirm');
+  return s;
+}
+
+test('setup: 하위 진행(부품별)이 폴링으로 보이고, 이미 돌고 있으면 202 {running:true}', async () => {
   let release;
   const gate = new Promise((r) => { release = r; });
-  const seen = [];
-  // Fix round 1 finding 2: these deliberately mirror the *real* shape
-  // install.mjs emits -- a part's completion carries pct = floor((i+1)/total
-  // *100), which is 9 for the first of eleven parts, NOT 100. The old
-  // pct === 100 heuristic therefore left ten of eleven parts stuck on
-  // 'running' in state.install.parts; only `status` gets it right.
-  const installFn = async ({ root, onProgress }) => {
-    seen.push(root);
-    onProgress({ part: 'node', pct: 0, status: 'running' });
-    onProgress({ part: 'node', pct: 9, status: 'done' });
-    await gate;
-    onProgress({ part: 'python', pct: 18, skipped: true });
-    onProgress({ pct: 100, done: true });
-    return { steps: { copy: 'done' } };
-  };
-
-  const { url, close } = await startServer({
-    port: 0, zipRoot: zr, nodeDir, stateFile: path.join(tmp, 'state-install.json'), installFn,
-    soulName: 'NOVA-SSE-TEST',
+  const s = await atSetupStep({
+    setupRunner: {
+      async runSetup(ctx, { onStage }) {
+        onStage({ id: 'unpack', status: 'running' });
+        onStage({ id: 'unpack', sub: { part: 'node', done: 3, total: 11 } });
+        await gate;
+        for (const id of SETUP_STAGE_IDS) onStage({ id, status: 'done' });
+        return { ok: true, pending: [] };
+      },
+    },
   });
   try {
-    await fetch(`${url}/api/name`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    await fetch(`${url}/api/choice`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subscriptions: ['claude'] }),
-    });
+    await post(s.url, '/api/setup/start');
+    const mid = await waitForProgress(s.url, (b) => b.stages[0].sub, 'unpack sub progress');
+    assert.equal(mid.stage, 'unpack');
+    assert.deepEqual(mid.stages[0].sub, { part: 'node', done: 3, total: 11 });
+    assert.equal(mid.percent, 0, '한 단계도 끝나지 않았으면 0%');
+    assert.equal(mid.running, true);
 
-    const started = await fetch(`${url}/api/install`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-    assert.equal(started.status, 202);
-    assert.deepEqual(await started.json(), { ok: true });
-    assert.deepEqual(seen, [String.raw`C:\NOVA-SSE-TEST`]);
+    const again = await post(s.url, '/api/setup/start');
+    assert.equal(again.status, 202);
+    assert.deepEqual(await again.json(), { ok: true, running: true });
 
-    // Subscribe *after* the first two events -> they must be replayed.
-    const ctrl = new AbortController();
-    const stream = await fetch(`${url}/api/install/events`, { signal: ctrl.signal });
-    assert.equal(stream.status, 200);
-    assert.match(stream.headers.get('content-type'), /text\/event-stream/);
-
-    const reader = stream.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    const frames = [];
-    const pump = (async () => {
-      while (frames.length < 4) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let i;
-        while ((i = buf.indexOf('\n\n')) !== -1) {
-          const raw = buf.slice(0, i).replace(/^data: /, '');
-          buf = buf.slice(i + 2);
-          if (raw.trim()) frames.push(JSON.parse(raw));
-        }
-        if (frames.length === 2) release();
-      }
-    })();
-    await pump;
-
-    assert.deepEqual(frames[0], { part: 'node', pct: 0, done: false, error: null, status: 'running' });
-    assert.deepEqual(frames[1], { part: 'node', pct: 9, done: false, error: null, status: 'done' });
-    assert.deepEqual(frames[2], { part: 'python', pct: 18, done: false, error: null, skipped: true });
-    assert.equal(frames[3].done, true);
-    assert.equal(frames[3].error, null);
-    ctrl.abort();
-
-    // Give the background promise chain a tick to flip the step.
-    for (let i = 0; i < 50; i++) {
-      const s = await (await fetch(`${url}/api/state`)).json();
-      if (s.step === 'login') {
-        // 'done' despite pct being 9, not 100 -- the whole point of the fix.
-        assert.equal(s.install.parts.node, 'done');
-        assert.equal(s.install.parts.python, 'skipped');
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    assert.fail('state.step never became "login"');
+    release();
+    const done = await waitForProgress(s.url, (b) => b.percent === 100, '100%');
+    assert.equal(done.running, false);
   } finally {
-    await close();
+    await s.close();
+  }
+});
+
+test('setup: 실패는 그 단계에 코드로 남고 「다시 시도」가 다시 돌린다', async () => {
+  let attempt = 0;
+  const s = await atSetupStep({
+    setupRunner: {
+      async runSetup(ctx, { onStage }) {
+        attempt += 1;
+        if (attempt === 1) {
+          onStage({ id: 'unpack', status: 'done' });
+          onStage({ id: 'env', status: 'running' });
+          return { ok: false, failed: { id: 'env', code: 'E-ENV', message: '환경변수를 쓰지 못했습니다.' }, pending: [] };
+        }
+        for (const id of SETUP_STAGE_IDS) onStage({ id, status: 'done' });
+        return { ok: true, pending: [] };
+      },
+    },
+  });
+  try {
+    await post(s.url, '/api/setup/start');
+    const failed = await waitForProgress(s.url, (b) => b.error, 'a failure');
+    assert.equal(failed.error.id, 'env');
+    assert.equal(failed.error.code, 'E-ENV');
+    assert.equal(failed.error.message, '환경변수를 쓰지 못했습니다.');
+    assert.equal(failed.stages.find((x) => x.id === 'env').status, 'failed');
+    assert.equal(failed.stages.find((x) => x.id === 'unpack').status, 'done', '만든 것은 지우지 않는다');
+    assert.equal(failed.percent, Math.floor((1 / 9) * 100));
+    assert.equal((await getJson(s.url, '/api/state')).step, 'setup', '실패해도 setup 카드에 머문다');
+
+    const retry = await post(s.url, '/api/setup/retry');
+    assert.equal(retry.status, 202);
+    await waitForProgress(s.url, (b) => b.percent === 100, '100% after retry');
+    assert.equal(attempt, 2);
+    assert.equal((await getJson(s.url, '/api/state')).step, 'online');
+  } finally {
+    await s.close();
+  }
+});
+
+test('setup: 엔진 모듈이 아직 없으면 E-NOT-IMPLEMENTED (서버는 그래도 뜬다)', async () => {
+  const s = await atSetupStep({
+    setupRunner: createSetupRunner({ importer: () => import('../installer/setup/does-not-exist.mjs') }),
+  });
+  try {
+    await post(s.url, '/api/setup/start');
+    const body = await waitForProgress(s.url, (b) => b.error, 'not-implemented');
+    assert.equal(body.error.code, 'E-NOT-IMPLEMENTED');
+    assert.match(body.error.message, /세팅 엔진/);
+    assert.equal((await getJson(s.url, '/api/state')).step, 'setup');
+  } finally {
+    await s.close();
+  }
+});
+
+// 고치기 1회차 ②: 정규화가 엔진 출력을 이겨야 한다(반대가 아니라).
+test('setup-runner 어댑터: 엔진이 빠뜨리거나 이상하게 돌려줘도 ok·failed·pending 은 늘 성한 모양', async () => {
+  const runFake = (value) => createSetupRunner({ importer: async () => ({ runSetup: async () => value }) })
+    .runSetup({}, {});
+
+  // 세 칸을 아예 안 준 엔진
+  assert.deepEqual(await runFake({ somethingElse: 1 }), { somethingElse: 1, ok: false, failed: null, pending: [] });
+  // ok 를 문자열로 준 엔진 -- true 로 새어 나가면 서버가 실패를 성공으로 읽는다
+  assert.equal((await runFake({ ok: 'yes' })).ok, false);
+  // pending 이 배열이 아닌 엔진 -- 화면이 그대로 순회하다 깨진다
+  assert.deepEqual((await runFake({ ok: true, pending: 'nope' })).pending, []);
+  // 성한 출력은 그대로 통과
+  const good = await runFake({ ok: true, pending: [{ capability: 'x', reason: 'y' }], extra: 7 });
+  assert.deepEqual(good, { ok: true, failed: null, pending: [{ capability: 'x', reason: 'y' }], extra: 7 });
+  // 아무것도 안 돌려준 엔진
+  assert.deepEqual(await runFake(undefined), { ok: false, failed: null, pending: [] });
+});
+
+test('setup: 소울 없이 시작하면 409', async () => {
+  const s = await start({ soulName: 'CON', soulRoot: null });
+  try {
+    const r = await post(s.url, '/api/setup/start');
+    assert.equal(r.status, 409);
+    assert.equal((await r.json()).reason, 'no_soul');
+  } finally {
+    await s.close();
   }
 });
 
 // ---------------------------------------------------------------------------
-// I3 (2026-09-12 final review): local-origin / CSRF guard.
+// ⑥ online: 막힌 주소
 // ---------------------------------------------------------------------------
-// The server binds 127.0.0.1, but any page open in the same browser can still
-// POST to it. Two gates: a foreign Origin is refused outright, and every /api
-// POST must be application/json (which a plain cross-site <form> cannot send
-// without a preflight the Origin gate then refuses).
-test('/api guard: foreign Origin is 403 bad_origin, own origin and no Origin pass', async () => {
-  const stateFileO = path.join(tmp, 'state-origin.json');
-  const { url, port, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFileO });
+test('online: 막힌 주소를 이름으로 알리고 그 자리에 멈춘다', async () => {
+  const s = await start({
+    onlineRunner: {
+      ...okOnline(),
+      checkNet: async () => ({ ok: false, blocked: ['claude.ai', 'registry.npmjs.org'] }),
+      installClaude: async () => { throw new Error('내려받기를 시작하면 안 된다'); },
+    },
+  });
   try {
-    const evil = await fetch(`${url}/api/health`, { headers: { Origin: 'http://evil.example' } });
+    await answerQuestions(s.url);
+    await post(s.url, '/api/online/start');
+    const st = await waitForOnline(s.url, (b) => b.net, 'a net verdict');
+    assert.equal(st.net.ok, false);
+    assert.deepEqual(st.net.blocked, ['claude.ai', 'registry.npmjs.org']);
+    assert.equal(st.stage, 'net');
+    assert.notEqual((await getJson(s.url, '/api/state')).step, 'done');
+  } finally {
+    await s.close();
+  }
+});
+
+test('online: 알 수 없는 구독은 거절, 소울 없이 중계기 시작은 409', async () => {
+  const s = await start();
+  try {
+    await answerQuestions(s.url);
+    const bad = await (await post(s.url, '/api/online/login', { provider: 'bogus' })).json();
+    assert.equal(bad.ok, false);
+    assert.equal(bad.reason, 'bad_provider');
+  } finally {
+    await s.close();
+  }
+  const noSoul = await start({ soulName: 'CON', soulRoot: null });
+  try {
+    assert.equal((await post(noSoul.url, '/api/online/relay')).status, 409);
+  } finally {
+    await noSoul.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ⑦ 옛 라우트 · 정적 파일 · 가드
+// ---------------------------------------------------------------------------
+test('v1 라우트(/api/name·/api/install·/api/login·/api/handoff)는 410 으로 사라졌다', async () => {
+  const s = await start();
+  try {
+    for (const p of ['/api/name', '/api/install', '/api/login', '/api/handoff']) {
+      const r = await post(s.url, p);
+      assert.equal(r.status, 410, `${p} should be gone`);
+      assert.equal((await r.json()).reason, 'gone');
+    }
+    assert.equal((await fetch(`${s.url}/api/login/status`)).status, 410);
+  } finally {
+    await s.close();
+  }
+});
+
+test('정적 파일은 세 개뿐: /, /structure.mjs, /presets.json — 그 밖은 404', async () => {
+  const s = await start();
+  try {
+    const root = await fetch(`${s.url}/`);
+    assert.equal(root.status, 200);
+    assert.match(root.headers.get('content-type') ?? '', /text\/html/);
+    assert.equal(root.headers.get('cache-control'), 'no-store');
+    assert.ok((await root.text()).includes('IRIS'));
+
+    const mod = await fetch(`${s.url}/structure.mjs`);
+    assert.equal(mod.status, 200);
+    assert.match(mod.headers.get('content-type') ?? '', /javascript/);
+    assert.ok((await mod.text()).includes('validateNodes'));
+
+    const presets = await fetch(`${s.url}/presets.json`);
+    assert.equal(presets.status, 200);
+    const presetBody = await presets.json();
+    assert.equal(presetBody.schema, 1);
+    assert.ok(Array.isArray(presetBody.presets) && presetBody.presets.length > 0);
+
+    // GET /api/presets 는 같은 파일을 준다
+    assert.deepEqual(await getJson(s.url, '/api/presets'), presetBody);
+
+    for (const miss of ['/style.css', '/nope.html', '/ui/index.html', '/bootstrap.ps1']) {
+      const r = await fetch(`${s.url}${miss}`);
+      assert.equal(r.status, 404, miss);
+      assert.deepEqual(await r.json(), { ok: false, reason: 'not_found' });
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test('정적 처리기는 경로 탈출을 막는다: ../, %2e%2e/, %5c, raw backslash 어느 것도 bootstrap.ps1 을 내주지 않는다', async () => {
+  const s = await start();
+  try {
+    for (const rawPath of ['/../bootstrap.ps1', '/%2e%2e/bootstrap.ps1', '/..%5cbootstrap.ps1', '/..\\bootstrap.ps1']) {
+      const { status, body } = await rawRequest(s.port, rawPath);
+      assert.ok(status === 403 || status === 404, `expected 403/404 for ${rawPath}, got ${status}`);
+      assert.ok(!body.includes('Mandatory'), `${rawPath} leaked bootstrap.ps1`);
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test('/api guard: 남의 Origin 은 403, 제 것과 Origin 없음은 통과; JSON 아닌 POST 는 415', async () => {
+  const s = await start();
+  try {
+    const evil = await fetch(`${s.url}/api/health`, { headers: { Origin: 'http://evil.example' } });
     assert.equal(evil.status, 403);
     assert.deepEqual(await evil.json(), { ok: false, reason: 'bad_origin' });
 
-    const evilPost = await fetch(`${url}/api/name`, {
-      method: 'POST',
-      headers: { Origin: 'http://evil.example', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'NOVA' }),
+    const evilPost = await fetch(`${s.url}/api/locate`, {
+      method: 'POST', headers: { Origin: 'http://evil.example', ...JSON_HDR }, body: '{}',
     });
     assert.equal(evilPost.status, 403);
-    assert.deepEqual(await evilPost.json(), { ok: false, reason: 'bad_origin' });
 
-    // An unknown /api path is guarded too (no hole for future routes).
-    const evilUnknown = await fetch(`${url}/api/nope`, { headers: { Origin: 'http://evil.example' } });
-    assert.equal(evilUnknown.status, 403);
+    // 모르는 /api 경로도 가드를 지난다 (앞으로 생길 라우트에 구멍을 남기지 않는다)
+    assert.equal((await fetch(`${s.url}/api/nope`, { headers: { Origin: 'http://evil.example' } })).status, 403);
 
-    for (const origin of [`http://127.0.0.1:${port}`, `http://localhost:${port}`]) {
-      const ok = await fetch(`${url}/api/health`, { headers: { Origin: origin } });
-      assert.equal(ok.status, 200, `origin ${origin} should be allowed`);
-      assert.equal((await ok.json()).name, 'iris-installer');
+    for (const origin of [`http://127.0.0.1:${s.port}`, `http://localhost:${s.port}`]) {
+      assert.equal((await fetch(`${s.url}/api/health`, { headers: { Origin: origin } })).status, 200, origin);
     }
+    assert.equal((await fetch(`${s.url}/api/health`)).status, 200, 'Origin 없음은 통과');
 
-    // No Origin at all (bootstrap.ps1's probe, verify/static.mjs's ⑨ smoke,
-    // same-origin GET/EventSource) stays allowed.
-    const bare = await fetch(`${url}/api/health`);
-    assert.equal(bare.status, 200);
-
-    // Static files are not /api and keep working with any Origin.
-    const staticRes = await fetch(`${url}/nope.html`, { headers: { Origin: 'http://evil.example' } });
-    assert.equal(staticRes.status, 404);
-    assert.deepEqual(await staticRes.json(), { ok: false, reason: 'not_found' });
-  } finally {
-    await close();
-  }
-});
-
-test('/api guard: a POST that is not application/json is 415', async () => {
-  const stateFileC = path.join(tmp, 'state-ctype.json');
-  // soulName '' -> the fixed-name route answers reason:'empty' without touching
-  // any real folder, which is all this content-type test needs from it.
-  const { url, close } = await startServer({ port: 0, zipRoot, nodeDir, stateFile: stateFileC, soulName: '' });
-  try {
-    const form = await fetch(`${url}/api/name`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'name=NOVA',
+    const form = await fetch(`${s.url}/api/locate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'x=1',
     });
     assert.equal(form.status, 415);
     assert.deepEqual(await form.json(), { ok: false, reason: 'unsupported_media_type' });
 
-    const none = await fetch(`${url}/api/quit`, { method: 'POST' });
-    assert.equal(none.status, 415);
-
-    // charset suffix is fine -- the UI's fetch sends bare application/json,
-    // but a proxy or a future client may append one.
-    const withCharset = await fetch(`${url}/api/name`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({ name: '' }),
+    const charset = await fetch(`${s.url}/api/locate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8' }, body: '{}',
     });
-    assert.equal(withCharset.status, 200);
-    assert.deepEqual(await withCharset.json(), { ok: false, reason: 'empty', name: '' });
+    assert.equal(charset.status, 200);
   } finally {
-    await close();
+    await s.close();
   }
 });
 
-// The screen must actually speak the protocol the guard now enforces.
-test('installer UI sends Content-Type: application/json on every POST it makes', () => {
-  const uiPath = path.resolve(fileURLToPath(new URL('..', import.meta.url)), 'installer', 'ui', 'index.html');
-  const html = fs.readFileSync(uiPath, 'utf8');
-  const posts = html.match(/method:\s*'POST'/g) ?? [];
-  assert.ok(posts.length > 0, 'no POST found in the UI at all -- did the api() helper change?');
-  const jsonHeaders = html.match(/'Content-Type':\s*'application\/json'/g) ?? [];
-  assert.equal(
-    jsonHeaders.length, posts.length,
-    'every POST in installer/ui/index.html must carry a JSON Content-Type header',
-  );
+test('본문 크기 경계: BODY_LIMIT 초과는 413 JSON 이고 서버는 계속 응답한다', async () => {
+  const s = await start();
+  try {
+    const BODY_LIMIT = 1024 * 1024; // installer/server.mjs 의 BODY_LIMIT 과 같아야 한다
+    const over = await fetch(`${s.url}/api/precheck`, {
+      method: 'POST', headers: JSON_HDR, body: 'a'.repeat(BODY_LIMIT + 1024),
+    });
+    assert.equal(over.status, 413);
+    assert.deepEqual(await over.json(), { ok: false, reason: 'bad_request' });
+    assert.equal((await fetch(`${s.url}/api/health`)).status, 200);
+
+    const under = await fetch(`${s.url}/api/choice`, {
+      method: 'POST', headers: JSON_HDR, body: JSON.stringify({ subscriptions: ['claude'], pad: 'a'.repeat(BODY_LIMIT - 1000) }),
+    });
+    assert.equal(under.status, 200);
+    assert.deepEqual(await under.json(), { ok: true, leadAgent: 'claude' });
+  } finally {
+    await s.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ⑧ 로그 · state 모양 · 중계기 이름 금지
+// ---------------------------------------------------------------------------
+test('POST /api/log/path 는 로그 파일 경로를 준다 (영혼이 정해지면 그 안 사본도)', async () => {
+  const s = await start();
+  try {
+    await answerQuestions(s.url);
+    const body = await (await post(s.url, '/api/log/path')).json();
+    assert.equal(body.ok, true);
+    assert.ok(body.path.endsWith(path.join('server.log')));
+    assert.ok(fs.existsSync(body.path), '서버는 시작하면서 이미 한 줄을 남긴다');
+    assert.equal(body.soulPath, path.join(s.soulRoot, '_agent', 'setup', 'installer.log'));
+    assert.ok(fs.existsSync(body.soulPath), '영혼이 정해진 뒤의 로그는 그 안에도 남는다');
+  } finally {
+    await s.close();
+  }
+});
+
+test('GET /api/state 는 계약이 약속한 칸을 전부 들고 있다', async () => {
+  const s = await start();
+  try {
+    const st = await getJson(s.url, '/api/state');
+    for (const key of ['ok', 'name', 'version', 'step', 'packageVersion', 'precheck', 'soul', 'choice', 'decisions', 'setup', 'online', 'report']) {
+      assert.ok(key in st, `state.${key} 가 없다`);
+    }
+    assert.equal(st.name, 'iris-installer');
+    assert.equal(st.packageVersion, '2.0.0');
+    assert.deepEqual(st.setup.stages.map((x) => x.id), SETUP_STAGE_IDS);
+    assert.deepEqual(Object.keys(st.online).sort(), ['claude', 'documentSkills', 'logins', 'net', 'relay', 'stage']);
+    assert.equal(st.soul.mode, 'empty');
+    assert.equal(st.soul.root, s.soulRoot);
+  } finally {
+    await s.close();
+  }
+});
+
+// 설계-v2 7절: 화면 문구에 중계기의 제품 이름을 쓰지 않는다. 서버가 message 로
+// 내보내는 한국어 문장은 화면에 그대로 나가므로 여기서 지킨다.
+test('사용자에게 나가는 message 어디에도 중계기 제품 이름이 없다', async () => {
+  const s = await start({
+    setupRunner: { runSetup: async () => ({ ok: false, failed: { id: 'relay', code: 'E-RELAY', message: '중계기 준비에 실패했습니다.' }, pending: [] }) },
+    onlineRunner: {
+      checkNet: async () => ({ ok: false, blocked: ['claude.ai'] }),
+      installClaude: async () => ({ ok: false, code: 'E-CLAUDE' }),
+      installDocumentSkills: async () => ({ ok: false, state: 'pending', code: 'E-ONLINE-DOCSKILLS' }),
+      startLogin: async () => ({ ok: false, reason: 'page-blocked', message: '로그인 페이지가 열리지 않습니다.' }),
+      loginStatus: async () => ({ state: 'failed', reason: 'page-blocked' }),
+      startRelay: async () => ({ ok: false, code: 'E-RELAY', message: '중계기가 응답하지 않습니다.' }),
+    },
+  });
+  const seen = [];
+  try {
+    const collect = async (p, body, method = 'POST') => {
+      const r = method === 'POST' ? await post(s.url, p, body) : await fetch(`${s.url}${p}`);
+      seen.push(JSON.stringify(await r.json().catch(() => ({}))));
+    };
+    await collect('/api/precheck');
+    await collect('/api/locate');
+    await collect('/api/choice', { subscriptions: [] });
+    await collect('/api/choice', { subscriptions: ['claude'] });
+    await collect('/api/structure', { nodes: [] });
+    await collect('/api/structure', { nodes: TREE });
+    await collect('/api/summary/confirm');
+    await collect('/api/setup/start');
+    await waitForProgress(s.url, (b) => b.error, 'the injected relay failure');
+    await collect('/api/setup/progress', null, 'GET');
+    await collect('/api/online/start');
+    await collect('/api/online/login', { provider: 'claude' });
+    await collect('/api/online/relay');
+    await collect('/api/online/status', null, 'GET');
+    await collect('/api/state', null, 'GET');
+
+    const all = seen.join('\n');
+    assert.ok(!/teamclaude/i.test(all), `응답에 중계기 제품 이름이 들어 있다:\n${all}`);
+  } finally {
+    await s.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ⑩ 중계기 성공 → 인수 문서 갱신 (T18 `setup/handoff.mjs refreshHandoffAfterOnline`)
+// ---------------------------------------------------------------------------
+//
+// ⑨ 검사는 로그인 **전에** handoff.json 을 쓰므로 그때는 `login-pending` 이다.
+// 로그인·중계기가 끝나는 이 순간이 `ready` 로 바뀌는 유일한 자리다 —
+// 서버가 그때 갱신을 부르지 않으면 Face 는 다 끝난 영혼을 열고도 첫 인사 대신
+// 「설치 이어하기」 카드를 보여 준다.
+test('중계기가 끝나면 handoff.json 이 ready 로 바뀐다 (Face 가 쓴 칸은 그대로)', async () => {
+  const s = await start();
+  const { url, soulRoot } = s;
+  try {
+    await answerQuestions(url, ['claude']);
+    await post(url, '/api/structure', { nodes: TREE });
+    await post(url, '/api/summary/confirm');
+    await post(url, '/api/setup/start');
+    await waitForProgress(url, (b) => b.percent === 100, 'setup 100%');
+
+    // 진짜 엔진이 남겼을 두 가지를 손으로 놓는다: 아홉 단계 done 영수증과,
+    // ⑨ 검사가 로그인 전에 써 둔 인수 문서.
+    const receipt = readReceipt(soulRoot);
+    for (const id of SETUP_STAGE_IDS) {
+      receipt.setup[id] = { status: 'done', startedAt: '2026-09-15T00:00:00.000Z', finishedAt: '2026-09-15T00:01:00.000Z', recorded: {}, pending: [] };
+    }
+    writeReceipt(soulRoot, receipt);
+
+    const handoffFile = path.join(soulRoot, '_agent', 'setup', 'handoff.json');
+    fs.writeFileSync(handoffFile, JSON.stringify({
+      schema: 1,
+      packageVersion: '2.0.0',
+      state: 'login-pending',
+      subscriptions: ['claude'],
+      leadAgent: 'claude',
+      login: { claude: 'waiting', chatgpt: 'not-needed' },
+      relay: { state: 'pending', accounts: 0 },
+      setup: { allDone: true, failed: null },
+      folders: [], nameEnMissing: [], deferred: [], pendingCapabilities: [],
+      checks: { pass: 11, pending: 0, fail: 0 },
+      reportPath: '_agent/setup/설치보고-2026-09-15.md',
+      diagnosticsPath: '_agent/setup/diagnostics.json',
+      firstMessage: '세팅이 끝났다. …',
+      messenger: { installed: true, prompted: true },
+      resume: { installerPath: '_agent/setup/installer/IRIS-설치.cmd', args: ['--resume'] },
+      setupCompletedAt: null,
+    }, null, 2), 'utf8');
+
+    await post(url, '/api/online/start');
+    await waitForOnline(url, (b) => b.stage === 'login' || b.stage === 'relay', 'the login phase');
+    await post(url, '/api/online/login', { provider: 'claude' });
+    await waitForOnline(url, (b) => b.logins.claude?.state === 'done', 'claude login done');
+
+    const relay = await (await post(url, '/api/online/relay')).json();
+    assert.equal(relay.ok, true);
+
+    const handoff = JSON.parse(fs.readFileSync(handoffFile, 'utf8'));
+    assert.equal(handoff.state, 'ready', '로그인·중계기가 끝났으니 첫 인사를 해도 된다');
+    assert.equal(handoff.login.claude, 'done');
+    assert.equal(handoff.login.chatgpt, 'not-needed', '고르지 않은 구독은 기다릴 것이 없다');
+    assert.deepEqual(handoff.relay, { state: 'done', accounts: 1 });
+    assert.equal(handoff.setup.allDone, true);
+    assert.ok(handoff.setupCompletedAt, 'ready 가 된 시각이 찍힌다');
+    assert.equal(handoff.messenger.prompted, true, 'Face 가 쓴 칸은 서버가 건드리지 않는다');
+    assert.equal(handoff.reportPath, '_agent/setup/설치보고-2026-09-15.md', '나머지 칸은 그대로');
+  } finally {
+    await s.close();
+  }
+});
+
+test('인수 문서가 아직 없으면 중계기 성공이 그것을 지어내지 않는다', async () => {
+  const s = await start();
+  const { url, soulRoot } = s;
+  try {
+    await answerQuestions(url, ['claude']);
+    await post(url, '/api/structure', { nodes: TREE });
+    await post(url, '/api/summary/confirm');
+    await post(url, '/api/setup/start');
+    await waitForProgress(url, (b) => b.percent === 100, 'setup 100%');
+
+    await post(url, '/api/online/start');
+    await waitForOnline(url, (b) => b.stage === 'login' || b.stage === 'relay', 'the login phase');
+    const relay = await (await post(url, '/api/online/relay')).json();
+    assert.equal(relay.ok, true, '중계기는 그대로 성공한다');
+    assert.equal((await getJson(url, '/api/state')).step, 'done');
+    assert.equal(fs.existsSync(path.join(soulRoot, '_agent', 'setup', 'handoff.json')), false,
+      '검사 결과 없이 "다 됐다"고 적힌 문서를 만들어 내지 않는다');
+  } finally {
+    await s.close();
+  }
 });

@@ -31,6 +31,17 @@ async function runBuild(label) {
 
 function compareManifests(a, b) {
   const mismatches = [];
+  // 내용 지문 (Task 24a): the whole point of contentFingerprint is that two
+  // builds of unchanged sources produce the SAME value even though their zip
+  // sha256 differs (payload\manifest.json's `built`). If the two builds here
+  // disagree the fingerprint is not build-stable, and the release gate that
+  // rests on it would reject rows for no reason -- so this is a hard failure,
+  // not a note. A missing value is equally a failure: an old build/pack.mjs.
+  if (!a.contentFingerprint || !b.contentFingerprint) {
+    mismatches.push(`contentFingerprint: missing (a=${a.contentFingerprint ?? '(none)'} b=${b.contentFingerprint ?? '(none)'})`);
+  } else if (a.contentFingerprint !== b.contentFingerprint) {
+    mismatches.push(`contentFingerprint differs (a=${a.contentFingerprint} b=${b.contentFingerprint}) -- 내용 지문이 빌드마다 바뀐다`);
+  }
   const keysA = new Set(Object.keys(a.parts));
   const keysB = new Set(Object.keys(b.parts));
   const allKeys = new Set([...keysA, ...keysB]);
@@ -66,8 +77,8 @@ async function main() {
     const manifestB = await runBuild('b');
 
     console.log('');
-    console.log(`build a: built=${manifestA.built} package.version=${manifestA.package.version}`);
-    console.log(`build b: built=${manifestB.built} package.version=${manifestB.package.version}`);
+    console.log(`build a: built=${manifestA.built} package.version=${manifestA.package.version} 내용지문=${manifestA.contentFingerprint}`);
+    console.log(`build b: built=${manifestB.built} package.version=${manifestB.package.version} 내용지문=${manifestB.contentFingerprint}`);
 
     const mismatches = compareManifests(manifestA, manifestB);
     if (mismatches.length > 0) {
@@ -80,6 +91,7 @@ async function main() {
     }
 
     console.log(`\nall ${Object.keys(manifestA.parts).length} part sha256 values match (built timestamp differs, as expected)`);
+    console.log(`내용 지문도 같다: ${manifestA.contentFingerprint}`);
     console.log('reproduce verify: OK');
   } finally {
     cleanup();

@@ -1,24 +1,65 @@
 {
+  "$comment": [
+    "정화 기본 규칙(추적됨). 개인 문자열 원문은 여기 적지 않는다 -- build/sanitize-local.json(무시됨)이 그 자리다(build/rules.mjs).",
+    "면제는 세 가지뿐이고 전부 이유(why)를 단다: forbiddenRegex[].skipUnder(규칙 1개 x 경로) · allowFiles(그 파일의 내용 검사 전부).",
+    "skipUnder 항목은 글롭이다. '/'가 없으면 경로의 아무 마디에나 걸리는 마디 글롭(하위 트리 전체), '/'가 있으면 논리경로 전체를 맞추는 전경로 글롭이다.",
+    "zip 안은 '<zip 이름>!/<안쪽 경로>'로 표기된다(.hwpx 도 zip 으로 풀어 안쪽 XML 까지 본다)."
+  ],
   "forbiddenNames": ["**/.env", "**/secrets/**", "**/auth.json", "**/teamclaude.json", "**/*.token", "**/credentials*", "**/.git/**", "**/auth.bin", "**/keys.bin", "**/modules/*/state/**", "**/.stack", "**/.supa"],
   "forbiddenStrings": [],
   "forbiddenRegex": [
     {
-      "pattern": "iris:[a-z0-9]{8}",
-      "skipUnder": ["비서 에이전트 세팅가이드(*실행판)_v*_최신.md", "AGENTS.md"]
+      "pattern": "iris:(?!0000000[0-9])[a-z0-9]{8}",
+      "$comment": "온톨로지 노드 등록번호(소문자 영숫자 8자). 실제 그래프의 ID 는 그 PC 의 폴더 구조를 드러내므로 동봉하지 않는다. 문서용 자리표시자는 0 일곱 개 + 숫자 한 개(0000000N) 하나뿐이고, 그 모양만 통과시킨다 -- 진짜 ID 가 0 일곱 개로 시작할 확률은 36^8 분의 몇으로 사실상 0.",
+      "skipUnder": [
+        { "path": "비서 에이전트 세팅가이드(*실행판)_v*_최신.md", "why": "세팅가이드 본문이 등록번호 표기법을 예시로 설명한다(v1 부터의 면제)." },
+        { "path": "AGENTS.md", "why": "지침 파일이 머리말 규칙을 설명하며 예시 ID 를 든다(v1 부터의 면제)." },
+        { "path": "sanitize.test.mjs", "why": "이 규칙 자체를 시험하는 파일이라 '걸려야 하는 모양'의 가짜 ID 를 들고 있어야 한다(다른 두 규칙과 같은 면제)." },
+        { "path": "setup-ontology.test.mjs", "why": "온톨로지 단계의 '실행 전후 카드 id 보존/불일치 검사'를 시험하려고 이 규칙이 통과시키는 자리표시자 모양이 아닌, 걸려야 정상인 가짜 등록번호를 카드에 심고 다시 읽어 비교한다(T09)." }
+      ]
     },
     {
       "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[a-z]{2,}",
-      "skipUnder": ["node_modules/", "node-v*-win-x64.zip!", "MinGit-*-64-bit.zip!", "iris-messenger-v*.zip!", "rules.json", "sanitize.test.mjs"]
+      "$comment": "이메일 주소. 우리 파일에는 한 건도 없어야 한다. 아래 면제는 전부 '남이 쓴 공개 텍스트' -- 상류 저작자·행동강령·예시 주소이며, 지우면 오히려 저작자 표시를 훼손한다.",
+      "skipUnder": [
+        { "path": "node_modules/", "why": "의존성 package.json 의 상류 저작자 필드." },
+        { "path": "node-v*-win-x64.zip!", "why": "Node 배포본 안 상류 저작자·문서." },
+        { "path": "MinGit-*-64-bit.zip!", "why": "Git for Windows 배포본 안 상류 저작자·문서." },
+        { "path": "iris-messenger-v*.zip!", "why": "메신저 릴리스 묶음 안 의존성 메타데이터." },
+        { "path": "rules.json", "why": "TeamClaude 패치 규칙이 상류 원문 조각을 인용한다." },
+        { "path": "sanitize.test.mjs", "why": "이 규칙 자체를 시험하는 파일의 가짜 주소(example.com)." },
+        { "path": "**/tools/superpowers*/**", "why": "상류 플러그인(obra/superpowers, MIT)의 저작자 메타·행동강령·설계문서에 든 저작자 주소. 우리가 만든 텍스트가 아니다." },
+        { "path": "**/tools/frontend-design*/**", "why": "상류 플러그인(anthropics/claude-plugins-official, Apache-2.0)의 저작자 메타·README." },
+        { "path": "**/tools/insane-search*/**", "why": "상류 플러그인(fivetaku/insane-search, MIT)의 시험 자료 속 예시 주소." },
+        { "path": "**/tools/document-skills*/**", "why": "상류 스킬(anthropics/skills)의 저작자 메타. (현재는 설치 중 내려받기라 동봉되지 않지만 규칙은 미리 둔다.)" },
+        { "path": "**/tools/ui-ux-pro-max*/**", "why": "상류 npm 패키지의 저작자 메타." },
+        { "path": "**/tools/playwright-mcp*/**", "why": "상류 npm 패키지의 저작자 메타." }
+      ]
     },
     {
       "pattern": "C:[\\\\/]+IRIS[\\\\/]",
-      "skipUnder": ["lock.json", "sanitize.test.mjs"]
+      "$comment": "이 PC 의 작업 폴더 경로. 설치 대상 루트와 글자가 같아서, 제품 코드가 루트를 말해야 하는 자리만 콕 집어 면제한다.",
+      "skipUnder": [
+        { "path": "lock.json", "why": "잠금표의 dir/file 부품 source 가 이 PC 의 원본 위치를 가리킨다(빌드 입력, 설치 대상이 아니다)." },
+        { "path": "sanitize.test.mjs", "why": "이 규칙 자체를 시험하는 파일의 가짜 경로." },
+        { "path": "**/setup/ontology*/validate.py", "why": "온톨로지 검증기가 머리말의 절대경로를 상대경로로 줄일 때 쓰는 접두 두 개. 설치 폴더가 고정(설계 11절)이라 이 값은 이 PC 가 아니라 제품의 뿌리를 뜻하며, 상류 원본을 고치지 않는다는 원칙상 재작성하지 않는다." },
+        { "path": "setup-ontology.test.mjs", "why": "이 시험이 실제 온톨로지 단계를 사실적으로 검증하려고 이 개발 PC의 진짜 온톨로지 도구 폴더(REAL_IRIS 상수가 가리키는 곳)를 그대로 복사해 픽스처를 만든다 -- 가짜 경로로는 build_graph.py 의 실제 동작을 시험할 수 없다(T09)." }
+      ]
     },
     {
       "pattern": "C:[\\\\/]+Users[\\\\/]+[^\\\\/]+",
-      "skipUnder": ["node_modules/", "sanitize-local.example.json"]
+      "$comment": "사용자 프로필 경로(=윈도 계정 이름). 어떤 파일에도 동봉되면 안 된다.",
+      "skipUnder": [
+        { "path": "node_modules/", "why": "의존성이 빌드 PC 경로를 소스맵·메타에 남긴 것(실행에 무관)." },
+        { "path": "sanitize-local.example.json", "why": "각자 채워 넣을 자리표시자 예시 파일." },
+        { "path": "precheck.test.mjs", "why": "Fix round 1 회귀 시험이 'fs 오류 메시지에 실제 사용자 계정명이 든 경로가 들어 있어도 recorded/영수증으로 새지 않는다'를 증명하려고 일부러 가짜 사용자명이 든 윈도 사용자 프로필 경로 오류 문자열을 만들어 넣는다(T09)." }
+      ]
     }
   ],
-  "allowFiles": ["**/LICENSE*", "**/node_modules/**/*.md"],
+  "allowFiles": [
+    { "glob": "**/LICENSE*", "why": "허가서 원문에는 상류 저작자 이름·주소가 들어 있는 것이 정상이다." },
+    { "glob": "**/node_modules/**/*.md", "why": "의존성 문서(저작자 표기·예시 경로)." },
+    { "glob": "**/policy/licenses/*", "why": "빌드가 부품마다 모아 오는 상류 허가서 사본(파일 이름이 '<부품>-LICENSE…' 라 위 글롭에 안 걸린다)." }
+  ],
   "maxBytes": 629145600
 }

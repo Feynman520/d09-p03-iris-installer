@@ -7,23 +7,50 @@ import { globMatch } from '../lib/glob.mjs';
 const SNIFF_BYTES = 8 * 1024; // first 8KB decides text vs binary
 const MAX_TEXT_CHECK_BYTES = 20 * 1024 * 1024; // files bigger than this skip content checks
 
+// Archives whose text contents must be scanned as if unpacked. `.hwpx` is a
+// zip of XML (T08: the shipped HWPX templates are scanned for personal
+// strings *inside* their XML, not just by file name -- a form's
+// header/footer or document properties is exactly where a name would hide).
+const ARCHIVE_RE = /\.(zip|hwpx)$/i;
+
+// An exemption entry is either a bare glob string or {path|glob, why}. The
+// object form exists so every exemption in sanitize-rules.json can say *why*
+// it is safe (T08 rule: no silent exemptions). `why` is documentation only --
+// nothing here reads it, but a reviewer does.
+function exemptionGlob(entry) {
+  if (typeof entry === 'string') return entry;
+  if (entry && typeof entry === 'object') return entry.path ?? entry.glob ?? '';
+  return '';
+}
+
 function compileRegexRules(list) {
   return (list ?? []).map((entry) => {
     const isObj = typeof entry === 'object' && entry !== null;
     const pattern = isObj ? entry.pattern : entry;
-    const skipUnder = isObj ? (entry.skipUnder ?? []) : [];
+    const skipUnder = (isObj ? (entry.skipUnder ?? []) : []).map(exemptionGlob).filter(Boolean);
     return { regex: new RegExp(pattern), pattern, skipUnder };
   });
 }
 
-// skipUnder entries are glob patterns (matched per path segment), not exact
-// segment names -- so e.g. "node-v*-win-x64.zip!" keeps matching after a
-// vendored runtime's version bumps, instead of needing an update here every
-// time lock.json's node/git part versions change.
+// skipUnder entries are glob patterns, not exact names, so e.g.
+// "node-v*-win-x64.zip!" keeps matching after a vendored runtime's version
+// bumps instead of needing an update here every time lock.json's node/git
+// part versions change.
+//
+// Two shapes, decided by whether the pattern still contains a '/' after a
+// trailing slash is trimmed:
+//   "node_modules/" or "AGENTS.md"       -> SEGMENT glob: matches if ANY path
+//                                           segment matches (a whole subtree).
+//   "tools/superpowers*/**"              -> FULL-PATH glob: matches the whole
+//                                           logical path. (2026-09-15, T08)
+// The full-path form is what makes a narrow exemption expressible: "the email
+// rule, and only the email rule, is off under this one third-party part" --
+// rather than "off for every file called README.md anywhere".
 function underSkippedSegment(logicalPath, skipUnder) {
   const segs = logicalPath.split('/');
   return skipUnder.some((s) => {
     const pattern = s.replace(/\/$/, '');
+    if (pattern.includes('/')) return globMatch(pattern, logicalPath);
     return segs.some((seg) => globMatch(pattern, seg));
   });
 }
@@ -48,7 +75,7 @@ async function scanFile(absPath, logicalPath, ctx) {
     if (globMatch(glob, logicalPath)) hits.push({ file: logicalPath, rule: `name:${glob}` });
   }
 
-  if (/\.zip$/i.test(absPath)) {
+  if (ARCHIVE_RE.test(absPath)) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-sanitize-'));
     try {
       await extractZip(absPath, tmpDir);
@@ -59,7 +86,24 @@ async function scanFile(absPath, logicalPath, ctx) {
     return;
   }
 
-  const stat = fs.statSync(absPath);
+  // fs.statSync follows symlinks. A dangling symlink (readdir's Dirent said
+  // "regular file" for it -- true for a tar-extracted Unix symlink whose
+  // target does not exist inside the extracted tree, e.g. an old commit's
+  // .gitignore -> a path git never stored) throws ENOENT here even though the
+  // directory entry itself is real. That must not crash a whole-tree scan
+  // (e.g. tests/history-clean.test.mjs walking dozens of historical commits)
+  // -- record it as a warning (a reviewer can see it named) and treat it as
+  // unscannable rather than a leak, since there is no content to check.
+  let stat;
+  try {
+    stat = fs.statSync(absPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      warnings.push(`${logicalPath}: unreadable (${err.code}, likely a dangling symlink) -- content check skipped`);
+      return;
+    }
+    throw err;
+  }
 
   if (typeof rules.maxBytes === 'number' && stat.size > rules.maxBytes) {
     warnings.push(`${logicalPath}: ${stat.size} bytes exceeds maxBytes ${rules.maxBytes}`);
@@ -72,7 +116,9 @@ async function scanFile(absPath, logicalPath, ctx) {
 
   if (isBinarySniff(absPath, stat.size)) return; // binary: names already checked above, skip content checks
 
-  const exempt = (rules.allowFiles ?? []).some((g) => globMatch(g, logicalPath));
+  const exempt = (rules.allowFiles ?? [])
+    .map(exemptionGlob).filter(Boolean)
+    .some((g) => globMatch(g, logicalPath));
   if (exempt) return;
 
   const content = fs.readFileSync(absPath, 'utf8');

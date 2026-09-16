@@ -1,0 +1,8 @@
+# Top-level packages verified for the five locked document MCP servers.
+# Resolve only for CPython 3.12 on Windows x64, then install from the soul wheelhouse.
+mcp==1.28.1
+pyhwpx==1.7.2
+pywin32==312
+pypdf[crypto]==6.14.2
+pypdfium2==5.12.1
+Pillow==12.3.0

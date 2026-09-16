@@ -1,76 +1,82 @@
-# IRIS 설치 패키지 (IRIS Installer)
+# IRIS 설치 패키지 (IRIS Installer) 2.0
 
-아무것도 설치되지 않은 윈도우 PC에 **zip 하나(두 번 클릭)** 로 IRIS 체계 전체를 끝까지 설치하는 설치기와, 그 zip을 재현 가능하게 만드는 빌드·검증 도구입니다. 사람이 직접 하는 일은 **구독 계정 로그인 하나**뿐입니다.
+아무것도 설치되지 않은 윈도우 PC에 **zip 하나(두 번 클릭)** 로 IRIS 체계 전체를 끝까지 설치하는 설치기와, 그 zip을 재현 가능하게 만드는 빌드·검증 도구입니다. 화면에서 사람이 답하는 것은 **질문 두 개**, 사람만 할 수 있는 일은 **구독 계정 로그인 하나**뿐입니다.
 
-> **IRIS** = 시스템 전체 이름. 설치되는 것 = 동봉 런타임(Node·Python·Git) · 에이전트 CLI(Claude Code·Codex) · 계정 중계기 · IRIS 창(IRIS-Face) · 세팅가이드. 전부 `C:\IRIS` 한 폴더 안에 들어가고, 바깥에는 바탕화면 「IRIS」 바로가기 하나만 생깁니다.
+> **IRIS** = 시스템 전체 이름. 설치되는 것 = 동봉 런타임(Node·Python·Git·uv) · 에이전트 CLI(Claude Code·Codex) · 계정 중계기 · IRIS 창 · 문서 자동화 도구 · 작업 폴더 뼈대와 지침. 전부 `C:\IRIS` 한 폴더 안에 들어가고, 바깥에 생기는 것은 바탕화면 「IRIS」 바로가기 하나와 사용자 환경변수 몇 개뿐입니다.
 
 ## 사용자가 하는 일
 
 ```text
 ① zip 오른쪽 클릭 → 속성 → 「차단 해제」 → 압축 풀기  →  ② IRIS-설치.cmd 두 번 클릭  →  ③ 브라우저에 설치 화면
-
-(①의 「차단 해제」를 건너뛰면 윈도우 11 스마트 앱 컨트롤이 "웹의 위험한 파일 확장자"라며 .cmd 두 번 클릭을 막는다 — 2026-09-14 실측. 이미 풀었다면 그 폴더의 주소창에 `cmd` → `IRIS-설치.cmd`로 실행해도 된다: cmd.exe 직접 실행은 막지 않는다.)
       ↓
-ⓐ 준비 확인 (자동)  →  ⓑ 설치 위치 확인 (자동, C:\IRIS)  →  ⓒ 구독 고르기  →  ⓓ 설치 (약 1 GB, 수 분)
+ⓐ 준비 검사 (자동)
       ↓
-ⓔ 계정 로그인 (브라우저에서 한 번)  →  ⓕ IRIS 창이 열리고 비서가 세팅을 이어받음
+ⓑ 질문 두 개 — 어떤 구독을 쓰는가(Claude / ChatGPT) · 작업 폴더를 어떻게 나눌 것인가(나중으로 미뤄도 됨)
+      ↓
+ⓒ 자동 세팅 (인터넷 0, 아홉 단계) — 부품 풀기 → 환경변수·심 → 영혼 뼈대 → 작업 폴더 → 파이썬 환경 → 에이전트 연결부 → 중계기 준비 → 온톨로지 → 마무리 검사
+      ↓
+ⓓ 계정 로그인 (브라우저에서 한 번) — 이때 Claude Code와 문서 작성 스킬을 내려받습니다
+      ↓
+ⓔ 「IRIS 열기」 — 창이 열리고 비서가 인수 문서를 읽어 이어받습니다
 ```
 
-1.4.0부터: ⓓ에서 IRIS 메신저 모듈이 기본으로 함께 설치되고, Claude·Codex 권한 설정(전부 허용)이 미리 병합되어 첫 세팅 세션이 허락을 묻지 않고 돈다. 동봉 세팅가이드는 v11.
+①의 「차단 해제」를 건너뛰면 윈도우 11 스마트 앱 컨트롤이 "웹의 위험한 파일 확장자"라며 `.cmd` 두 번 클릭을 막습니다(2026-09-14 실측). 이미 풀었다면 그 폴더 주소창에 `cmd` → `IRIS-설치.cmd` 로 실행해도 됩니다 — cmd.exe 직접 실행은 막지 않습니다. 같은 안내가 zip 안 `설치가 안 되면.txt` 에도 들어 있습니다.
 
-요구 사항: 윈도우 10(1809) 이상 64비트, C 드라이브 여유 2 GB 이상, 인터넷(Claude Code 내려받기·로그인), Claude(claude.ai) 또는 ChatGPT(chatgpt.com) **유료 구독**.
+## 동봉되는 것과 내려받는 것
+
+| | 무엇 | 왜 |
+|---|---|---|
+| **동봉**(zip 안) | 런타임(Node·Python·Git·uv·age) · Codex · 중계기·대시보드 · IRIS 창과 메신저 모듈 · 문서 자동화 MCP 5종과 파이썬 바퀴집 · 플러그인·스킬·훅 · 온톨로지 도구 · 지침 템플릿 | 인터넷 없이도 세팅이 끝까지 가야 하고, 부품마다 판·SHA-256을 잠가 어느 PC에서나 같은 결과가 나와야 하기 때문 |
+| **설치 때 내려받기** | **Claude Code**(`downloads.claude.ai` 공식 단일 실행파일, 실패 시 npm) · **document-skills**(엑셀·워드·PPT·PDF 문서 스킬, 고정 커밋의 깃허브 zip) | 두 부품은 허가서가 재배포를 허용하지 않습니다. 못 받으면 그 기능만 「남은 일」로 남고 설치는 끝까지 갑니다 |
+
+## 요구 사항
+
+- 윈도우 10 1809 이상 또는 윈도우 11, **x64**(ARM64·32비트는 막습니다)
+- C 드라이브 NTFS·쓰기 가능, 여유 **3 GB** 이상
+- PowerShell 5.1 이상(언어 모드 Full)
+- 포트 3456·3457·3458·3460 이 비어 있거나 IRIS의 것
+- 인터넷은 **로그인 단계에서만** 필요(없어도 세팅까지는 끝납니다 — 다음에 열면 그 자리에서 이어집니다)
+- Claude(claude.ai) 또는 ChatGPT(chatgpt.com) **유료 구독** 하나 이상
+
+## 1.x 를 쓰던 분께
+
+**2.0 은 설치 방식이 바뀌어 새로 설치합니다.** 1.x 영수증이 있는 PC에서 자동 업데이트(`--auto`)를 돌리면 설치기가 그것을 알아보고 "새로 설치 필요" 안내를 띄운 뒤 아무것도 바꾸지 않습니다. 기존 자료(R/D/P 폴더·기억·설정·시크릿)는 그대로 두고 설치기를 실행하면 되고, 1.x 영수증은 `_agent\setup\package-receipt.v1.json` 으로 보존됩니다. 2.x 안에서의 업데이트는 예전처럼 IRIS 창의 「설정 → 업데이트」 단추 하나로 끝나며, 바뀐 부품만 교체되고 옛 판은 `.prev` 로 남습니다.
 
 ## 저장소 구조
 
 | 폴더 | 정체 |
 |---|---|
-| `installer/` | zip에 들어가는 설치기 — `IRIS-설치.cmd`·`bootstrap.ps1`(겉옷, ASCII 전용) · `server.mjs`+`lib/`(속옷, 127.0.0.1:3460) · `ui/index.html`(단일 파일 화면) |
-| `build/` | 공장 — `lock.json`대로 부품 수집 → TeamClaude 로컬 패치 → 개인정보 정화 → 매니페스트(SHA-256) → 포장 |
-| `verify/` | 검사소 — `static.mjs`(정적 ①~⑨) · `reproduce.mjs`(두 번 빌드해 부품 해시 일치) · `e2e-checklist.md`(새 PC 실행 검사 대장) |
+| `installer/` | zip에 들어가는 설치기 — `IRIS-설치.cmd`·`bootstrap.ps1`(겉옷, ASCII 전용) · `server.mjs`+`lib/`(속옷, 127.0.0.1:3460) · `setup/`(세팅 엔진 아홉 단계) · `ui/index.html`(단일 파일 화면) |
+| `build/` | 공장 — `lock.json`대로 부품 수집 → 로컬 패치 → 개인정보 정화 → 매니페스트(SHA-256) → 포장 |
+| `verify/` | 검사소 — `static.mjs` · `reproduce.mjs` · `extract-matrix.mjs` · `offline.mjs` · `e2e.mjs`(가상 영혼 전 구간) · `vm/`(시험 행렬 자동화) |
 | `updater/` | 적용기 — `apply.mjs` 한 파일(의존성 0). 설치되면 `_agent\shared\tools\updater\` |
-| `patches/` | TeamClaude 로컬 패치 규칙(앵커→치환)과 관리 스크립트 |
-| `lock.json` | 부품 잠금표 — 버전·URL·SHA-256(`latest` 금지) |
-| `docs/` | 설계(`설계.md`), 검증기록, 화면 캡처 |
+| `patches/` | 중계기 로컬 패치 규칙(앵커→치환)과 관리 스크립트 |
+| `payload-src/` | zip에 그대로 실리는 원본 — 지침 템플릿·정책 문서·훅 스크립트·파이썬 잠금 파일 |
+| `lock.json` | 부품 잠금표 — 판·URL·SHA-256(`latest` 금지). 형식 = `docs/lock-schema.md` |
+| `docs/` | 설계 정본 `설계-v2.md`, 계약 3종(`세팅엔진-계약-v2.md`·`설치기-API-v2.md`·`인수문서-handoff-v2.md`), `시험행렬.md`, 검증기록 |
 | `_build/` | 자동 출력(캐시·스테이지·zip). git 제외 |
 
 ## 빌드와 검증 (개발 PC)
 
 ```powershell
-npm test                                  # node:test 단위 시험 (외부 의존 0)
-node build/build.mjs                      # 부품 내려받기 + 형제 프로젝트 수집 + 포장 → _build/out/IRIS-Setup_v<판>_<날짜>.zip
-node verify/static.mjs                    # 정적 검사 ①~⑨ (매니페스트·정화·node-pty·패킹된 서버 기동 등)
-node verify/reproduce.mjs                 # 재현성 검사 (두 번 빌드, 11개 부품 sha256 일치)
+npm test                 # 1층: node:test 단위 시험 (외부 의존 0)
+npm run build            # 부품 수집 + 포장 → _build\out\IRIS-Setup_v<판>_<날짜>.zip
+npm run verify           # 2·3층 전부: static → reproduce → extract-matrix → offline(빌드/실행) → e2e
 ```
 
-- 형제 프로젝트(IRIS-Face 등)의 위치는 `lock.json`의 `source`가 가리키며, 다른 PC에서는 `IRIS_FACE_SOURCE`·`IRIS_DASH_SOURCE`·`IRIS_GUIDES_SOURCE` 환경변수로 바꿉니다.
-- Claude Code는 약관상 동봉하지 않고 설치 때 npm에서 잠근 버전을 내려받습니다(`lock.json parts.claude.redistribute: "download"`).
-- 개발 PC에서 설치기를 연습할 때는 `IRIS_INSTALLER_SOUL_NAME=<임시이름>`과 `IRIS_INSTALLER_NO_USER_ENV=1`을 주고 띄워, 진짜 `C:\IRIS`와 사용자 환경변수를 건드리지 않게 합니다. 끝나면 임시 폴더를 지웁니다.
-
-## 업데이트 (v1.3.0부터)
-
-새 판이 나오면 **IRIS 창의 설정 → 업데이트**에서 단추 하나로 끝납니다. 사람이 zip을 다시 받아 두 번 클릭할 일은 없습니다.
-
-```text
-IRIS 창이 새 판을 확인(하루 1회) → 사용자가 「업데이트」 → 내려받기·서명 검증 → 창이 꺼지며 적용기 실행
-      ↓
-적용기(_agent\shared\tools\updater\apply.mjs)
-  · 창이 완전히 꺼질 때까지 기다림(PID + 포트, 최대 90초 — 안 꺼지면 아무것도 바꾸지 않음)
-  · IRIS 창 부품만 바꾸는 경우: 옛 폴더를 .prev 로 밀어내고 새 폴더를 앉힌 뒤 state·modules·node_modules 를 넘김
-  · 구조판(설치 패키지)까지 바뀐 경우: IRIS-설치.cmd --auto 를 띄우고 물러남
-      ↓
-자동 모드 설치기 — 준비 확인 → 영수증과 비교해 바뀐 부품만 교체 → 로그인 생략 → 영수증 갱신 → IRIS 창 다시 열기
-```
-
-- 자동 모드는 **이미 영수증이 있는 PC에서만** 발동합니다. 새 PC에서 `--auto`를 줘도 평소의 여섯 단계 화면으로 갑니다.
-- 사용자 자료(R/D/P·기억·설정·시크릿)는 업데이트가 건드리지 않습니다. 바뀐 부품의 옛 판은 `.prev`로 남습니다.
-- 계약 정본(Face·설치기·적용기·릴리스 도구·홈페이지 공통)은 IRIS-Face(P02) 저장소의 `docs\설계-업데이트-2026-09-14.md`이고, P03이 맡는 몫은 `docs\설계.md` 12절입니다.
+- `npm run verify` 의 각 층: `static.mjs`(매니페스트·정화·패킹된 서버 기동 등 정적 검사) · `reproduce.mjs`(두 번 빌드해 부품 지문 일치) · `extract-matrix.mjs`(압축 해제 엔진 5종에서 같은 트리) · `offline.mjs`(네트워크 0 증명) · `e2e.mjs`(연습 루트에 전 구간 실행 — 두 번 실행 변경 0, 고장 주입 후 재개까지).
+- 4층(실제 환경 12종)은 `docs/시험행렬.md` 가 대장이고 `verify/vm/` 이 VM 시나리오를 돌립니다. **배포 게이트 = 1~3층 초록 + 그 표의 S01~S11 이 이번 빌드 지문으로 `통과`** 일 때만 2.0.0을 내보냅니다(설계-v2 10절).
+- 형제 프로젝트(IRIS 창 등)의 위치는 `lock.json` 의 `source` 가 가리키며, 다른 PC에서는 `IRIS_FACE_SOURCE`·`IRIS_DASH_SOURCE` 같은 환경변수로 바꿉니다.
+- 개발 PC에서 설치기를 연습할 때는 `IRIS_INSTALLER_SOUL_NAME=<임시이름>` 과 `IRIS_INSTALLER_NO_USER_ENV=1` 을 주고 띄워, 진짜 `C:\IRIS` 와 사용자 환경변수를 건드리지 않게 합니다. 끝나면 임시 폴더를 지웁니다.
 
 ## 원칙
 
 - zip을 손으로 고치지 않습니다. 원본 수정 → 재빌드 → 검사소 통과 → 새 판.
-- 설치기는 사용자 자료를 절대 지우거나 덮어쓰지 않습니다. 이미 있는 것은 `.prev`로 옆에 남깁니다.
+- 설치기는 사용자 자료를 **절대 지우거나 덮어쓰지 않습니다.** 자리를 비워야 하면 `.prev` 로 옮기고, 설정 파일은 없는 키만 더합니다. 갱신하는 것은 설치기가 만든 항목뿐입니다.
+- 영혼 폴더 밖에는 쓰지 않습니다(예외 = 사용자 PATH·환경변수, 바탕화면 바로가기 하나).
 - 영수증(`_agent\setup\package-receipt.json`)·로그에 토큰·비밀을 쓰지 않습니다. zip 어디에도 개인 식별자가 없도록 정화 규칙이 빌드와 저장소 이력을 검사합니다.
+- 모델을 부르지 않습니다. 설치·검증 어느 단계도 구독 토큰을 쓰지 않습니다.
 
 ## 허가서
 
-이 저장소는 MIT입니다(`LICENSE`). 동봉 부품의 허가서 사본은 zip 안 `payload/licenses/NOTICES.md`에 함께 들어갑니다.
+이 저장소는 MIT입니다(`LICENSE`). 동봉 부품의 허가서 사본은 zip 안 `payload/licenses/NOTICES.md` 에 함께 들어갑니다.

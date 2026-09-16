@@ -447,9 +447,42 @@ export async function applyFaceItem({
 // the package item -- hand the whole job to the installer's automatic mode
 // ---------------------------------------------------------------------------
 
-export function applyPackageItem({ root, dir, spawnFn = spawn, log = () => {} }) {
+// Structural install/soul-layout schema (installer/lib/receipt.mjs RECEIPT_SCHEMA,
+// P02 daemon\update.mjs RECEIPT_SCHEMA_V2) -- a COPY, not an import: this file
+// already keeps its own copies of installer/lib/ logic (see preserveAside/
+// moveDir/carryOver above), because <root>\_agent\shared\tools\updater\ ships
+// far from installer/lib\ once installed. A receipt written by a different
+// schema describes a soul shape this build's --auto does not understand
+// (docs/설치기-API-v2.md "재실행·모드"): the installer refuses the very same
+// way on its own, but only after being started once for nothing -- this stops
+// it before that spawn (T22, 2026-09-15).
+export const PACKAGE_SCHEMA = 2;
+const REINSTALL_MESSAGE = '2.0은 설치 방식이 바뀌어 새로 설치합니다. 기존 자료는 그대로 두고 설치기를 실행하면 됩니다.';
+const REINSTALL_URL = 'https://iris-workspace.com/install.html';
+
+export function applyPackageItem({
+  root, dir, spawnFn = spawn, log = () => {},
+  packageSchema = PACKAGE_SCHEMA, downloadUrl = REINSTALL_URL,
+}) {
   const cmd = path.join(dir, 'IRIS-설치.cmd');
   if (!fs.existsSync(cmd)) return { ok: false, reason: 'installer-cmd-missing', detail: cmd };
+
+  // 구조 변경 판정: 영수증 schema(없으면 1)와 새 판 schema를 비교해 다르면
+  // 설치기 --auto를 아예 부르지 않는다 -- Face가 이 결과의 message·downloadUrl로
+  // "새로 설치" 안내를 보인다(T21).
+  const receipt = readJson(receiptPath(root));
+  const oldSchema = Number(receipt?.schema ?? 1);
+  if (oldSchema !== packageSchema) {
+    log(`package: receipt schema ${oldSchema} != ${packageSchema} -- refusing --auto, reinstall required`);
+    return {
+      ok: false,
+      reason: 'reinstall-required',
+      code: 'reinstall-required',
+      message: REINSTALL_MESSAGE,
+      downloadUrl,
+    };
+  }
+
   // The installer derives the soul root from IRIS_INSTALLER_SOUL_NAME (server.
   // mjs: root = C:\<name>), so telling it this plan's own root is simply
   // passing the last folder name of plan.root. Without it the installer would
@@ -540,6 +573,7 @@ export async function applyPlan({
   waitFn = waitForDaemonStop,
   waitOptions = {},
   preserveOptions,
+  packageSchema,
   logger,
 } = {}) {
   const root = plan?.root;
@@ -601,14 +635,24 @@ export async function applyPlan({
     let r;
     try {
       r = insideDownloads(root, pkg.dir)
-        ? applyPackageItem({ root, dir: pkg.dir, spawnFn, log })
+        ? applyPackageItem({
+          root, dir: pkg.dir, spawnFn, log,
+          ...(packageSchema !== undefined ? { packageSchema } : {}),
+        })
         : { ok: false, reason: 'dir-outside-downloads', detail: pkg.dir ?? null };
     } catch (err) {
       log(`package: threw ${String(err?.stack ?? err)}`);
       r = { ok: false, reason: 'item-threw', detail: String(err?.message ?? err) };
     }
+    // reinstall-required carries a message/downloadUrl Face shows verbatim
+    // (T21) -- passed through onto the package item's own result entry.
     const items = planItems.map((i) => (i === pkg
-      ? { kind: 'package', version: pkg.version ?? null, ok: r.ok, reason: r.reason }
+      ? {
+        kind: 'package', version: pkg.version ?? null, ok: r.ok, reason: r.reason,
+        ...(r.code ? { code: r.code } : {}),
+        ...(r.message ? { message: r.message } : {}),
+        ...(r.downloadUrl ? { downloadUrl: r.downloadUrl } : {}),
+      }
       : { kind: i.kind, version: i.version ?? null, ok: true, reason: 'skipped-included-in-package' }));
     // 설계 4-5: the window comes back even when something failed. On the happy
     // path the installer we just started is what reopens it, so we must NOT --

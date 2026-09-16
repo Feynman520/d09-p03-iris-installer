@@ -1,0 +1,222 @@
+{
+  "schema": 1,
+  "note": "작업 폴더 구성(④) 화면의 보기 틀. 개인 정보(실명·학교·회사·주소)는 한 글자도 넣지 않는다 — 빌드 정화 검사가 본다. 사용자는 고른 뒤 얼마든지 고칠 수 있다.",
+  "presets": [
+    {
+      "id": "teacher",
+      "label": "교사",
+      "summary": "수업·학급·연수를 나눠 둡니다.",
+      "tree": [
+        {
+          "level": "R", "nameKo": "교사", "nameEn": "Teacher",
+          "children": [
+            {
+              "level": "D", "nameKo": "수업", "nameEn": "Teaching",
+              "children": [
+                { "level": "P", "nameKo": "이번 학기 수업 준비", "nameEn": "Semester Prep" },
+                { "level": "P", "nameKo": "평가와 기록", "nameEn": "Assessment" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "학급 운영", "nameEn": "Homeroom",
+              "children": [
+                { "level": "P", "nameKo": "학급 살림", "nameEn": "Class Care" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "연수와 성장", "nameEn": "Professional Growth",
+              "children": [
+                { "level": "P", "nameKo": "연수 기록", "nameEn": "Training Notes" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "researcher",
+      "label": "연구자",
+      "summary": "조사·실험·논문·발표를 나눠 둡니다.",
+      "tree": [
+        {
+          "level": "R", "nameKo": "연구자", "nameEn": "Researcher",
+          "children": [
+            {
+              "level": "D", "nameKo": "연구 주제", "nameEn": "Research Topic",
+              "children": [
+                { "level": "P", "nameKo": "선행 연구 조사", "nameEn": "Literature Review" },
+                { "level": "P", "nameKo": "실험과 분석", "nameEn": "Experiments" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "논문 쓰기", "nameEn": "Paper Writing",
+              "children": [
+                { "level": "P", "nameKo": "첫 논문", "nameEn": "First Paper" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "학회와 발표", "nameEn": "Conferences",
+              "children": [
+                { "level": "P", "nameKo": "발표 준비", "nameEn": "Talk Prep" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "business",
+      "label": "사업가",
+      "summary": "기획·고객·살림을 나눠 둡니다.",
+      "tree": [
+        {
+          "level": "R", "nameKo": "사업가", "nameEn": "Business Owner",
+          "children": [
+            {
+              "level": "D", "nameKo": "사업 기획", "nameEn": "Business Planning",
+              "children": [
+                { "level": "P", "nameKo": "올해 사업 계획", "nameEn": "Annual Plan" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "영업과 고객", "nameEn": "Sales and Customers",
+              "children": [
+                { "level": "P", "nameKo": "고객 관리", "nameEn": "Customer Care" },
+                { "level": "P", "nameKo": "제안서", "nameEn": "Proposals" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "살림과 회계", "nameEn": "Finance",
+              "children": [
+                { "level": "P", "nameKo": "매출과 지출", "nameEn": "Revenue and Costs" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "developer",
+      "label": "개발자",
+      "summary": "제품·도구·배움을 나눠 둡니다.",
+      "tree": [
+        {
+          "level": "R", "nameKo": "개발자", "nameEn": "Developer",
+          "children": [
+            {
+              "level": "D", "nameKo": "제품 만들기", "nameEn": "Product Work",
+              "children": [
+                { "level": "P", "nameKo": "첫 제품", "nameEn": "First Product" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "도구 만들기", "nameEn": "Tooling",
+              "children": [
+                { "level": "P", "nameKo": "업무 자동화", "nameEn": "Work Automation" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "배움과 기록", "nameEn": "Learning",
+              "children": [
+                { "level": "P", "nameKo": "기술 노트", "nameEn": "Tech Notes" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "office-worker",
+      "label": "직장인",
+      "summary": "맡은 업무·회의·경력을 나눠 둡니다.",
+      "tree": [
+        {
+          "level": "R", "nameKo": "직장인", "nameEn": "Office Worker",
+          "children": [
+            {
+              "level": "D", "nameKo": "맡은 업무", "nameEn": "Assigned Work",
+              "children": [
+                { "level": "P", "nameKo": "이번 분기 업무", "nameEn": "Quarterly Work" },
+                { "level": "P", "nameKo": "보고서 쓰기", "nameEn": "Reports" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "회의와 일정", "nameEn": "Meetings",
+              "children": [
+                { "level": "P", "nameKo": "회의 기록", "nameEn": "Meeting Notes" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "경력 관리", "nameEn": "Career",
+              "children": [
+                { "level": "P", "nameKo": "배움 기록", "nameEn": "Learning Log" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "student",
+      "label": "학생",
+      "summary": "공부·과제·진로를 나눠 둡니다.",
+      "tree": [
+        {
+          "level": "R", "nameKo": "학생", "nameEn": "Student",
+          "children": [
+            {
+              "level": "D", "nameKo": "공부", "nameEn": "Study",
+              "children": [
+                { "level": "P", "nameKo": "이번 학기 공부", "nameEn": "Semester Study" },
+                { "level": "P", "nameKo": "시험 준비", "nameEn": "Exam Prep" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "과제와 활동", "nameEn": "Assignments",
+              "children": [
+                { "level": "P", "nameKo": "과제 모음", "nameEn": "Assignment Set" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "진로 탐색", "nameEn": "Career Search",
+              "children": [
+                { "level": "P", "nameKo": "진로 조사", "nameEn": "Career Research" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "writer",
+      "label": "작가",
+      "summary": "글쓰기·자료 조사·독자를 나눠 둡니다.",
+      "tree": [
+        {
+          "level": "R", "nameKo": "작가", "nameEn": "Writer",
+          "children": [
+            {
+              "level": "D", "nameKo": "글쓰기", "nameEn": "Writing",
+              "children": [
+                { "level": "P", "nameKo": "첫 책", "nameEn": "First Book" },
+                { "level": "P", "nameKo": "짧은 글", "nameEn": "Short Pieces" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "자료 조사", "nameEn": "Source Research",
+              "children": [
+                { "level": "P", "nameKo": "취재와 자료", "nameEn": "Source Material" }
+              ]
+            },
+            {
+              "level": "D", "nameKo": "독자와 소통", "nameEn": "Readers",
+              "children": [
+                { "level": "P", "nameKo": "연재와 소식", "nameEn": "Newsletter" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

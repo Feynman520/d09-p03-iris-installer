@@ -1,0 +1,602 @@
+// T18 ⑤-9 검사 — 9항목 + 인계 2항목, 그리고 "실패해도 먼저 파일을 쓴다"
+//
+// 각 검사는 따로 부를 수 있게 export 되어 있다. 여기서는 그 하나하나에
+// 통과·대기·실패 세 상황을 만들어 준다(실행 파일·MCP 서버는 가짜로).
+import { test, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import {
+  run as runChecksStage, runChecks, checkExe, checkMcp, checkPlugins, checkHooks,
+  checkConfig, checkDesktop, checkOntology, checkReceiptIdempotent, checkEdge,
+  checkSkeleton, checkStructure, tomlSanity, mcpInitialize, collectMcpServers,
+  scanCardIds, recordedPaths, resolveExe, installStartedAt, batchWrap,
+} from '../installer/setup/checks.mjs';
+import { writeReceipt, newReceiptV2 } from '../installer/lib/receipt.mjs';
+
+const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 't18c-'));
+after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+let seq = 0;
+function newRoot(label) {
+  const root = path.join(tmp, `${label}-${seq += 1}`);
+  fs.mkdirSync(path.join(root, '_agent', 'setup'), { recursive: true });
+  return root;
+}
+
+function write(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, typeof text === 'string' ? text : JSON.stringify(text, null, 2), 'utf8');
+  return file;
+}
+
+function ctxFor(root, extra = {}) {
+  return {
+    root,
+    fs,
+    env: { PATH: 'C:\\windows' },
+    log: () => {},
+    precheck: { recorded: { edge: { present: true }, office: true, hancom: true } },
+    receipt: { schema: 2, setup: {}, online: {} },
+    choice: { subscriptions: ['claude'], leadAgent: 'claude' },
+    manifest: { package: { name: 'IRIS', version: '2.0.0' } },
+    run: async () => ({ code: 0, out: 'v1.0.0', err: '' }),
+    ...extra,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 1. 실행 파일
+// ---------------------------------------------------------------------------
+
+test('검사1: 네 실행 파일이 모두 버전을 말하면 통과', async () => {
+  const root = newRoot('exe-ok');
+  const asked = [];
+  const c = await checkExe(ctxFor(root, {
+    run: async (exe, args) => { asked.push([path.basename(exe), args[args.length - 1]]); return { code: 0, out: 'v24.17.0', err: '' }; },
+  }));
+  assert.equal(c.status, 'pass');
+  assert.equal(asked.length, 4);
+  assert.deepEqual(asked.map((a) => a[0]), ['node', 'python', 'git', 'codex']);
+  assert.ok(asked.every((a) => a[1] === '--version'));
+});
+
+test('검사1: 하나라도 실행되지 않으면 실패(막음)', async () => {
+  const root = newRoot('exe-bad');
+  const c = await checkExe(ctxFor(root, {
+    run: async (exe) => (/codex/.test(exe) ? { code: 9009, out: '', err: 'not found' } : { code: 0, out: 'ok', err: '' }),
+  }));
+  assert.equal(c.status, 'fail');
+  assert.match(c.detail, /codex 실행 실패/);
+});
+
+test('검사1: 심이 있으면 심을 부른다(사용자가 실제로 쓰는 입구)', () => {
+  const root = newRoot('exe-shim');
+  write(path.join(root, '_agent', 'shared', 'shims', 'python.cmd'), '@echo off');
+  const r = resolveExe(ctxFor(root), 'python');
+  assert.equal(r.via, 'shim');
+  assert.ok(r.path.endsWith('shims\\python.cmd'));
+});
+
+// ---------------------------------------------------------------------------
+// 2. MCP initialize
+// ---------------------------------------------------------------------------
+
+// 가짜 stdio 서버. `reply` 로 세 가지 성격을 만든다:
+//   'result' 정상 응답 · 'error' 거절 · 'silent' 무응답(시간 초과) · 'close' 즉사
+function fakeSpawn({ reply = 'result', killed = [] } = {}) {
+  return (command, args) => {
+    const child = new EventEmitter();
+    child.pid = 4242;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => killed.push(command);
+    child.stdin = {
+      write: (line) => {
+        const req = JSON.parse(line);
+        setImmediate(() => {
+          if (reply === 'result') {
+            child.stdout.emit('data', `${JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { protocolVersion: '2024-11-05', serverInfo: { name: path.basename(command) } } })}\n`);
+          } else if (reply === 'error') {
+            child.stdout.emit('data', `${JSON.stringify({ jsonrpc: '2.0', id: req.id, error: { message: '거절' } })}\n`);
+          } else if (reply === 'close') {
+            child.stderr.emit('data', 'ModuleNotFoundError');
+            child.emit('close', 1);
+          }
+        });
+      },
+    };
+    return child;
+  };
+}
+
+function withServers(root, servers) {
+  write(path.join(root, '_agent', 'claude', '.claude.json'), { mcpServers: servers });
+  return root;
+}
+
+test('검사2: 등록된 서버가 전부 initialize 에 답하면 통과하고, 띄운 자식은 종료한다', async () => {
+  const root = withServers(newRoot('mcp-ok'), {
+    playwright: { command: 'C:\\t\\playwright.cmd', args: [] },
+    'pdf-automation': { command: 'C:\\t\\python.exe', args: ['server.py'] },
+  });
+  const killed = [];
+  const c = await checkMcp(ctxFor(root), { spawn: fakeSpawn({ killed }) });
+  assert.equal(c.status, 'pass');
+  assert.equal(c.results.length, 2);
+  assert.equal(killed.length, 2, '띄운 것은 전부 내가 정리한다');
+  assert.match(c.detail, /실제 화면 열기는 하지 않습니다/);
+});
+
+test('검사2: 서버 하나가 답하지 않으면 실패', async () => {
+  const root = withServers(newRoot('mcp-bad'), { playwright: { command: 'C:\\t\\playwright.cmd' } });
+  const c = await checkMcp(ctxFor(root), { spawn: fakeSpawn({ reply: 'silent' }), timeoutMs: 40 });
+  assert.equal(c.status, 'fail');
+  assert.match(c.detail, /playwright/);
+});
+
+test('검사2: 문서 MCP 는 오피스·한컴이 없으면 실패가 아니라 대기', async () => {
+  const root = withServers(newRoot('mcp-doc'), {
+    'hwp-automation': { command: 'C:\\t\\python.exe', args: ['server.py'] },
+    'excel-automation': { command: 'C:\\t\\python.exe', args: ['server.py'] },
+  });
+  const ctx = ctxFor(root, { precheck: { recorded: { edge: { present: true }, office: false, hancom: false } } });
+  const c = await checkMcp(ctx, { spawn: fakeSpawn({ reply: 'close' }) });
+  assert.equal(c.status, 'pending');
+  assert.equal(c.results.filter((r) => r.status === 'pending').length, 2);
+  assert.match(c.detail, /한컴오피스\(한글\)가 없어 대기/);
+});
+
+test('검사2: 클로드 명시 등록이 6개가 아니면 그 사실을 적어 둔다', async () => {
+  const root = withServers(newRoot('mcp-count'), { playwright: { command: 'x.cmd' } });
+  const c = await checkMcp(ctxFor(root), { spawn: fakeSpawn() });
+  assert.match(c.detail, /클로드 명시 등록 1개 — 기대값 6개/);
+});
+
+test('검사2: 플러그인이 스스로 띄우는 MCP 도 목록에 들어온다', () => {
+  const root = newRoot('mcp-plugin');
+  const pdir = path.join(root, '_agent', 'claude', 'plugins', 'cache', 'iris-local', 'self-improve', '0.2.0');
+  write(path.join(pdir, '.mcp.json'), { mcpServers: { 'self-improve': { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/server/index.js'] } } });
+  write(path.join(root, '_agent', 'claude', 'plugins', 'installed_plugins.json'), {
+    version: 2, plugins: { 'self-improve@iris-local': [{ installPath: pdir, version: '0.2.0' }] },
+  });
+  const found = collectMcpServers(ctxFor(root));
+  assert.equal(found.length, 1);
+  assert.equal(found[0].name, 'plugin:self-improve:self-improve');
+  // ${CLAUDE_PLUGIN_ROOT} 는 글자 그대로 펴진다(클로드가 하는 것과 같게).
+  assert.equal(found[0].args[0], `${pdir}/server/index.js`);
+});
+
+test('mcpInitialize: 실행 명령이 없으면 띄우지 않는다', async () => {
+  const r = await mcpInitialize({ name: 'x' }, { spawn: () => { throw new Error('띄우면 안 된다'); } });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'no-command');
+});
+
+// ---------------------------------------------------------------------------
+// 3. 플러그인
+// ---------------------------------------------------------------------------
+
+test('검사3: 표지 파일 또는 스킬 파일이 있으면 통과, 폴더가 없으면 실패', () => {
+  const root = newRoot('plugins');
+  const good = path.join(root, 'cache', 'superpowers');
+  write(path.join(good, '.claude-plugin', 'plugin.json'), { name: 'superpowers' });
+  const skillOnly = path.join(root, 'cache', 'skills-only');
+  write(path.join(skillOnly, 'brainstorming', 'SKILL.md'), '# skill');
+  write(path.join(root, '_agent', 'claude', 'plugins', 'installed_plugins.json'), {
+    version: 2,
+    plugins: {
+      'superpowers@iris-local': [{ installPath: good }],
+      'skills-only@iris-local': [{ installPath: skillOnly }],
+    },
+  });
+  assert.equal(checkPlugins(ctxFor(root)).status, 'pass');
+
+  write(path.join(root, '_agent', 'claude', 'plugins', 'installed_plugins.json'), {
+    version: 2, plugins: { 'gone@iris-local': [{ installPath: path.join(root, 'cache', 'gone') }] },
+  });
+  const bad = checkPlugins(ctxFor(root));
+  assert.equal(bad.status, 'fail');
+  assert.match(bad.detail, /설치 폴더가 없습니다/);
+});
+
+// ---------------------------------------------------------------------------
+// 4. 훅 문법
+// ---------------------------------------------------------------------------
+
+test('검사4: 훅 스크립트 3개를 각각 파워셸 파서·py_compile 로 본다', async () => {
+  const root = newRoot('hooks');
+  write(path.join(root, '_agent', 'claude', 'scripts', 'block-blanket-kill.ps1'), '# ps');
+  write(path.join(root, '_agent', 'claude', 'scripts', 'guard-iris-path.py'), '# py');
+  write(path.join(root, '_ontology', 'check_fresh.py'), '# py');
+  const calls = [];
+  const c = await checkHooks(ctxFor(root, {
+    run: async (exe, args) => { calls.push({ exe: path.basename(exe), args }); return { code: 0, out: '', err: '' }; },
+  }));
+  assert.equal(c.status, 'pass');
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].exe, 'powershell');
+  assert.match(calls[0].args[2], /Parser\]::ParseFile/);
+  assert.deepEqual(calls[1].args.slice(-3, -1), ['-m', 'py_compile']);
+});
+
+test('배치 파일(.cmd 심)은 cmd.exe 를 거쳐 띄운다(윈도 Node 의 spawn EINVAL 회피)', async () => {
+  const root = newRoot('batch');
+  write(path.join(root, '_agent', 'shared', 'shims', 'python.cmd'), '@echo off');
+  const calls = [];
+  await checkExe(ctxFor(root, {
+    run: async (exe, args) => { calls.push({ exe, args }); return { code: 0, out: 'ok', err: '' }; },
+  }));
+  const py = calls.find((c) => c.args.some((a) => String(a).endsWith('python.cmd')));
+  assert.equal(path.basename(py.exe), 'cmd.exe');
+  assert.deepEqual(py.args.slice(0, 3), ['/d', '/s', '/c']);
+  assert.equal(py.args[py.args.length - 1], '--version');
+  assert.deepEqual(batchWrap('C:\\t\\git.exe', ['--version']), { exe: 'C:\\t\\git.exe', args: ['--version'] });
+});
+
+test('검사4: 문법이 깨졌거나 파일이 없으면 실패', async () => {
+  const root = newRoot('hooks-bad');
+  write(path.join(root, '_agent', 'claude', 'scripts', 'block-blanket-kill.ps1'), '# ps');
+  const c = await checkHooks(ctxFor(root, { run: async () => ({ code: 1, out: 'Missing }', err: '' }) }));
+  assert.equal(c.status, 'fail');
+  assert.match(c.detail, /guard-iris-path\.py\(파일이 없습니다\)/);
+});
+
+// ---------------------------------------------------------------------------
+// 5. 설정 파일
+// ---------------------------------------------------------------------------
+
+test('tomlSanity: 표 머리가 깨졌거나 같은 표가 두 번이면 잡는다', () => {
+  assert.equal(tomlSanity('[mcp_servers.hwp]\ncommand = "x"\n').ok, true);
+  assert.equal(tomlSanity('[mcp_servers.hwp\ncommand = "x"\n').ok, false);
+  const dup = tomlSanity('[mcp_servers.x]\na = 1\n[mcp_servers.x]\nb = 2\n');
+  assert.equal(dup.ok, false);
+  assert.match(dup.problems[0], /두 번 있습니다/);
+  // 배열 표는 여러 번 나와도 정상이고, 여러 줄 문자열 안의 대괄호는 무시한다.
+  assert.equal(tomlSanity('[[hooks]]\na=1\n[[hooks]]\nb=2\n').ok, true);
+  assert.equal(tomlSanity('text = """\n[not a table\n"""\n').ok, true);
+});
+
+test('검사5: 설정 3종이 파싱되면 통과, 깨지면 실패', () => {
+  const root = newRoot('config');
+  write(path.join(root, '_agent', 'claude', 'settings.json'), { permissions: {} });
+  write(path.join(root, '_agent', 'claude', '.claude.json'), { mcpServers: {} });
+  write(path.join(root, '_agent', 'codex', 'config.toml'), '[mcp_servers.pdf]\ncommand = "python"\n');
+  assert.equal(checkConfig(ctxFor(root)).status, 'pass');
+
+  write(path.join(root, '_agent', 'claude', 'settings.json'), '{ broken');
+  const bad = checkConfig(ctxFor(root));
+  assert.equal(bad.status, 'fail');
+  assert.match(bad.detail, /settings\.json/);
+});
+
+// ---------------------------------------------------------------------------
+// 6. 바탕화면·루트 밖
+// ---------------------------------------------------------------------------
+
+test('검사6: 바탕화면에서 허용된 바로가기 하나는 세지 않는다', async () => {
+  const root = newRoot('desktop-ok');
+  const desktop = path.join(tmp, `desk-${seq}`);
+  fs.mkdirSync(desktop, { recursive: true });
+  write(path.join(desktop, 'IRIS.lnk'), 'shortcut');
+  write(path.join(desktop, '내 문서.txt'), 'old');
+  fs.utimesSync(path.join(desktop, '내 문서.txt'), new Date('2020-01-01'), new Date('2020-01-01'));
+
+  const ctx = ctxFor(root, {
+    desktopDir: desktop,
+    receipt: { schema: 2, setup: { unpack: { startedAt: new Date(Date.now() - 60000).toISOString() } } },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'pass');
+  assert.equal(c.strays.length, 0);
+});
+
+test('검사6: 설치 뒤 생긴 다른 파일은 실패로 잡는다', async () => {
+  const root = newRoot('desktop-bad');
+  const desktop = path.join(tmp, `desk-bad-${seq}`);
+  fs.mkdirSync(desktop, { recursive: true });
+  write(path.join(desktop, 'IRIS.lnk'), 'shortcut');
+  write(path.join(desktop, '설치기가 흘린 파일.txt'), 'oops');
+
+  const ctx = ctxFor(root, {
+    desktopDir: desktop,
+    receipt: { schema: 2, setup: { unpack: { startedAt: new Date(Date.now() - 60000).toISOString() } } },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'fail');
+  assert.deepEqual(c.strays.map((s) => s.name), ['설치기가 흘린 파일.txt']);
+});
+
+test('검사6: 단계 기록에 루트 밖 경로가 있으면 실패', async () => {
+  const root = newRoot('outside');
+  const ctx = ctxFor(root, {
+    desktopDir: null,
+    receipt: {
+      schema: 2,
+      setup: {
+        skeleton: { startedAt: new Date().toISOString(), recorded: { files: { created: ['_agent\\setup\\x.json'] } } },
+        // 정화 규칙(사용자 프로필 경로 금지)에 이 시험 파일 자체가 걸리지 않도록
+        // 가짜 경로는 조각으로 지어 쓴다.
+        relay: { recorded: { files: { created: [['C:', 'Users', '다른사람', 'Desktop', 'IRIS.lnk'].join('\\')] } } },
+      },
+    },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'fail');
+  assert.equal(c.outside.length, 1);
+  assert.equal(c.outside[0].stage, 'relay');
+});
+
+test('검사6: 꾸러미(zip) 안 원본 경로는 "루트 밖 쓰기"로 세지 않는다', async () => {
+  const root = newRoot('pkg-source');
+  const zip = path.join(tmp, `zip-src-${seq}`);
+  const wheel = path.join(zip, 'payload', 'runtime', 'PyYAML-6.0.3.whl');
+  write(wheel, 'wheel');
+  const ctx = ctxFor(root, {
+    desktopDir: null,
+    payloadDir: path.join(zip, 'payload'),
+    receipt: {
+      schema: 2,
+      setup: { venv: { startedAt: new Date().toISOString(), recorded: { paths: { pyyamlWheel: wheel } } } },
+    },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'pass', '읽어 온 곳은 쓴 곳이 아니다');
+  assert.equal(c.outside.length, 0);
+});
+
+test('검사6: 영혼 이름이 IRIS 가 아니어도 그 이름의 바로가기는 통과한다(연습 소울)', async () => {
+  // handoff.mjs writeFaceLauncher 는 바로가기를 "<name>.lnk"로 만들고, name 은
+  // ctx.name ?? receipt.soul.name ?? path.basename(root) 순으로 정해진다. 이
+  // 개발 PC 연습 소울(IRIS_INSTALLER_SOUL_NAME=IRIS-offline)에서는 root 의
+  // 마지막 마디가 곧 그 이름이므로, root 를 "IRIS-offline"으로 두고 바탕화면에
+  // 같은 이름의 .lnk 를 둔다.
+  const root = path.join(tmp, 'IRIS-offline');
+  fs.mkdirSync(path.join(root, '_agent', 'setup'), { recursive: true });
+  const desktop = path.join(tmp, `desk-offline-${seq += 1}`);
+  fs.mkdirSync(desktop, { recursive: true });
+  write(path.join(desktop, 'IRIS-offline.lnk'), 'shortcut');
+
+  const ctx = ctxFor(root, {
+    desktopDir: desktop,
+    receipt: { schema: 2, setup: { unpack: { startedAt: new Date(Date.now() - 60000).toISOString() } } },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'pass');
+  assert.equal(c.strays.length, 0);
+});
+
+test('검사6: 영혼 이름이 IRIS 가 아니어도 남의(외부) 새 파일은 여전히 실패로 잡는다', async () => {
+  const root = path.join(tmp, 'IRIS-offline-2');
+  fs.mkdirSync(path.join(root, '_agent', 'setup'), { recursive: true });
+  const desktop = path.join(tmp, `desk-offline-bad-${seq += 1}`);
+  fs.mkdirSync(desktop, { recursive: true });
+  write(path.join(desktop, 'IRIS-offline-2.lnk'), 'shortcut');
+  write(path.join(desktop, '설치기가 흘린 파일.txt'), 'oops');
+
+  const ctx = ctxFor(root, {
+    desktopDir: desktop,
+    receipt: { schema: 2, setup: { unpack: { startedAt: new Date(Date.now() - 60000).toISOString() } } },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'fail');
+  assert.deepEqual(c.strays.map((s) => s.name), ['설치기가 흘린 파일.txt']);
+});
+
+test('recordedPaths 는 원본(zip) 경로는 감사 대상에서 뺀다', () => {
+  const found = recordedPaths({ files: { created: ['_agent\\a'] }, source: 'D:\\zip\\payload\\x', from: 'D:\\zip\\y' });
+  assert.deepEqual(found, ['_agent\\a']);
+});
+
+test('installStartedAt: 가장 이른 단계 시작 시각을 쓴다', () => {
+  const t1 = '2026-09-15T01:00:00.000Z';
+  const t2 = '2026-09-15T02:00:00.000Z';
+  assert.equal(installStartedAt({ setup: { env: { startedAt: t2 }, unpack: { startedAt: t1 } } }), Date.parse(t1));
+});
+
+// ---------------------------------------------------------------------------
+// 7. 온톨로지
+// ---------------------------------------------------------------------------
+
+function card(root, folder, cardId) {
+  write(path.join(root, folder, 'AGENTS.md'), `---\n{id: '${cardId}', type: role, code: R01}\n---\n\n# ${folder}\n`);
+}
+
+test('검사7: 신선도 통과 + 카드 ID 중복 0 이면 통과', () => {
+  const root = newRoot('ont-ok');
+  card(root, 'R01-교사(Teacher)', 'iris:AAAA1111');
+  card(root, 'R02-연구자(Researcher)', 'iris:BBBB2222');
+  const ctx = ctxFor(root, {
+    receipt: { schema: 2, setup: { ontology: { recorded: { commands: [{ script: 'check_fresh.py', code: 0 }] } } } },
+  });
+  const c = checkOntology(ctx);
+  assert.equal(c.status, 'pass');
+  assert.equal(c.cards, 2);
+});
+
+test('검사7: 카드 ID 가 겹치거나 신선도가 실패면 막는다', () => {
+  const root = newRoot('ont-bad');
+  card(root, 'R01-교사(Teacher)', 'iris:SAME');
+  card(root, 'R02-연구자(Researcher)', 'iris:SAME');
+  const dup = checkOntology(ctxFor(root, {
+    receipt: { schema: 2, setup: { ontology: { recorded: { commands: [{ script: 'check_fresh.py', code: 0 }] } } } },
+  }));
+  assert.equal(dup.status, 'fail');
+  assert.match(dup.detail, /카드 ID 중복 1건/);
+
+  const stale = checkOntology(ctxFor(newRoot('ont-stale'), {
+    receipt: { schema: 2, setup: { ontology: { recorded: { commands: [{ script: 'check_fresh.py', code: 2 }] } } } },
+  }));
+  assert.equal(stale.status, 'fail');
+  assert.match(stale.detail, /신선도 확인 실패/);
+});
+
+test('scanCardIds 는 _agent·_ontology 같은 도구 폴더는 훑지 않는다', () => {
+  const root = newRoot('ont-scan');
+  card(root, 'R01-교사(Teacher)', 'iris:AAAA');
+  card(root, '_agent', 'iris:AAAA');
+  const ids = scanCardIds(fs, root);
+  assert.equal(ids.size, 1);
+});
+
+// ---------------------------------------------------------------------------
+// 8·9. 영수증 멱등 · 엣지
+// ---------------------------------------------------------------------------
+
+test('검사8: 영수증을 읽고 다시 써도 같으면 통과하고 임시 파일을 남기지 않는다', () => {
+  const root = newRoot('receipt');
+  writeReceipt(root, newReceiptV2({ root, name: 'IRIS', manifest: { package: { version: '2.0.0' } }, createdBy: 't' }));
+  const c = checkReceiptIdempotent(ctxFor(root));
+  assert.equal(c.status, 'pass');
+  assert.equal(fs.existsSync(path.join(root, '_agent', 'setup', 'receipt-idempotence.check')), false);
+});
+
+test('검사8: 영수증이 없으면 실패', () => {
+  assert.equal(checkReceiptIdempotent(ctxFor(newRoot('no-receipt'))).status, 'fail');
+});
+
+test('검사9: 엣지가 없으면 실패가 아니라 대기(기록만)', () => {
+  const yes = checkEdge(ctxFor(newRoot('edge-y')));
+  assert.equal(yes.status, 'pass');
+  const no = checkEdge(ctxFor(newRoot('edge-n'), { precheck: { recorded: { edge: { present: false } } } }));
+  assert.equal(no.status, 'pending');
+  assert.equal(no.pendingCapability.capability, '브라우저 조작(Playwright)');
+});
+
+// ---------------------------------------------------------------------------
+// 10·11. 앞 단계 인계
+// ---------------------------------------------------------------------------
+
+test('검사10·11: 정션으로 막힌 자리는 실패, 꾸러미에 없던 것·번호 충돌은 대기', () => {
+  const blocked = checkSkeleton(ctxFor(newRoot('sk1'), {
+    receipt: { schema: 2, setup: { skeleton: { recorded: { blocked: [{ what: '_ontology' }], missing: [] } } } },
+  }));
+  assert.equal(blocked.status, 'fail');
+
+  const missing = checkSkeleton(ctxFor(newRoot('sk2'), {
+    receipt: { schema: 2, setup: { skeleton: { recorded: { blocked: [], missing: [{ what: '온톨로지 명세서' }] } } } },
+  }));
+  assert.equal(missing.status, 'pending');
+
+  const reparse = checkStructure(ctxFor(newRoot('st1'), {
+    receipt: { schema: 2, setup: { structure: { recorded: { conflicts: [{ wanted: 'R01-교사(Teacher)', reason: 'reparse-point' }] } } } },
+  }));
+  assert.equal(reparse.status, 'fail');
+
+  const taken = checkStructure(ctxFor(newRoot('st2'), {
+    receipt: { schema: 2, setup: { structure: { recorded: { conflicts: [{ wanted: 'R01-교사(Teacher)', existing: 'R01-나(Me)', reason: 'code-taken' }] } } } },
+  }));
+  assert.equal(taken.status, 'pending');
+});
+
+// ---------------------------------------------------------------------------
+// 단계 전체
+// ---------------------------------------------------------------------------
+
+function fullyPassingRoot(label) {
+  const root = newRoot(label);
+  write(path.join(root, '_agent', 'shared', 'shims', 'python.cmd'), '@echo off');
+  write(path.join(root, '_agent', 'claude', 'settings.json'), { permissions: {} });
+  write(path.join(root, '_agent', 'claude', '.claude.json'), { mcpServers: { playwright: { command: 'x.cmd' } } });
+  write(path.join(root, '_agent', 'codex', 'config.toml'), '[mcp_servers.pdf]\ncommand = "python"\n');
+  write(path.join(root, '_agent', 'claude', 'scripts', 'block-blanket-kill.ps1'), '# ps');
+  write(path.join(root, '_agent', 'claude', 'scripts', 'guard-iris-path.py'), '# py');
+  write(path.join(root, '_ontology', 'check_fresh.py'), '# py');
+  write(path.join(root, '_agent', 'claude', 'plugins', 'installed_plugins.json'), {
+    version: 2, plugins: { 'superpowers@iris-local': [{ installPath: path.join(root, 'cache', 'sp') }] },
+  });
+  write(path.join(root, 'cache', 'sp', '.claude-plugin', 'plugin.json'), { name: 'superpowers' });
+  writeReceipt(root, newReceiptV2({ root, name: 'IRIS', manifest: { package: { version: '2.0.0' } }, createdBy: 't' }));
+  return root;
+}
+
+function stageCtx(root, extra = {}) {
+  const receipt = JSON.parse(fs.readFileSync(path.join(root, '_agent', 'setup', 'package-receipt.json'), 'utf8'));
+  for (const id of ['unpack', 'env', 'skeleton', 'structure', 'venv', 'adapters', 'relay', 'ontology']) {
+    receipt.setup[id] = { status: 'done', startedAt: new Date(Date.now() - 60000).toISOString(), recorded: {}, pending: [] };
+  }
+  receipt.setup.ontology.recorded = { commands: [{ script: 'check_fresh.py', code: 0 }] };
+  receipt.setup.checks = { status: 'running' };
+  return ctxFor(root, { receipt, desktopDir: null, ...extra });
+}
+
+test('단계 전체: 전부 통과하면 인수 문서·설치보고·진단을 쓰고 대기 목록을 돌려준다', async () => {
+  const root = fullyPassingRoot('stage-ok');
+  const out = await runChecksStage(stageCtx(root), { spawn: fakeSpawn() });
+
+  assert.equal(out.recorded.checks.fail, 0);
+  assert.ok(fs.existsSync(path.join(root, '_agent', 'setup', 'handoff.json')));
+  assert.ok(fs.existsSync(path.join(root, '_agent', 'setup', 'diagnostics.json')));
+  const report = fs.readdirSync(path.join(root, '_agent', 'setup')).find((f) => f.startsWith('설치보고-'));
+  assert.ok(report, '설치보고 md 가 있어야 한다');
+  assert.equal(out.recorded.state, 'login-pending', '로그인 전이니 아직 ready 가 아니다');
+
+  // 보고서를 쓰는 순간 이 단계는 아직 running 이지만, 표에는 결말이 찍혀야 한다.
+  const md = fs.readFileSync(path.join(root, '_agent', 'setup', report), 'utf8');
+  assert.match(md, /마무리 검사\s+완료/);
+  assert.match(md, /\[█{20}\] 100%/);
+});
+
+test('단계 전체: 검사가 실패해도 **먼저** 파일 셋을 쓰고 나서 E-CHECKS 로 멈춘다', async () => {
+  const root = fullyPassingRoot('stage-fail');
+  // 훅 파일 하나를 지워 검사 4를 실패시킨다.
+  fs.rmSync(path.join(root, '_ontology', 'check_fresh.py'), { force: true });
+
+  const ctx = stageCtx(root);
+  await assert.rejects(
+    () => runChecksStage(ctx, { spawn: fakeSpawn() }),
+    (e) => {
+      assert.equal(e.code, 'E-CHECKS');
+      assert.match(e.message, /검사 \d+개가 실패했습니다/);
+      assert.ok(Array.isArray(e.detail.fail) && e.detail.fail.length > 0);
+      return true;
+    },
+  );
+
+  // 멈추기 **전에** 쓴 파일들이 그대로 있어야 한다.
+  const handoff = JSON.parse(fs.readFileSync(path.join(root, '_agent', 'setup', 'handoff.json'), 'utf8'));
+  assert.ok(handoff.checks.fail > 0);
+  assert.ok(fs.existsSync(path.join(root, '_agent', 'setup', 'diagnostics.json')));
+  const md = fs.readdirSync(path.join(root, '_agent', 'setup')).find((f) => f.startsWith('설치보고-'));
+  assert.ok(md);
+});
+
+test('단계 전체: 검사가 실패하면 인수 문서가 그것을 실패로 적는다(allDone 이 아니다)', async () => {
+  // C5 — 검사가 깨졌는데도 `setup.allDone:true` 로 적히면 Face 는 "설치 완료"로
+  // 읽고 첫 인사를 해 버린다. 실패한 설치는 인수 문서에서도 실패여야 한다.
+  const root = fullyPassingRoot('stage-fail-handoff');
+  fs.rmSync(path.join(root, '_ontology', 'check_fresh.py'), { force: true });
+
+  await assert.rejects(() => runChecksStage(stageCtx(root), { spawn: fakeSpawn() }), (e) => e.code === 'E-CHECKS');
+
+  const handoff = JSON.parse(fs.readFileSync(path.join(root, '_agent', 'setup', 'handoff.json'), 'utf8'));
+  assert.equal(handoff.setup.allDone, false, '검사가 실패했는데 다 끝났다고 적으면 안 된다');
+  assert.ok(handoff.setup.failed, '무엇이 실패했는지 적혀 있어야 한다');
+  assert.equal(handoff.setup.failed.id, 'checks');
+  assert.equal(handoff.setup.failed.code, 'E-CHECKS');
+  assert.equal(handoff.state, 'setup-incomplete', 'Face 는 안내 카드 + 「설치 이어하기」로 가야 한다');
+  assert.equal(handoff.setupCompletedAt, null);
+});
+
+test('runChecks: only 로 고른 검사만 돌린다(열한 항목이 다 있다)', async () => {
+  const root = fullyPassingRoot('only');
+  const all = await runChecks(stageCtx(root), { spawn: fakeSpawn() });
+  assert.equal(all.items.length, 11);
+  assert.deepEqual(all.items.map((c) => c.id), [
+    'exe', 'mcp', 'plugins', 'hooks', 'config', 'desktop', 'ontology', 'receipt', 'edge', 'skeleton', 'structure',
+  ]);
+  const one = await runChecks(stageCtx(root), { only: ['edge'] });
+  assert.equal(one.items.length, 1);
+});
+
+test('검사 하나가 터져도 그 검사만 실패로 적고 나머지는 계속한다', async () => {
+  const root = fullyPassingRoot('boom');
+  const ctx = stageCtx(root, {
+    run: async () => { throw new Error('시험용 폭발'); },
+  });
+  const res = await runChecks(ctx, { spawn: fakeSpawn() });
+  assert.equal(res.items.length, 11);
+  assert.ok(res.items.some((c) => c.status === 'pass'), '나머지는 계속 돈다');
+});

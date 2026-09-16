@@ -225,10 +225,17 @@ async function main() {
     const missing = [];
     for (const [name, p] of Object.entries(lock.parts)) {
       if (p.redistribute === 'download') continue;
-      if (p.kind === 'glob') {
+      // A part that stages a whole FOLDER (lock `file` ends with '/', e.g. the
+      // wheelhouse; v1's `kind: glob` was the same idea) fans out into
+      // "<name>:<basename>" manifest keys, so the test is "at least N of
+      // them", not "a key called <name>". schema 2 states the expected number
+      // as `expectedCount` (v1 called it `minCount`).
+      const isMulti = p.kind === 'glob' || String(p.file ?? '').endsWith('/');
+      if (isMulti) {
         const matchCount = manifestKeys.filter((k) => k.startsWith(`${name}:`)).length;
-        const minCount = typeof p.minCount === 'number' ? p.minCount : 1;
-        if (matchCount < minCount) missing.push(`${name} (${matchCount} < minCount ${minCount})`);
+        const minCount = typeof p.expectedCount === 'number' ? p.expectedCount
+          : typeof p.minCount === 'number' ? p.minCount : 1;
+        if (matchCount < minCount) missing.push(`${name} (${matchCount} < expected ${minCount})`);
       } else if (!manifestKeys.includes(name)) {
         missing.push(name);
       }
@@ -392,7 +399,14 @@ async function main() {
     // ⑨ (C1/C2) the packed installer actually runs. Also proves lib/ and
     // lock.json are inside the zip: without them this server dies on import
     // (ERR_MODULE_NOT_FOUND) or answers 500 payload_unreadable later.
+    // net.mjs (2026-09-15, Task 9): the network-0 choke point
+    // installer/lib/{install,online,precheck}.mjs import as assertOnline/
+    // isOffline -- build/pack.mjs's LIB_FILES omitted it once already
+    // (masked by a stale zip until this check ran fresh), so it is checked
+    // here explicitly alongside run.mjs/zip.mjs, not folded silently into
+    // packedLibOk's message.
     const packedLibOk = fs.existsSync(path.join(tmpDir, 'lib', 'run.mjs')) && fs.existsSync(path.join(tmpDir, 'lib', 'zip.mjs'));
+    const packedNetOk = fs.existsSync(path.join(tmpDir, 'lib', 'net.mjs'));
     const packedLockOk = fs.existsSync(path.join(tmpDir, 'lock.json'));
     const smokeScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-smoke-'));
     let smoke;
@@ -403,9 +417,210 @@ async function main() {
     }
     record(
       '⑨ packed server smoke (/api/health from the extracted zip)',
-      smoke.ok && packedLibOk && packedLockOk,
-      `${smoke.detail}; zip lib/={run,zip}.mjs ${packedLibOk ? 'present' : 'MISSING'}, zip lock.json ${packedLockOk ? 'present' : 'MISSING'}`,
+      smoke.ok && packedLibOk && packedNetOk && packedLockOk,
+      `${smoke.detail}; zip lib/={run,zip,net}.mjs ${packedLibOk && packedNetOk ? 'present' : 'MISSING'}, zip lock.json ${packedLockOk ? 'present' : 'MISSING'}`,
     );
+
+    // ⑩ (T09) payload tree shape -- exactly the 9 v2 top-level folders
+    // (runtime/agents/relay/face/dash/tools/setup/policy/updater), and the
+    // retired v1 `guides` folder must be absent. This is the shape
+    // build/pack.mjs's addRepoPayloadSources()/collect() produce; the check
+    // just asserts the shipped zip actually has it.
+    const REQUIRED_PAYLOAD_FOLDERS = ['runtime', 'agents', 'relay', 'face', 'dash', 'tools', 'setup', 'policy', 'updater'];
+    {
+      const present = fs.readdirSync(payloadDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+      const missingFolders = REQUIRED_PAYLOAD_FOLDERS.filter((f) => !present.includes(f));
+      const hasGuides = present.includes('guides');
+      const ok = missingFolders.length === 0 && !hasGuides;
+      record(
+        '⑩ payload tree = 9 folders, guides absent',
+        ok,
+        ok
+          ? `present: ${REQUIRED_PAYLOAD_FOLDERS.join(', ')}`
+          : `${missingFolders.length ? `missing: ${missingFolders.join(', ')}; ` : ''}${hasGuides ? 'guides/ still present (v1 leftover)' : ''}`,
+      );
+    }
+
+    // ⑪ payload/policy/root-AGENTS.md must stay short enough that a fresh
+    // C:\IRIS root actually reads it (design cap: 260 lines).
+    {
+      const rootAgentsPath = path.join(payloadDir, 'policy', 'root-AGENTS.md');
+      if (!fs.existsSync(rootAgentsPath)) {
+        record('⑪ payload/policy/root-AGENTS.md <= 260 lines', false, `not found: ${rootAgentsPath}`);
+      } else {
+        const lineCount = fs.readFileSync(rootAgentsPath, 'utf8').split(/\r\n|\r|\n/).length;
+        const ok = lineCount <= 260;
+        record('⑪ payload/policy/root-AGENTS.md <= 260 lines', ok, `${lineCount} line(s)`);
+      }
+    }
+
+    // ⑫ personal-info count = 0 in the shipped payload -- a narrower re-read
+    // of check ②'s own sanitizeResult (already computed above against the
+    // whole zip, which is a superset of payload/) so this doesn't scan twice;
+    // it exists as its own named check because the task calls it out
+    // separately from "sanitize the whole zip".
+    record(
+      '⑫ personal-info count = 0 (payload)',
+      sanitizeResult.ok,
+      sanitizeResult.ok ? '0 hits' : `see ② for detail (${sanitizeResult.hits.length} hit(s))`,
+    );
+
+    // ⑬ hook .ps1 files are pure ASCII -- a BOM-less/non-ASCII PowerShell
+    // script that ships as a hook can silently mis-decode on a stranger's PC
+    // (R-004 is about BOM'd Korean .ps1; hooks avoid the whole class of bug by
+    // being ASCII-only, so no BOM is needed and no codepage can mangle them).
+    {
+      const policyDir = path.join(payloadDir, 'policy');
+      const ps1Files = [];
+      const walkForPs1 = (dir) => {
+        if (!fs.existsSync(dir)) return;
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          if (entry.isDirectory()) walkForPs1(p);
+          else if (entry.isFile() && entry.name.toLowerCase().endsWith('.ps1')) ps1Files.push(p);
+        }
+      };
+      walkForPs1(policyDir);
+      const nonAscii = [];
+      for (const p of ps1Files) {
+        const buf = fs.readFileSync(p);
+        for (let i = 0; i < buf.length; i++) {
+          if (buf[i] > 0x7f) { nonAscii.push(`${path.relative(payloadDir, p)} (byte 0x${buf[i].toString(16)} at offset ${i})`); break; }
+        }
+      }
+      record(
+        '⑬ hook .ps1 files are pure ASCII',
+        ps1Files.length > 0 && nonAscii.length === 0,
+        ps1Files.length === 0
+          ? `no .ps1 files found under ${policyDir}`
+          : nonAscii.length === 0
+            ? `${ps1Files.length} .ps1 file(s), all ASCII`
+            : `non-ASCII byte(s) in: ${nonAscii.join('; ')}`,
+      );
+    }
+
+    // ⑭ payload/setup/presets.json matches schema -- exactly the 7 required
+    // preset ids, in the shipped file (not just the repo source), since check
+    // ⑩'s tree only proves the *folder* exists.
+    {
+      const REQUIRED_PRESET_IDS = ['teacher', 'researcher', 'business', 'developer', 'office-worker', 'student', 'writer'];
+      const presetsPath = path.join(payloadDir, 'setup', 'presets.json');
+      if (!fs.existsSync(presetsPath)) {
+        record('⑭ payload/setup/presets.json schema (7 ids)', false, `not found: ${presetsPath}`);
+      } else {
+        let presetsJson;
+        try {
+          presetsJson = JSON.parse(fs.readFileSync(presetsPath, 'utf8'));
+        } catch (err) {
+          presetsJson = null;
+          record('⑭ payload/setup/presets.json schema (7 ids)', false, `not valid JSON: ${err.message}`);
+        }
+        if (presetsJson) {
+          const ids = Array.isArray(presetsJson.presets) ? presetsJson.presets.map((p) => p.id) : [];
+          const missingIds = REQUIRED_PRESET_IDS.filter((id) => !ids.includes(id));
+          const extraIds = ids.filter((id) => !REQUIRED_PRESET_IDS.includes(id));
+          const ok = missingIds.length === 0 && extraIds.length === 0 && ids.length === REQUIRED_PRESET_IDS.length;
+          record(
+            '⑭ payload/setup/presets.json schema (7 ids)',
+            ok,
+            ok ? `ids: ${ids.join(', ')}` : `got: [${ids.join(', ')}], missing: [${missingIds.join(', ')}], extra: [${extraIds.join(', ')}]`,
+          );
+        }
+      }
+    }
+
+    // ⑮ folder icon _cosmos.ico ships at payload/policy/_cosmos.ico.
+    {
+      const icoPath = path.join(payloadDir, 'policy', '_cosmos.ico');
+      const ok = fs.existsSync(icoPath) && fs.statSync(icoPath).size > 0;
+      record('⑮ _cosmos.ico present', ok, ok ? `${icoPath} (${fs.statSync(icoPath).size} bytes)` : `not found or empty: ${icoPath}`);
+    }
+
+    // ⑯ 설치가 안 되면.txt exists at the zip root with exactly one BOM (the
+    // UTF-8 BOM at byte 0 -- build/pack.mjs copies it byte-exact from
+    // payload-src/policy/install-notice.txt precisely to preserve this; a
+    // second stray BOM anywhere else in the file would mean some tool
+    // re-wrote/re-encoded it and corrupted the guarantee).
+    {
+      const NOTICE_NAME = '설치가 안 되면.txt';
+      const noticePath = path.join(tmpDir, NOTICE_NAME);
+      const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+      if (!fs.existsSync(noticePath)) {
+        record('⑯ 설치가 안 되면.txt at zip root, exactly one BOM', false, `not found: ${noticePath}`);
+      } else {
+        const buf = fs.readFileSync(noticePath);
+        let bomCount = 0;
+        for (let i = 0; i + 3 <= buf.length; i++) {
+          if (buf[i] === BOM[0] && buf[i + 1] === BOM[1] && buf[i + 2] === BOM[2]) bomCount++;
+        }
+        const startsWithBom = buf.length >= 3 && buf[0] === BOM[0] && buf[1] === BOM[1] && buf[2] === BOM[2];
+        const ok = startsWithBom && bomCount === 1;
+        record(
+          '⑯ 설치가 안 되면.txt at zip root, exactly one BOM',
+          ok,
+          `${bomCount} BOM sequence(s) found, starts-with-BOM=${startsWithBom}`,
+        );
+      }
+    }
+
+    // ⑰ dev-only files must not ship: installer/ui/mock-server.mjs and any
+    // *.test.* file must be absent from the extracted zip's installer/ tree
+    // (build/pack.mjs's INSTALLER_EXCLUDE_RELS / TEST_FILE_RE are what make
+    // this true -- this check proves it held for the zip actually built).
+    {
+      const installerDir = path.join(tmpDir, 'installer');
+      const bad = [];
+      const TEST_FILE_RE = /\.test\.[^.\\/]+$/i;
+      const walkInstaller = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          const rel = path.relative(installerDir, p).split(path.sep).join('/');
+          if (entry.isDirectory()) walkInstaller(p);
+          else if (entry.isFile()) {
+            if (rel === 'ui/mock-server.mjs' || TEST_FILE_RE.test(entry.name)) bad.push(rel);
+          }
+        }
+      };
+      if (fs.existsSync(installerDir)) walkInstaller(installerDir);
+      record(
+        '⑰ mock-server.mjs / *.test.* absent from shipped installer/',
+        bad.length === 0,
+        bad.length === 0 ? 'clean' : `found: ${bad.join(', ')}`,
+      );
+    }
+
+    // ⑱ manifest is schema:2 with every payload file fingerprinted (bytes +
+    // sha256), per build/pack.mjs's buildPackManifest() -- manifest.json
+    // itself is the one file exempt (it cannot fingerprint itself).
+    {
+      const allPayloadFiles = [];
+      const walkPayload = (dir, rel) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          const r = rel ? `${rel}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) walkPayload(p, r);
+          else if (entry.isFile()) allPayloadFiles.push(r);
+        }
+      };
+      walkPayload(payloadDir, '');
+      const expectedFiles = allPayloadFiles.filter((f) => f !== 'manifest.json');
+      const manifestFiles = manifest.files && typeof manifest.files === 'object' ? Object.keys(manifest.files) : [];
+      const missingFromManifest = expectedFiles.filter((f) => !manifestFiles.includes(f));
+      const malformed = expectedFiles.filter((f) => {
+        const entry = manifest.files?.[f];
+        return entry && (typeof entry.bytes !== 'number' || typeof entry.sha256 !== 'string' || entry.sha256.length !== 64);
+      });
+      const ok = manifest.schema === 2 && missingFromManifest.length === 0 && malformed.length === 0;
+      record(
+        '⑱ manifest schema:2, every payload file fingerprinted',
+        ok,
+        ok
+          ? `schema:2, ${expectedFiles.length} file(s) fingerprinted`
+          : `schema=${manifest.schema}, missing: [${missingFromManifest.join(', ')}], malformed: [${malformed.join(', ')}]`,
+      );
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

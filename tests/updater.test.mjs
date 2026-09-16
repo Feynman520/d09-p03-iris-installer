@@ -22,7 +22,7 @@ after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 // fixture: a fake soul root -- never a real drive letter, never this PC's
 // C:\IRIS (repo-wide constraint: test fixtures use a made-up soul like ALPHA).
 // --------------------------------------------------------------------------
-function makeSoul(name, { faceVersion = '2.57.1', lock = '{"lockfileVersion":3,"old":true}' } = {}) {
+function makeSoul(name, { faceVersion = '2.57.1', lock = '{"lockfileVersion":3,"old":true}', schema = 1 } = {}) {
   const root = path.join(tmp, name, 'ALPHA');
   const tools = path.join(root, '_agent', 'shared', 'tools');
   const face = path.join(tools, 'face');
@@ -40,7 +40,7 @@ function makeSoul(name, { faceVersion = '2.57.1', lock = '{"lockfileVersion":3,"
   fs.writeFileSync(path.join(face, 'node_modules', 'node-pty', 'pty.node'), 'old binary', 'utf8');
 
   const receipt = {
-    schema: 1,
+    schema,
     package: { name: 'IRIS', version: '1.2.0', guideVersion: '10', license: 'MIT' },
     soul: { root, name: 'ALPHA', createdBy: 'package-installer' },
     installed: { face: { version: faceVersion, path: '_agent\\shared\\tools\\face', sha256: 'old', verified: true } },
@@ -277,7 +277,7 @@ test('updater: an install with no receipt is still replaced, and the result says
 });
 
 test('updater: a package item starts IRIS-설치.cmd with IRIS_INSTALLER_AUTO=1 and skips face', async () => {
-  const { root, face } = makeSoul('case-package');
+  const { root, face } = makeSoul('case-package', { schema: 2 });
   const faceDir = makeNewFace(root);
   const pkgDir = path.join(root, '_agent', 'shared', 'downloads', 'update-20260914-000000', 'package');
   fs.mkdirSync(pkgDir, { recursive: true });
@@ -320,7 +320,7 @@ test('updater: a package item starts IRIS-설치.cmd with IRIS_INSTALLER_AUTO=1 
 });
 
 test('updater: a failed handoff to the installer still reopens the window (설계 4-5)', async () => {
-  const { root } = makeSoul('case-package-fail');
+  const { root } = makeSoul('case-package-fail', { schema: 2 });
   const pkgDir = path.join(root, '_agent', 'shared', 'downloads', 'update-20260914-000000', 'package');
   fs.mkdirSync(pkgDir, { recursive: true }); // no IRIS-설치.cmd in it
   fs.writeFileSync(path.join(faceDirFor(root), 'launch-hidden.vbs'), 'rem launcher', 'utf8');
@@ -337,6 +337,93 @@ test('updater: a failed handoff to the installer still reopens the window (설�
   assert.equal(result.relaunched, true, 'nobody else is left to open the window');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].exe, 'wscript.exe');
+});
+
+// T22: 구조 변경 판정 -- 영수증 schema와 새 판 schema가 다르면 설치기 --auto를
+// 부르기 전에 reinstall-required로 거부한다 (Face가 T21 문구를 보여준다).
+test('updater: schema 1 receipt vs schema 2 package -- refuses --auto, reinstall-required (1→2)', async () => {
+  const { root } = makeSoul('case-schema-1-to-2', { schema: 1 });
+  const pkgDir = path.join(root, '_agent', 'shared', 'downloads', 'update-20260915-000000', 'package');
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, 'IRIS-설치.cmd'), '@echo off\r\n', 'utf8');
+
+  const calls = [];
+  const result = await applyPlan({
+    plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '2.0.0' }], relaunch: true },
+    spawnFn: fakeSpawn(calls),
+  });
+
+  assert.equal(result.ok, false);
+  // relaunch:true still reopens the window on refusal (설계 4-5) -- that spawn
+  // is wscript/launch-hidden, never the installer .cmd itself.
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0].args?.at(-1) ?? calls[0].exe, /IRIS-설치\.cmd/, 'the installer must never be spawned for a schema mismatch');
+  const item = result.items.find((i) => i.kind === 'package');
+  assert.equal(item.reason, 'reinstall-required');
+  assert.equal(item.code, 'reinstall-required');
+  assert.equal(item.message, '2.0은 설치 방식이 바뀌어 새로 설치합니다. 기존 자료는 그대로 두고 설치기를 실행하면 됩니다.');
+  assert.equal(item.downloadUrl, 'https://iris-workspace.com/install.html');
+  assert.equal(result.handedOffToInstaller, false);
+});
+
+test('updater: schema 2 receipt vs schema 2 package -- --auto runs as usual (2→2)', async () => {
+  const { root } = makeSoul('case-schema-2-to-2', { schema: 2 });
+  const pkgDir = path.join(root, '_agent', 'shared', 'downloads', 'update-20260915-000001', 'package');
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, 'IRIS-설치.cmd'), '@echo off\r\n', 'utf8');
+
+  const calls = [];
+  const result = await applyPlan({
+    plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '2.1.0' }], relaunch: true },
+    spawnFn: fakeSpawn(calls),
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.handedOffToInstaller, true);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].args.at(-1), /IRIS-설치\.cmd" --auto/);
+});
+
+test('updater: a missing receipt vs schema 2 package -- treated as schema 1, refuses (없음→2)', async () => {
+  const { root } = makeSoul('case-schema-missing-to-2', { schema: 1 });
+  fs.rmSync(receiptPath(root), { force: true });
+  const pkgDir = path.join(root, '_agent', 'shared', 'downloads', 'update-20260915-000002', 'package');
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, 'IRIS-설치.cmd'), '@echo off\r\n', 'utf8');
+
+  const calls = [];
+  const result = await applyPlan({
+    plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '2.0.0' }], relaunch: true },
+    spawnFn: fakeSpawn(calls),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0].args?.at(-1) ?? calls[0].exe, /IRIS-설치\.cmd/, 'the installer must never be spawned when the receipt is missing');
+  const item = result.items.find((i) => i.kind === 'package');
+  assert.equal(item.reason, 'reinstall-required');
+  assert.equal(item.code, 'reinstall-required');
+});
+
+test('updater: schema 1 receipt vs schema 1 package -- unchanged 1.x behaviour (1→1)', async () => {
+  const { root } = makeSoul('case-schema-1-to-1', { schema: 1 });
+  const pkgDir = path.join(root, '_agent', 'shared', 'downloads', 'update-20260915-000003', 'package');
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, 'IRIS-설치.cmd'), '@echo off\r\n', 'utf8');
+
+  const calls = [];
+  const result = await applyPlan({
+    plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '1.5.0' }], relaunch: true },
+    spawnFn: fakeSpawn(calls),
+    packageSchema: 1,
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.handedOffToInstaller, true);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].args.at(-1), /IRIS-설치\.cmd" --auto/);
+  const item = result.items.find((i) => i.kind === 'package');
+  assert.notEqual(item.reason, 'reinstall-required', 'a matching schema must not be treated as reinstall-required');
 });
 
 test('updater: an npm ci that cannot even start rolls back like one that fails', async () => {

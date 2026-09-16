@@ -188,3 +188,139 @@ test('build.mjs accepts --require-local and honours IRIS_BUILD_REQUIRE_LOCAL=1',
   assert.match(buildText, /IRIS_BUILD_REQUIRE_LOCAL/);
   assert.match(buildText, /requireLocal: opts\.requireLocal/);
 });
+
+// ---------------------------------------------------------------------------
+// T08: HWPX templates, narrow exemptions, ID placeholders, lock redactions
+// ---------------------------------------------------------------------------
+
+const BASE_RULES = JSON.parse(fs.readFileSync(path.join(HERE, '../build/sanitize-rules.json'), 'utf8'));
+
+test('every exemption in the tracked rule file states a reason', () => {
+  const missing = [];
+  for (const rule of BASE_RULES.forbiddenRegex) {
+    for (const s of rule.skipUnder ?? []) {
+      if (typeof s === 'string' || !s.why) missing.push(`skipUnder ${JSON.stringify(s)} of /${rule.pattern}/`);
+    }
+  }
+  for (const a of BASE_RULES.allowFiles ?? []) {
+    if (typeof a === 'string' || !a.why) missing.push(`allowFiles ${JSON.stringify(a)}`);
+  }
+  assert.deepEqual(missing, [], 'an exemption with no `why` is an exemption nobody can review');
+});
+
+// The shipped HWPX form templates are zips of XML. A name typed into a
+// document's header or properties lives in that XML, so the scan has to open
+// them like any other archive -- before T08 a .hwpx was sniffed as binary
+// (its first bytes are the zip header) and skipped entirely.
+test('.hwpx is opened like a zip and its inner XML is scanned', async () => {
+  const root = mkroot('hwpx-case');
+  const innerSrc = path.join(tmp, 'hwpx-inner');
+  writeFile(innerSrc, 'Contents/section0.xml', `<?xml version="1.0"?>\n<hp:p>${TEST_STRING_MARKER}</hp:p>\n`);
+  writeFile(innerSrc, 'mimetype', 'application/hwp+zip');
+  fs.mkdirSync(root, { recursive: true });
+  // Build it as .zip and rename: `tar -a` picks the archive format from the
+  // extension and does not know `.hwpx`. A real HWPX is a plain zip, so the
+  // bytes are the same thing -- only the name differs, which is exactly what
+  // the scanner has to cope with.
+  const zipTmp = path.join(tmp, 'hwpx-build.zip');
+  await zipDir(innerSrc, zipTmp);
+  fs.renameSync(zipTmp, path.join(root, 'IRIS-기본양식.hwpx'));
+
+  const r = await sanitize(root, RULES_TM);
+  assert.equal(r.hits.length, 1, JSON.stringify(r.hits));
+  assert.equal(r.hits[0].file, 'IRIS-기본양식.hwpx!/Contents/section0.xml');
+  assert.equal(r.hits[0].rule, `string:${TEST_STRING_MARKER}`);
+});
+
+// skipUnder now takes a FULL-PATH glob when the pattern contains a '/', so an
+// exemption can be pinned to one part instead of to every file with that
+// name. These are the third-party tool parts whose upstream text carries the
+// authors' own addresses (T08 ruling 2).
+test('the email exemption applies only under the named third-party parts -- and only to the email rule', async () => {
+  const root = mkroot('narrow-exemption');
+  writeFile(root, 'tools/superpowers.zip!.md', ''); // decoy: a plain file, not the part
+  writeFile(root, 'x.js', '');
+
+  // inside the exempted part: an upstream author address is fine...
+  const exempted = mkroot('narrow-exempted');
+  writeFile(exempted, 'tools/superpowers.zip!/docs/plan.md', 'contact: upstream.author@example.com\n');
+  writeFile(exempted, 'tools/frontend-design.zip!/README.md', 'by someone@example.com\n');
+  assert.deepEqual((await sanitize(exempted, RULES)).hits, []);
+
+  // ...but the same address one folder over is not
+  const notExempted = mkroot('narrow-not-exempted');
+  writeFile(notExempted, 'tools/hwp-automation.zip!/docs/plan.md', 'contact: upstream.author@example.com\n');
+  writeFile(notExempted, 'setup/ontology.zip!/notes.md', 'contact: upstream.author@example.com\n');
+  const r2 = await sanitize(notExempted, RULES);
+  assert.deepEqual(r2.hits.map((h) => h.file).sort(), ['setup/ontology.zip!/notes.md', 'tools/hwp-automation.zip!/docs/plan.md']);
+
+  // ...and the exemption is for the EMAIL rule only: a personal-string hit
+  // inside the very same exempted part still fails the build.
+  const stillCaught = mkroot('narrow-still-caught');
+  writeFile(stillCaught, 'tools/superpowers.zip!/docs/plan.md', `path: ${TEST_STRING_MARKER}\nmail: upstream.author@example.com\n`);
+  const r3 = await sanitize(stillCaught, RULES_TM);
+  assert.deepEqual(r3.hits, [{ file: 'tools/superpowers.zip!/docs/plan.md', rule: `string:${TEST_STRING_MARKER}`, line: 1 }]);
+});
+
+test('the C:\\IRIS exemption covers exactly the ontology validator, not its neighbours', async () => {
+  const root = mkroot('ontology-exemption');
+  writeFile(root, 'setup/ontology.zip!/validate.py', 'for pfx in ("C:\\\\IRIS\\\\", "C:/IRIS/"):\n');
+  writeFile(root, 'setup/ontology.zip!/query.py', 'p = "C:\\\\IRIS\\\\x"\n');
+  const r = await sanitize(root, RULES);
+  assert.deepEqual(r.hits.map((h) => h.file), ['setup/ontology.zip!/query.py']);
+});
+
+// The registration-number rule reserves one documentation shape --
+// "iris:" + seven zeros + a digit -- and flags every other 8-character id.
+test('iris: ids -- the 0000000N documentation placeholder passes, anything else does not', async () => {
+  const root = mkroot('iris-ids');
+  writeFile(root, 'ok.md', '예 `iris:00000001`, `iris:00000002/S03`.\n');
+  writeFile(root, 'bad.md', '예 `iris:k7f3q2mz`.\n');
+  const r = await sanitize(root, RULES);
+  assert.deepEqual(r.hits, [{ file: 'bad.md', rule: `regex:${RULES.forbiddenRegex[0].pattern}`, line: 1 }]);
+});
+
+// T08 ruling 5: the ontology spec is collected from this PC's live file, which
+// carries real example ids, an account handle and a rooted path. lock.json
+// declares the redactions; this checks they (a) still anchor to exactly one
+// place each in the real source -- a silent no-match is the failure mode that
+// would ship the original text again -- and (b) leave a file the gate passes.
+function applyLockRedactions(text, entries) {
+  let out = text;
+  for (const entry of entries) {
+    const expected = entry.count ?? 1;
+    const re = new RegExp(entry.findRegex, 'g');
+    const found = out.match(re);
+    assert.equal(found ? found.length : 0, expected, `redact anchor matched the wrong number of times: ${entry.findRegex}`);
+    out = out.replace(re, entry.replace);
+  }
+  return out;
+}
+
+test('lock redactions clear the ontology spec and the ontology query tool', async (t) => {
+  const lock = JSON.parse(fs.readFileSync(path.join(HERE, '../lock.json'), 'utf8'));
+  const specSrc = path.resolve(HERE, '..', lock.parts['ontology-spec'].source);
+  const ontologySrc = path.resolve(HERE, '..', lock.parts.ontology.source);
+  const querySrc = path.join(ontologySrc, 'query.py');
+  if (!fs.existsSync(specSrc) || !fs.existsSync(querySrc)) {
+    t.skip(`sources not on this machine (${specSrc})`);
+    return;
+  }
+
+  const root = mkroot('lock-redact');
+  fs.mkdirSync(path.join(root, 'setup'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'setup', path.basename(lock.parts['ontology-spec'].file)),
+    applyLockRedactions(fs.readFileSync(specSrc, 'utf8'), lock.parts['ontology-spec'].redact),
+    'utf8',
+  );
+  const queryEntry = lock.parts.ontology.redact.find((e) => e.file === 'query.py');
+  fs.writeFileSync(
+    path.join(root, 'setup', 'query.py'),
+    applyLockRedactions(fs.readFileSync(querySrc, 'utf8'), [queryEntry]),
+    'utf8',
+  );
+
+  const r = await sanitize(root, RULES);
+  assert.deepEqual(r.hits, [], 'the redacted ontology files still trip the gate');
+});

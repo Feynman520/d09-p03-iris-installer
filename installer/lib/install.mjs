@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { run } from '../../lib/run.mjs';
 import { extractZip } from '../../lib/zip.mjs';
+import { assertOnline } from '../../lib/net.mjs';
 import {
   newReceipt, readReceipt, writeReceipt, markStep, setInstalled,
 } from './receipt.mjs';
@@ -577,11 +578,14 @@ export function defaultVerifiers({ root, manifest, lock, zipRoot, patchRulesFile
 // the npm registry at install time with the bundled node+npm, into the same
 // global-prefix layout the bundled parts use. The cache is kept inside the
 // soul so nothing is written to the user's %APPDATA%.
-export const defaultNpmInstall = ({ nodeExe, npmCli, prefix, spec, cacheDir }) => run(
-  nodeExe,
-  [npmCli, 'install', '-g', '--prefix', prefix, spec, '--no-fund', '--no-audit'],
-  { env: { ...process.env, npm_config_cache: cacheDir }, timeoutMs: 600000 },
-);
+export const defaultNpmInstall = ({ nodeExe, npmCli, prefix, spec, cacheDir }) => {
+  assertOnline(`npm install ${spec}`);
+  return run(
+    nodeExe,
+    [npmCli, 'install', '-g', '--prefix', prefix, spec, '--no-fund', '--no-audit'],
+    { env: { ...process.env, npm_config_cache: cacheDir }, timeoutMs: 600000 },
+  );
+};
 
 // ---------------------------------------------------------------------------
 // install

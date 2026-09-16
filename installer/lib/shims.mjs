@@ -106,6 +106,21 @@ export function shimsDir(root) {
   return path.join(root, '_agent', 'shared', 'shims');
 }
 
+// A shim whose bytes are already exactly right is left alone -- not rewritten
+// with the same content. The v2 setup engine's re-run check is "second run
+// changes nothing" (docs\세팅엔진-계약-v2.md 검사 8), and a byte-identical
+// rewrite still moves the file's mtime, which a fingerprint comparison reads
+// as a change (measured 2026-09-15 on the T13 rehearsal root: 5 shims, same
+// size, new mtime). `written` still lists every shim that exists afterwards
+// -- callers use it as "the set of shims", not "what I just touched".
+function writeIfChanged(file, text) {
+  try {
+    if (fs.readFileSync(file, 'ascii') === text) return false;
+  } catch { /* missing or unreadable -> write it */ }
+  fs.writeFileSync(file, text, 'ascii');
+  return true;
+}
+
 // writeShims(root, activeAgents) -- activeAgents is the subset of
 // ['claude','codex'] the user actually logged in with. A subscription that
 // was not chosen still has its files on disk but gets no shim, so it stays
@@ -114,21 +129,21 @@ export function writeShims(root, activeAgents = []) {
   const dir = shimsDir(root);
   fs.mkdirSync(dir, { recursive: true });
   const written = [];
+  const changed = [];
 
-  const nodeCmd = path.join(dir, 'node.cmd');
-  fs.writeFileSync(nodeCmd, nodeShim(), 'ascii');
-  written.push(nodeCmd);
-  for (const [name, text] of [['git.cmd', gitShim()], ['python.cmd', pythonShim()], ['py.cmd', pyShim()]]) {
+  for (const [name, text] of [
+    ['node.cmd', nodeShim()], ['git.cmd', gitShim()], ['python.cmd', pythonShim()], ['py.cmd', pyShim()],
+  ]) {
     const file = path.join(dir, name);
-    fs.writeFileSync(file, text, 'ascii');
+    if (writeIfChanged(file, text)) changed.push(file);
     written.push(file);
   }
 
   for (const agent of ['claude', 'codex']) {
     if (!activeAgents.includes(agent)) continue;
     const file = path.join(dir, `${agent}.cmd`);
-    fs.writeFileSync(file, agentShim(agent), 'ascii');
+    if (writeIfChanged(file, agentShim(agent))) changed.push(file);
     written.push(file);
   }
-  return { dir, written };
+  return { dir, written, changed };
 }

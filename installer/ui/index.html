@@ -17,18 +17,18 @@
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html, body { height: 100%; margin: 0; background: var(--base); color: var(--ink); font: 14px/1.6 var(--sans); letter-spacing: .01em; -webkit-font-smoothing: antialiased; }
+html, body { height: 100%; margin: 0; background: var(--base); color: var(--ink); font: 15px/1.7 var(--sans); letter-spacing: .01em; -webkit-font-smoothing: antialiased; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--iris); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--iris); outline-offset: 2px; }
 code, .mono { font-family: var(--mono); }
 
-.wrap { max-width: 780px; margin: 0 auto; padding: 28px 20px 72px; }
+.wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 72px; }
 
 /* ---- 머리말 + 진행 바 ---- */
 header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
-h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: .06em; }
+h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .06em; }
 .ver { font-size: 12px; color: var(--ink-3); font-family: var(--mono); }
-.lead { color: var(--ink-2); margin: 0 0 18px; font-size: 13px; }
+.lead { color: var(--ink-2); margin: 0 0 18px; font-size: 14px; }
 .bar { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; margin-bottom: 22px; }
 .bar-line { font-family: var(--mono); font-size: 15px; letter-spacing: .5px; white-space: nowrap; overflow-x: auto; }
 .bar-fill { color: var(--iris); }
@@ -36,52 +36,86 @@ h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: .06em; }
 .bar-num { color: var(--ink-2); font-size: 13px; }
 .bar-note { color: var(--ink-3); font-size: 12px; margin-top: 6px; }
 
-/* ---- 단계 카드 ---- */
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); margin-bottom: 12px; overflow: hidden; }
-.card.active { border-color: var(--line-2); box-shadow: 0 0 0 1px var(--iris-soft); }
-.card.locked { opacity: .45; }
-.card-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-.mark { font-size: 17px; color: var(--iris); width: 22px; text-align: center; }
-.card-head h2 { margin: 0; font-size: 14.5px; font-weight: 600; flex: 1; }
+/* ---- 단계 카드 — 한 화면에 한 장만 보인다(한 화면 한 생각) ---- */
+.card { background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r); margin-bottom: 12px; overflow: hidden; box-shadow: 0 0 0 1px var(--iris-soft); }
+.card-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+.mark { font-size: 18px; color: var(--iris); width: 24px; text-align: center; }
+.card-head h2 { margin: 0; font-size: 16px; font-weight: 600; flex: 1; }
 .badge { font-size: 11.5px; color: var(--ink-3); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
 .badge.run { color: var(--iris); border-color: rgba(143,168,255,.35); }
 .badge.done { color: var(--ok); border-color: rgba(111,211,154,.3); }
 .badge.bad { color: var(--bad); border-color: rgba(240,120,139,.35); }
-.card-body { padding: 14px; }
-.card.locked .card-body { display: none; }
-.hint { color: var(--ink-2); font-size: 13px; margin: 0 0 12px; }
+.card-body { padding: 16px; }
+.hint { color: var(--ink-2); font-size: 14px; margin: 0 0 14px; }
 .sub { color: var(--ink-3); font-size: 12.5px; }
+h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
 
-button.go { background: var(--iris-soft); color: var(--iris); border: 1px solid rgba(143,168,255,.35); border-radius: 8px; padding: 8px 16px; font-size: 13.5px; }
+button.go { background: var(--iris-soft); color: var(--iris); border: 1px solid rgba(143,168,255,.35); border-radius: 8px; padding: 9px 18px; font-size: 14.5px; }
 button.go:hover:not(:disabled) { background: rgba(143,168,255,.24); }
 button.go:disabled { opacity: .4; cursor: default; }
-button.ghost { border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 12px; color: var(--ink-2); font-size: 12.5px; }
+button.ghost { border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 13px; color: var(--ink-2); font-size: 13px; }
 button.ghost:hover:not(:disabled) { background: var(--raised); color: var(--ink); }
-input[type=text] { background: var(--base); color: var(--ink); border: 1px solid var(--line-2); border-radius: 8px; padding: 8px 11px; font: 14px var(--mono); width: 220px; }
+button.ghost:disabled { opacity: .35; cursor: default; }
+button.tiny { border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; color: var(--ink-2); font-size: 12px; }
+button.tiny:hover:not(:disabled) { background: var(--raised); color: var(--ink); }
+button.tiny:disabled { opacity: .3; cursor: default; }
+input[type=text] { background: var(--base); color: var(--ink); border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 10px; font: 14px var(--sans); width: 100%; }
+select { background: var(--base); color: var(--ink); border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 8px; font: 13px var(--sans); width: 100%; }
+.acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+.acts .spacer { flex: 1; }
 
 .rows { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 0; }
-.row { display: grid; grid-template-columns: 20px 1fr auto; gap: 10px; align-items: baseline; font-size: 13px; }
+.row { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: baseline; font-size: 13.5px; }
 .row .st { text-align: center; }
 .row .dt { color: var(--ink-3); font-size: 12px; font-family: var(--mono); }
 .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .idle { color: var(--ink-3); }
 
-.note { border-left: 2px solid var(--warn); background: var(--raised); padding: 9px 12px; border-radius: 6px; color: var(--ink-2); font-size: 12.5px; margin: 12px 0 0; }
+.note { border-left: 2px solid var(--warn); background: var(--raised); padding: 10px 13px; border-radius: 6px; color: var(--ink-2); font-size: 13.5px; margin: 12px 0 0; }
 .note.bad { border-left-color: var(--bad); }
 .note.ok { border-left-color: var(--ok); }
 .path { font-family: var(--mono); font-size: 12.5px; color: var(--iris-2); word-break: break-all; }
 
-label.pick { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
+label.pick { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
 label.pick:hover { background: var(--raised); }
-label.pick input { margin-top: 3px; }
+label.pick input { margin-top: 4px; }
 label.pick b { font-weight: 600; }
 label.pick .sub { display: block; }
 
 .mini { font-family: var(--mono); font-size: 12px; letter-spacing: .4px; }
 .mini .bar-fill { color: var(--iris); }
-.login-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
-.login-box h3 { margin: 0 0 8px; font-size: 13.5px; font-weight: 600; }
-.stage { display: grid; grid-template-columns: 20px 1fr auto; gap: 10px; font-size: 13px; padding: 3px 0; }
+.login-box { border: 1px solid var(--line); border-radius: 8px; padding: 13px; margin-bottom: 10px; }
+.login-box h3 { margin: 0 0 8px; }
+.stage { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; font-size: 13.5px; padding: 3px 0; align-items: baseline; }
 footer { color: var(--ink-3); font-size: 11.5px; margin-top: 26px; text-align: center; }
+
+/* ---- ④ 작업 폴더 구성 ---- */
+.presets { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+.presets button { border: 1px solid var(--line-2); border-radius: 999px; padding: 6px 13px; color: var(--ink-2); font-size: 13px; }
+.presets button:hover { background: var(--raised); color: var(--ink); }
+.presets button.on { border-color: rgba(143,168,255,.45); color: var(--iris); background: var(--iris-soft); }
+.split { display: grid; grid-template-columns: 1fr 300px; gap: 16px; align-items: start; }
+@media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
+.editor { min-width: 0; }
+.node { display: grid; grid-template-columns: 30px minmax(0,1.1fr) minmax(0,1fr) 128px 74px; gap: 7px; align-items: center; padding: 7px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 7px; background: var(--base); }
+.node.bad { border-color: rgba(240,120,139,.45); }
+.node .lv { font-family: var(--mono); font-size: 12.5px; color: var(--iris); text-align: center; }
+.node .ops { display: flex; gap: 3px; justify-content: flex-end; }
+.node .msg { grid-column: 1 / -1; font-size: 12.5px; color: var(--bad); }
+.node .msg.warn { color: var(--warn); }
+.node.d { margin-left: 18px; } .node.p { margin-left: 36px; }
+.col-head { display: grid; grid-template-columns: 30px minmax(0,1.1fr) minmax(0,1fr) 128px 74px; gap: 7px; font-size: 11.5px; color: var(--ink-3); padding: 0 7px 4px; }
+.preview { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--base); position: sticky; top: 12px; }
+pre.tree { font-family: var(--mono); font-size: 12.5px; line-height: 1.75; color: var(--ink); margin: 0; white-space: pre; overflow-x: auto; }
+pre.tree .empty { color: var(--ink-3); }
+.conn { color: var(--ink-3); font-size: 12.5px; margin: 10px 0 0; }
+.stage-rows { display: flex; flex-direction: column; gap: 5px; margin: 12px 0 0; }
+.stage-row { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; font-size: 13.5px; align-items: baseline; }
+.sub-bar { grid-column: 2 / -1; }
+.report h3 { margin: 16px 0 4px; color: var(--iris); }
+.report p { margin: 0 0 6px; color: var(--ink-2); font-size: 14px; }
+.report ul { margin: 4px 0 6px; padding-left: 20px; color: var(--ink-2); font-size: 14px; }
+details { margin-top: 14px; } summary { cursor: pointer; color: var(--ink-3); font-size: 12.5px; }
+details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; color: var(--ink-2); background: var(--base); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 320px; overflow: auto; }
 </style>
 
 <div class="wrap">
@@ -89,135 +123,317 @@ footer { color: var(--ink-3); font-size: 11.5px; margin-top: 26px; text-align: c
     <h1>IRIS 설치</h1>
     <span class="ver" id="ver"></span>
   </header>
-  <p class="lead" id="lead">여섯 단계입니다. 사람이 직접 해야 하는 일은 <b>ⓔ 계정 로그인</b> 하나뿐이고, 나머지는 버튼만 누르면 됩니다.</p>
+  <p class="lead" id="lead">여덟 화면입니다. 사람이 정할 것은 <b>구독 · 작업 폴더 · 로그인</b> 세 가지뿐이고, 나머지는 설치기가 알아서 합니다.</p>
 
   <div class="bar" id="bar-wrap">
     <div class="bar-line" id="bar"></div>
-    <div class="bar-note" id="bar-note">기준 = 끝난 단계 수 / 전체 6단계</div>
+    <div class="bar-note" id="bar-note">기준 = 끝난 화면 수 / 전체 8화면</div>
   </div>
 
-  <!-- 자동 업데이트 모드 전용 카드. 평소에는 숨어 있고, 서버가 auto.eligible 이라고
-       할 때만 나타나며 그때는 아래 여섯 카드를 전부 감춘다(사용자가 누를 것이 없다). -->
-  <section class="card active" id="card-auto" hidden>
+  <!-- 자동 업데이트 모드 전용 카드(--auto). 평소에는 숨어 있고, 그때는 아래 여덟 카드를 전부 감춘다. -->
+  <section class="card" id="card-auto" hidden>
     <div class="card-head"><span class="mark">↻</span><h2>업데이트</h2><span class="badge" id="badge-auto">대기</span></div>
     <div class="card-body">
       <p class="hint" id="auto-hint">새 판으로 바꾸는 중입니다. 이미 있는 것은 지우지 않고 <code>.prev</code>로 옆에 남기며, 자료·설정·기억은 건드리지 않습니다.</p>
       <div class="rows" id="auto-rows"></div>
       <div id="auto-note"></div>
-      <div style="margin-top:10px"><button class="go" id="btn-auto-retry" hidden>다시 시도</button></div>
+      <div class="acts"><button class="go" id="btn-auto-retry" hidden>다시 시도</button></div>
     </div>
   </section>
 
-  <section class="card" id="card-precheck">
-    <div class="card-head"><span class="mark">ⓐ</span><h2>준비 확인</h2><span class="badge" id="badge-precheck">대기</span></div>
+  <!-- 1.x 영수증을 자동 업데이트로 열었을 때. 여기서는 아무것도 자동으로 하지 않는다. -->
+  <section class="card" id="card-reinstall" hidden>
+    <div class="card-head"><span class="mark">↻</span><h2>새로 설치가 필요합니다</h2><span class="badge">안내</span></div>
     <div class="card-body">
-      <p class="hint">이 컴퓨터가 설치를 받을 수 있는 상태인지 먼저 살펴봅니다. 아무것도 바꾸지 않고 읽기만 합니다.</p>
-      <button class="go" id="btn-precheck">확인 시작</button>
+      <p class="hint"><b>2.0은 설치 방식이 바뀌어 새로 설치합니다. 기존 자료는 그대로 두고 설치기를 실행하면 됩니다.</b></p>
+      <p class="sub">지금까지 만든 폴더·글·설정·기억은 그대로 있습니다. 새 설치기가 그 위에 부족한 것만 채웁니다. 이 창은 닫으셔도 됩니다.</p>
+    </div>
+  </section>
+
+  <!-- ① 준비 확인 -->
+  <section class="card" id="card-precheck" hidden>
+    <div class="card-head"><span class="mark">①</span><h2>준비 확인</h2><span class="badge" id="badge-precheck">대기</span></div>
+    <div class="card-body">
+      <p class="hint">이 컴퓨터가 설치를 받을 수 있는 상태인지 먼저 살펴봅니다. 아무것도 바꾸지 않고 읽기만 하며, 보통 10초, 느린 PC에서는 최대 45초쯤 걸립니다.</p>
       <div class="rows" id="precheck-rows"></div>
       <div id="precheck-note"></div>
+      <div class="acts">
+        <button class="go" id="btn-precheck" hidden>다시 확인</button>
+        <span class="spacer"></span>
+        <button class="ghost" id="btn-log-precheck">로그 경로 복사</button>
+      </div>
     </div>
   </section>
 
-  <section class="card" id="card-name">
-    <div class="card-head"><span class="mark">ⓑ</span><h2>설치 위치</h2><span class="badge" id="badge-name">대기</span></div>
+  <!-- ② 설치 위치 -->
+  <section class="card" id="card-locate" hidden>
+    <div class="card-head"><span class="mark">②</span><h2>설치 위치</h2><span class="badge" id="badge-locate">대기</span></div>
     <div class="card-body">
       <p class="hint">모든 것은 <code>C:\IRIS</code> 폴더 하나에 들어갑니다. 바탕화면에는 「IRIS」 바로가기 하나만 만듭니다. 정할 것은 없고, 그 자리를 쓸 수 있는지만 확인합니다.</p>
-      <button class="go" id="btn-name" hidden>다시 확인</button>
-      <div id="name-note"></div>
+      <div id="locate-note"></div>
+      <div class="acts">
+        <button class="ghost" id="btn-locate" hidden>다시 확인</button>
+        <button class="go" id="btn-locate-next" hidden>다음</button>
+      </div>
     </div>
   </section>
 
-  <section class="card" id="card-choice">
-    <div class="card-head"><span class="mark">ⓒ</span><h2>구독 고르기</h2><span class="badge" id="badge-choice">대기</span></div>
+  <!-- ③ 구독 -->
+  <section class="card" id="card-choice" hidden>
+    <div class="card-head"><span class="mark">③</span><h2>구독 고르기</h2><span class="badge" id="badge-choice">대기</span></div>
     <div class="card-body">
-      <p class="hint">가지고 계신 <b>유료 구독</b>을 모두 고르세요. 무료 계정으로는 비서가 일할 수 없습니다. 둘 다 고르면 Claude 쪽이 첫 세팅을 맡고, 그 뒤로는 둘 다 씁니다.</p>
-      <label class="pick"><input type="checkbox" id="sub-claude" value="claude"><span><b>Claude 구독</b> — claude.ai 유료 요금제(예: Pro, Max)<span class="sub">비서가 Claude로 일합니다(도구 이름: Claude Code). 둘 다 있으면 이쪽이 첫 세팅을 맡습니다.</span></span></label>
+      <p class="hint">가지고 계신 <b>유료 구독</b>을 모두 고르세요. 무료 계정으로는 비서가 일할 수 없습니다. 둘 다 고르면 Claude 쪽이 앞장서고, 그 뒤로는 둘 다 씁니다.</p>
+      <label class="pick"><input type="checkbox" id="sub-claude" value="claude"><span><b>Claude 구독</b> — claude.ai 유료 요금제(예: Pro, Max)<span class="sub">비서가 Claude로 일합니다(도구 이름: Claude Code). 둘 다 있으면 이쪽이 앞장섭니다.</span></span></label>
       <label class="pick"><input type="checkbox" id="sub-chatgpt" value="chatgpt"><span><b>ChatGPT 구독</b> — chatgpt.com 유료 요금제(예: Plus, Pro)<span class="sub">비서가 ChatGPT로 일합니다(도구 이름: Codex).</span></span></label>
-      <button class="go" id="btn-choice">이걸로 정하기</button>
       <div id="choice-note"></div>
+      <div class="acts">
+        <button class="ghost" id="btn-back-choice">이전</button>
+        <button class="go" id="btn-choice">다음</button>
+      </div>
     </div>
   </section>
 
-  <section class="card" id="card-install">
-    <div class="card-head"><span class="mark">ⓓ</span><h2>설치</h2><span class="badge" id="badge-install">대기</span></div>
+  <!-- ④ 작업 폴더 구성 -->
+  <section class="card" id="card-structure" hidden>
+    <div class="card-head"><span class="mark">④</span><h2>작업 폴더 구성</h2><span class="badge" id="badge-structure">대기</span></div>
     <div class="card-body">
-      <p class="hint">동봉된 프로그램들을 위에서 정한 폴더 안으로 옮겨 놓습니다. 이미 있는 파일은 지우지 않고 <code>.prev</code>로 옆에 남깁니다. 몇 분 걸립니다.</p>
-      <button class="go" id="btn-install">설치 시작</button>
-      <div class="rows" id="install-rows"></div>
-      <div id="install-note"></div>
+      <p class="hint">비서와 함께 쓸 <b>일의 방</b>을 미리 만들어 둡니다. 가장 바깥 칸(R)은 하나 이상 있어야 하고, 그 안의 분야(D)·일거리(P)는 없어도 됩니다. 나중에 얼마든지 늘리고 바꿀 수 있으니 편하게 고르세요.</p>
+      <div class="presets" id="preset-buttons"></div>
+      <div class="split">
+        <div class="editor">
+          <div class="col-head"><span></span><span>한글 이름</span><span>영어 이름(비워도 됨)</span><span>어디에 넣을지</span><span></span></div>
+          <div id="node-list"></div>
+          <div class="acts">
+            <button class="ghost" id="btn-add-R">+ 가장 바깥(R)</button>
+            <button class="ghost" id="btn-add-D">+ 분야(D)</button>
+            <button class="ghost" id="btn-add-P">+ 일거리(P)</button>
+          </div>
+        </div>
+        <div class="preview">
+          <h3>이렇게 만들어집니다</h3>
+          <pre class="tree" id="tree-preview"></pre>
+          <p class="sub" style="margin:10px 0 0">앞의 번호(R01·D01·P01)는 설치기가 순서대로 매깁니다. 영어 이름을 비우면 <code>R01-교사</code>처럼 한글만으로 만듭니다.</p>
+        </div>
+      </div>
+      <div id="structure-note"></div>
+      <div class="acts">
+        <button class="ghost" id="btn-back-structure">이전</button>
+        <button class="go" id="btn-structure">이대로 하기</button>
+        <span class="spacer"></span>
+        <button class="ghost" id="btn-later">나중에 비서와 정하기</button>
+      </div>
     </div>
   </section>
 
-  <section class="card" id="card-login">
-    <div class="card-head"><span class="mark">ⓔ</span><h2>계정 로그인</h2><span class="badge" id="badge-login">대기</span></div>
+  <!-- ⑤ 요약 -->
+  <section class="card" id="card-summary" hidden>
+    <div class="card-head"><span class="mark">⑤</span><h2>이대로 설치할까요</h2><span class="badge" id="badge-summary">대기</span></div>
     <div class="card-body">
-      <p class="hint">여기만 사람이 직접 합니다. 「로그인 시작」을 누르면 검은 창이 잠깐 열리고, 곧 브라우저에 로그인 화면이 뜹니다. <b>평소 쓰는 그 계정으로 로그인하고 「허용(Authorize)」을 누르세요.</b> 끝나면 검은 창은 저절로 닫히고 이 화면이 다음 줄로 넘어갑니다. 브라우저가 코드를 보여 주면 복사해서 검은 창에 붙여 넣고 Enter를 누르세요. 창을 닫아 버렸거나 브라우저가 안 뜨면 잠시 뒤 나타나는 「다시 열기」를 누르면 됩니다.</p>
+      <p class="hint">여기까지가 사람이 정하는 전부입니다. 아래가 맞으면 설치를 시작하세요. 몇 분 동안 인터넷 없이 혼자 진행합니다.</p>
+      <div class="rows" id="summary-rows"></div>
+      <div class="preview" style="margin-top:12px; position:static">
+        <h3>만들어질 작업 폴더</h3>
+        <pre class="tree" id="summary-tree"></pre>
+      </div>
+      <p class="sub" style="margin-top:10px">폴더 아이콘은 IRIS 기본 별밭 아이콘으로 정해져 있습니다(고를 것 없음).</p>
+      <div id="summary-note"></div>
+      <div class="acts">
+        <button class="ghost" id="btn-back-summary">이전</button>
+        <button class="go" id="btn-summary">이대로 설치 시작</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ⑥ 설치 중 -->
+  <section class="card" id="card-setup" hidden>
+    <div class="card-head"><span class="mark">⑥</span><h2>설치 중</h2><span class="badge" id="badge-setup">대기</span></div>
+    <div class="card-body">
+      <p class="hint">아홉 가지 일을 순서대로 합니다. 인터넷은 쓰지 않습니다. 이 창을 닫지 말고 기다려 주세요.</p>
+      <div id="setup-total"></div>
+      <div class="stage-rows" id="setup-rows"></div>
+      <p class="conn" id="setup-conn" hidden>연결 확인 중…</p>
+      <div id="setup-note"></div>
+      <div class="acts">
+        <button class="go" id="btn-setup-retry" hidden>다시 시도</button>
+        <span class="spacer"></span>
+        <button class="ghost" id="btn-log-setup">로그 경로 복사</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ⑦ 온라인 -->
+  <section class="card" id="card-online" hidden>
+    <div class="card-head"><span class="mark">⑦</span><h2>계정 연결</h2><span class="badge" id="badge-online">대기</span></div>
+    <div class="card-body">
+      <p class="hint">여기부터는 인터넷이 필요합니다. 사람이 직접 하는 일은 <b>구독 로그인</b> 하나뿐입니다.</p>
+      <div class="stage-rows" id="online-rows"></div>
+      <p class="conn" id="online-conn" hidden>연결 확인 중…</p>
       <div id="login-boxes"></div>
-      <div id="login-note"></div>
+      <div id="online-note"></div>
+      <div class="acts">
+        <button class="go" id="btn-online-retry" hidden>다시 확인</button>
+        <span class="spacer"></span>
+        <button class="ghost" id="btn-log-online">로그 경로 복사</button>
+      </div>
     </div>
   </section>
 
-  <section class="card" id="card-handoff">
-    <div class="card-head"><span class="mark">ⓕ</span><h2>첫 세션 넘기기</h2><span class="badge" id="badge-handoff">대기</span></div>
+  <!-- ⑧ 완료 -->
+  <section class="card" id="card-done" hidden>
+    <div class="card-head"><span class="mark">⑧</span><h2>설치를 마쳤습니다</h2><span class="badge done" id="badge-done">완료</span></div>
     <div class="card-body">
-      <p class="hint">IRIS 창을 열고, 세팅을 이어받을 첫 대화를 만들어 줍니다. 그러고 나면 설치기는 할 일을 마치고 꺼지므로, 이 브라우저 탭은 닫으셔도 됩니다.</p>
-      <button class="go" id="btn-handoff">IRIS 열고 넘기기</button>
-      <div id="handoff-note"></div>
+      <div class="report" id="report"></div>
+      <div id="done-note"></div>
+      <div class="acts">
+        <button class="go" id="btn-open-face">IRIS 열기</button>
+      </div>
     </div>
   </section>
 
   <footer>이 창은 이 컴퓨터 안에서만 돕니다(127.0.0.1). 설치가 끝나면 설치기는 꺼지고, 이 탭은 닫으셔도 됩니다.</footer>
 </div>
 
-<script>
+<script type="module">
 'use strict';
-// 설치 마법사 화면. 바깥에서 가져오는 것은 하나도 없다(글꼴·스크립트·그림 전부 이 파일 안) —
-// 인터넷이 끊긴 PC에서도 똑같이 보여야 하기 때문. 서버(installer/server.mjs)와는 JSON + SSE로만 말한다.
+// v2 설치 화면. 바깥에서 가져오는 것은 하나도 없다(글꼴·스크립트·그림 전부 이 폴더 안) —
+// 인터넷이 끊긴 PC에서도 똑같이 보여야 하기 때문. 서버(installer/server.mjs)와는 JSON으로만 말한다.
+// 계약: docs/설치기-API-v2.md — 한쪽만 바꾸지 않는다.
+// 화면 문구에 "중계기"의 상표 이름을 쓰지 않는다(사용자에게는 "계정 연결"이다).
+
+import { validateNodes, assignCodes, folderName, renderTree, applyPreset, laterNodes } from './structure.mjs';
 
 const $ = (id) => document.getElementById(id);
-const STEPS = ['precheck', 'name', 'choice', 'install', 'login', 'handoff'];
-const done = { precheck: false, name: false, choice: false, install: false, login: false, handoff: false };
-const BADGE = { precheck: '준비 확인', name: '이름', choice: '구독', install: '설치', login: '로그인', handoff: '넘기기' };
-let chosenSubs = [];
-let loginTimer = null;
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
-// ---- 진행 바: 20칸 고정, 채움 █ / 빈칸 ░, 퍼센트는 내림(전역 표기 규칙) ----
+const STEPS = ['precheck', 'locate', 'choice', 'structure', 'summary', 'setup', 'online', 'done'];
+const STEP_LEAD = {
+  precheck: '먼저 이 컴퓨터를 살펴봅니다. 사람이 할 일은 없습니다.',
+  locate: '어디에 설치할지 확인합니다. 정할 것은 없습니다.',
+  choice: '가지고 계신 유료 구독을 고르세요.',
+  structure: '비서와 함께 쓸 작업 폴더를 정합니다. 사람이 정하는 마지막 항목입니다.',
+  summary: '정한 것을 한 번만 확인하면 설치가 시작됩니다.',
+  setup: '설치 중입니다. 인터넷 없이 혼자 진행하니 기다려 주세요.',
+  online: '마지막으로 구독에 로그인합니다.',
+  done: '설치가 끝났습니다. IRIS 창을 열면 바로 쓸 수 있습니다.',
+};
+
+let step = 'precheck';
+let chosenSubs = [];
+let leadAgent = null;
+let nodes = [];          // ④ 편집 중인 항목들(제출 전에는 이 브라우저 안에만 있다)
+let laterChosen = false; // 「나중에 비서와 정하기」
+let presets = [];
+let seq = 0;
+let setupPoll = null;    // ⑥ 되묻기(아래 createPoller로 만든다)
+let onlinePoll = null;   // ⑦ 되묻기
+
+// ---------------------------------------------------------------------------
+// 되묻기(폴링) — 서버가 잠깐 대답하지 않아도 1초마다 영원히 두드리지 않는다.
+// 연이어 3번 실패하면 간격을 1초→2초→4초→8초→10초(상한)로 넓히고 카드에 "연결 확인 중…"을
+// 띄운다. 한 번이라도 대답하면 곧바로 1초로 돌아가고 그 글도 지운다.
+// tick()은 'ok'(잘 받음) · 'error'(못 받음) · 'stop'(끝났거나 실패해 더 물을 것이 없음) 중 하나를 돌려준다.
+// ---------------------------------------------------------------------------
+const POLL_BASE = 1000;
+const POLL_MAX = 10000;
+const POLL_TOLERATE = 3;   // 이만큼 연이어 실패해야 간격을 넓힌다(짧은 끊김은 그냥 넘긴다)
+
+function createPoller(tick, connId) {
+  let timer = null;
+  let stopped = true;
+  let busy = false;
+  let fails = 0;
+  let delay = POLL_BASE;
+
+  const conn = (show) => { const el = $(connId); if (el) el.hidden = !show; };
+
+  async function loop() {
+    if (stopped) return;
+    busy = true;
+    let res = 'error';
+    try { res = await tick(); } catch { res = 'error'; }
+    busy = false;
+    if (stopped) return;
+
+    if (res === 'stop') { stop(); return; }
+    if (res === 'error') {
+      fails += 1;
+      if (fails >= POLL_TOLERATE) {
+        delay = Math.min(POLL_MAX, delay * 2);
+        conn(true);
+      }
+    } else if (fails > 0) {
+      fails = 0;
+      delay = POLL_BASE;
+      conn(false);
+    }
+    timer = setTimeout(loop, delay);
+  }
+
+  function start() {
+    if (!stopped) return;
+    stopped = false;
+    fails = 0;
+    delay = POLL_BASE;
+    conn(false);
+    loop();
+  }
+
+  function stop() {
+    stopped = true;
+    if (timer) { clearTimeout(timer); timer = null; }
+    conn(false);
+  }
+
+  return { start, stop, get running() { return !stopped || busy; } };
+}
+
 const BAR_CELLS = 20;
-function drawBar() {
+function drawBar(forcePercent) {
   const total = STEPS.length;
-  const n = STEPS.filter((s) => done[s]).length;
-  const filled = Math.floor((n / total) * BAR_CELLS);
-  const pct = Math.floor((n / total) * 100);
+  const n = forcePercent != null ? null : STEPS.indexOf(step);
+  const pct = forcePercent != null ? forcePercent : Math.floor((Math.max(0, n) / total) * 100);
+  const filled = Math.floor((pct / 100) * BAR_CELLS);
+  const count = forcePercent === 100 ? total : Math.max(0, n);
   $('bar').innerHTML =
     '<span class="bar-num">전체 </span>[<span class="bar-fill">' + '█'.repeat(filled) + '</span>' +
     '<span class="bar-rest">' + '░'.repeat(BAR_CELLS - filled) + '</span>] ' +
-    '<span class="bar-num">' + pct + '%  (' + n + '/' + total + ')</span>';
+    '<span class="bar-num">' + pct + '%  (' + count + '/' + total + ')</span>';
 }
 
-function badge(step, text, cls) {
-  const el = $('badge-' + step);
+function badge(name, text, cls) {
+  const el = $('badge-' + name);
+  if (!el) return;
   el.textContent = text;
   el.className = 'badge' + (cls ? ' ' + cls : '');
 }
 
-// 카드는 앞 단계가 모두 끝나야 열린다. 열린 카드 중 첫 번째가 "지금 할 차례".
-function relock() {
-  let current = null;
-  for (const s of STEPS) {
-    const card = $('card-' + s);
-    const idx = STEPS.indexOf(s);
-    const prevDone = STEPS.slice(0, idx).every((p) => done[p]);
-    card.classList.toggle('locked', !prevDone);
-    card.classList.toggle('active', prevDone && !done[s] && current === null);
-    if (prevDone && !done[s] && current === null) current = s;
-  }
-  drawBar();
+function note(id, text, cls) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = text ? '<div class="note' + (cls ? ' ' + cls : '') + '">' + text + '</div>' : '';
 }
 
-function note(id, text, cls) {
-  $(id).innerHTML = text ? '<div class="note' + (cls ? ' ' + cls : '') + '">' + text + '</div>' : '';
+function bar20(pct) {
+  const p = Math.min(100, Math.max(0, Math.floor(Number(pct) || 0)));
+  const filled = Math.floor((p / 100) * BAR_CELLS);
+  return '<div class="mini">[<span class="bar-fill">' + '█'.repeat(filled) + '</span>' + '░'.repeat(BAR_CELLS - filled) + '] ' + p + '%</div>';
 }
-const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+
+const ALL_CARDS = ['auto', 'reinstall'].concat(STEPS);
+function show(next) {
+  if (next) step = next;
+  // 보이지 않는 카드의 되묻기는 멈춘다(그 카드를 떠났으면 더 물을 까닭이 없다).
+  if (step !== 'setup' && setupPoll) setupPoll.stop();
+  if (step !== 'online' && onlinePoll) onlinePoll.stop();
+  for (const c of ALL_CARDS) { const el = $('card-' + c); if (el) el.hidden = true; }
+  const el = $('card-' + step);
+  if (el) el.hidden = false;
+  const b = $('badge-' + step);
+  if (b && b.textContent === '대기') { b.textContent = '진행중'; b.className = 'badge run'; }
+  $('lead').textContent = STEP_LEAD[step] || '';
+  drawBar(step === 'done' ? 100 : null);
+  window.scrollTo(0, 0);
+}
 
 async function api(path, body) {
   const res = await fetch(path, body === undefined
@@ -226,106 +442,131 @@ async function api(path, body) {
   return { status: res.status, body: await res.json().catch(() => ({})) };
 }
 
+// 로그 경로 복사 — 클립보드가 막힌 브라우저에서도 경로 자체는 보여 준다.
+function wireLogCopy(btnId, noteId) {
+  const btn = $(btnId);
+  if (!btn) return;
+  btn.onclick = async () => {
+    let path = '';
+    try { const { body } = await api('/api/log/path', {}); path = body && body.path ? body.path : ''; } catch { /* 아래에서 안내 */ }
+    if (!path) { note(noteId, '로그 경로를 가져오지 못했습니다. 설치기를 띄운 검은 창에 같은 내용이 남아 있습니다.', 'bad'); return; }
+    let copied = false;
+    try { await navigator.clipboard.writeText(path); copied = true; } catch { copied = false; }
+    note(noteId, (copied ? '로그 경로를 복사했습니다: ' : '아래 경로를 직접 복사해 주세요: ') + '<span class="path">' + esc(path) + '</span>', copied ? 'ok' : '');
+  };
+}
+wireLogCopy('btn-log-precheck', 'precheck-note');
+wireLogCopy('btn-log-setup', 'setup-note');
+wireLogCopy('btn-log-online', 'online-note');
+
 // ---------------------------------------------------------------------------
-// ⓐ 준비 확인
+// ① 준비 확인 — 막는 것(✗)·알아 둘 것(ⓘ)·괜찮은 것(✓)을 한 표로 보여 준다.
 // ---------------------------------------------------------------------------
-const PRECHECK_ROWS = [
-  ['os', '윈도우 판', (r) => (r.ok ? '윈도우 10(1809) 이상' : '너무 오래된 윈도우'), (r) => r.detail || ''],
-  ['arch', '64비트', (r) => (r.ok ? '64비트' : '64비트가 아님'), (r) => r.value || ''],
-  ['disk', '빈 자리', (r) => (r.ok ? '넉넉함' : '2GB가 안 됨'), (r) => (r.freeGB ? r.freeGB.toFixed(1) + 'GB 남음' : '')],
-  ['net', '인터넷', (r) => (r.ok ? '두 곳 다 닿음' : '닿지 않는 곳이 있음'), (r) => 'claude ' + (r.claude ? 'O' : 'X') + ' / chatgpt ' + (r.chatgpt ? 'O' : 'X')],
-  ['browser', '기본 브라우저', (r) => (r.ok ? '있음' : '확인 못 함'), (r) => r.progId || ''],
-];
+const INFO_LABEL = {
+  windows: '윈도우 판', arch: 'CPU', disk: '빈 자리', ntfs: 'C 드라이브', powershell: 'PowerShell',
+  ports: '자리(포트)', existing: '기존 설치', net: '인터넷', browser: '기본 브라우저', edge: 'Edge',
+  sac: '앱 보호(SAC)', admin: '관리자 권한', antivirus: '백신', node: '이미 있는 Node', python: '이미 있는 Python',
+  integrity: '파일 무결성', extracted: '압축 풀기',
+};
 
 function renderPrecheck(result) {
-  $('precheck-rows').innerHTML = PRECHECK_ROWS.map(([key, label, say, detail]) => {
-    const r = result[key] || {};
-    const mark = r.ok ? '<span class="ok">O</span>' : (key === 'net' || key === 'browser' ? '<span class="warn">!</span>' : '<span class="bad">X</span>');
-    return '<div class="row"><span class="st">' + mark + '</span><span>' + label + ' — ' + esc(say(r)) + '</span><span class="dt">' + esc(detail(r)) + '</span></div>';
-  }).join('');
+  const r = result || {};
+  const blockers = Array.isArray(r.blockers) ? r.blockers : [];
+  const warnings = Array.isArray(r.warnings) ? r.warnings : [];
+  const info = r.info && typeof r.info === 'object' ? r.info : {};
 
-  // 진행 여부는 state.step이 아니라 검사 결과로 판단한다.
-  // allOk = 전부 통과 / canProceedOffline = 인터넷만 못 닿음(ⓓ까지는 가능).
-  if (result.allOk) {
-    done.precheck = true;
-    badge('precheck', '완료', 'done');
-    note('precheck-note', '모두 통과했습니다. 다음 칸으로 내려가세요.', 'ok');
-  } else if (result.canProceedOffline) {
-    done.precheck = true;
-    badge('precheck', '경고', 'run');
-    note('precheck-note', '인터넷이 닿지 않는 곳이 있습니다. <b>Claude Code 내려받기(ⓓ)와 로그인(ⓔ)에는 인터넷이 반드시 필요합니다.</b> 인터넷을 연결한 뒤 「확인 시작」을 다시 눌러 주세요. 그래도 안 되면 이 창을 닫지 말고 회사·학교 망이 claude.ai·chatgpt.com을 막는지 확인해 보세요.');
-  } else {
-    done.precheck = false;
-    badge('precheck', '막힘', 'bad');
-    note('precheck-note', '이 컴퓨터에서는 설치를 이어갈 수 없습니다. 위에서 X 표시가 난 항목을 해결한 뒤 다시 확인을 눌러 주세요.', 'bad');
+  const lines = [];
+  for (const b of blockers) lines.push(['<span class="bad">✗</span>', esc(b.message || b.id), '<span class="bad">막음</span>']);
+  for (const w of warnings) lines.push(['<span class="warn">ⓘ</span>', esc(w.message || w.id), '<span class="warn">알아 두기</span>']);
+  for (const key of Object.keys(info)) {
+    const v = info[key];
+    const text = (v && typeof v === 'object') ? (v.message || JSON.stringify(v)) : String(v);
+    lines.push(['<span class="ok">✓</span>', esc(INFO_LABEL[key] || key), '<span class="dt">' + esc(text) + '</span>']);
   }
-  relock();
-  // ⓑ 는 묻는 것이 없으므로 ⓐ 가 통과하면 바로 자리를 확인한다(새로고침 복원 때는
-  // restore() 가 st.soul 로 먼저 채우므로 done.name 이 이미 참이면 건너뛴다).
-  if (done.precheck && !done.name) confirmLocation();
+  $('precheck-rows').innerHTML = lines.map(([st, mid, right]) =>
+    '<div class="row"><span class="st">' + st + '</span><span>' + mid + '</span><span class="dt">' + right + '</span></div>').join('')
+    || '<div class="row"><span class="st idle">.</span><span>살펴보는 중입니다…</span><span class="dt"></span></div>';
+
+  if (blockers.length > 0) {
+    badge('precheck', '막힘', 'bad');
+    $('btn-precheck').hidden = false;
+    note('precheck-note', '위에서 <b>막음</b>이라고 적힌 것을 먼저 해결해야 설치할 수 있습니다. 해결한 뒤 「다시 확인」을 눌러 주세요. 무엇이 문제인지 자세히 보려면 「로그 경로 복사」로 기록 파일을 여세요.', 'bad');
+    return false;
+  }
+  badge('precheck', '통과', 'done');
+  $('btn-precheck').hidden = true;
+  note('precheck-note', warnings.length
+    ? '설치를 막는 것은 없습니다. 위 <b>알아 두기</b>는 나중에 영향이 있을 수 있는 것이라 적어 둡니다.'
+    : '모두 괜찮습니다. 다음으로 넘어갑니다.', 'ok');
+  return true;
 }
 
-$('btn-precheck').onclick = async () => {
-  $('btn-precheck').disabled = true;
+async function runPrecheck() {
   badge('precheck', '진행중', 'run');
-  note('precheck-note', '');
+  $('btn-precheck').disabled = true;
   try {
     const { body } = await api('/api/precheck', {});
-    renderPrecheck(body);
+    const ok = renderPrecheck(body && body.result ? body.result : body);
+    const canProceed = body && body.canProceed !== undefined ? body.canProceed : ok;
+    if (canProceed) { show('locate'); runLocate(); }
   } catch (e) {
     badge('precheck', '막힘', 'bad');
-    note('precheck-note', '확인하지 못했습니다: ' + esc(e.message), 'bad');
+    $('btn-precheck').hidden = false;
+    note('precheck-note', '확인하지 못했습니다: ' + esc(e.message) + '. 「다시 확인」을 눌러 주세요.', 'bad');
   } finally {
     $('btn-precheck').disabled = false;
   }
-};
+}
+$('btn-precheck').onclick = runPrecheck;
 
 // ---------------------------------------------------------------------------
-// ⓑ 설치 위치 — 폴더는 C:\IRIS 로 고정(2026-09-13 사용자 결정). 사용자는 아무것도
-// 정하지 않는다: ⓐ가 통과하면 저절로 자리를 확인하고, 막힐 때만 「다시 확인」이 보인다.
+// ② 설치 위치 — 자리가 비었는지/이미 IRIS인지만 본다. 남의 자료가 있을 때만 막는다.
 // ---------------------------------------------------------------------------
-const NAME_REASON = {
-  conflict: '<code>C:\\IRIS</code> 폴더가 이미 있는데, IRIS 비서가 아닌 다른 자료가 들어 있습니다. 그 안의 것을 지우지 않기 위해 여기서 멈춥니다. ' +
-    '그 폴더의 이름을 바꾸거나 다른 곳으로 옮긴 뒤 「다시 확인」을 눌러 주세요.',
+const LOCATE_TEXT = {
+  empty: '여기에 새로 만듭니다. 이 자리는 비어 있습니다.',
+  iris: '이미 IRIS가 설치된 폴더입니다. 안에 있는 자료는 그대로 두고, 빠진 것만 채웁니다.',
+  'iris-legacy': '기존 IRIS 자료는 그대로 두고 새 방식으로 이어 설치합니다.',
+  foreign: '이 폴더에 IRIS가 아닌 자료가 있습니다. 그것을 지우지 않기 위해 여기서 멈춥니다. 그 폴더의 이름을 바꾸거나 다른 곳으로 옮긴 뒤 「다시 확인」을 눌러 주세요.',
 };
 
 let locating = false;
-async function confirmLocation() {
-  if (locating || done.name) return;
+async function runLocate() {
+  if (locating) return;
   locating = true;
-  $('btn-name').disabled = true;
-  badge('name', '진행중', 'run');
+  badge('locate', '진행중', 'run');
+  $('btn-locate').disabled = true;
   try {
-    const { body } = await api('/api/name', {});
-    if (!body.ok) {
-      badge('name', '막힘', 'bad');
-      note('name-note', NAME_REASON[body.reason] || ('이 자리를 쓸 수 없습니다(' + esc(body.reason) + ').'), 'bad');
-      done.name = false;
-      $('btn-name').hidden = false;
+    const { body } = await api('/api/locate', {});
+    const mode = body && body.mode ? body.mode : 'foreign';
+    const where = '<span class="path">' + esc((body && body.root) || 'C:\\IRIS') + '</span><br>';
+    if (mode === 'foreign' || body.ok === false) {
+      badge('locate', '막힘', 'bad');
+      note('locate-note', where + (LOCATE_TEXT[mode] || esc(body.message || '이 자리를 쓸 수 없습니다.')), 'bad');
+      $('btn-locate').hidden = false;
+      $('btn-locate-next').hidden = true;
     } else {
-      done.name = true;
-      badge('name', '완료', 'done');
-      $('btn-name').hidden = true;
-      note('name-note', '여기에 설치합니다: <span class="path">' + esc(body.path) + '</span>' +
-        (body.existing === 'soul'
-          ? '<br>이미 IRIS 비서가 설치된 폴더입니다. 그 안의 것은 지우지 않고, 부족한 것만 채웁니다.'
-          : '<br>새 폴더입니다.'), 'ok');
+      badge('locate', '통과', 'done');
+      note('locate-note', where + (LOCATE_TEXT[mode] || esc(body.message || '')), 'ok');
+      $('btn-locate').hidden = true;
+      $('btn-locate-next').hidden = false;
+      $('btn-locate-next').focus();
     }
   } catch (e) {
-    badge('name', '막힘', 'bad');
-    note('name-note', '확인하지 못했습니다: ' + esc(e.message), 'bad');
-    $('btn-name').hidden = false;
+    badge('locate', '막힘', 'bad');
+    note('locate-note', '확인하지 못했습니다: ' + esc(e.message), 'bad');
+    $('btn-locate').hidden = false;
   } finally {
     locating = false;
-    $('btn-name').disabled = false;
-    relock();
+    $('btn-locate').disabled = false;
   }
 }
-$('btn-name').onclick = confirmLocation;
+$('btn-locate').onclick = runLocate;
+$('btn-locate-next').onclick = () => show('choice');
 
 // ---------------------------------------------------------------------------
-// ⓒ 구독
+// ③ 구독 고르기
 // ---------------------------------------------------------------------------
+$('btn-back-choice').onclick = () => { show('locate'); };
 $('btn-choice').onclick = async () => {
   const subs = [];
   if ($('sub-claude').checked) subs.push('claude');
@@ -335,250 +576,715 @@ $('btn-choice').onclick = async () => {
     return;
   }
   const { body } = await api('/api/choice', { subscriptions: subs });
-  if (!body.ok) { note('choice-note', '정하지 못했습니다.', 'bad'); return; }
+  if (!body || body.ok === false) { note('choice-note', esc((body && body.message) || '정하지 못했습니다.'), 'bad'); return; }
   chosenSubs = subs;
-  done.choice = true;
+  leadAgent = body.leadAgent || subs[0];
   badge('choice', '완료', 'done');
-  note('choice-note', '첫 세팅은 <b>' + (body.leadAgent === 'claude' ? 'Claude Code' : 'Codex') + '</b>가 맡습니다.', 'ok');
-  renderLoginBoxes();
-  relock();
+  note('choice-note', '', '');
+  renderStructure();
+  show('structure');
 };
 
 // ---------------------------------------------------------------------------
-// ⓓ 설치
+// ④ 작업 폴더 구성 — 편집기(왼쪽) + 나무 미리보기(오른쪽).
+// 제출 전 답은 이 브라우저 안에만 있고, 번호(R01…)의 정본은 서버가 매긴다.
 // ---------------------------------------------------------------------------
-const PART_LABEL = {
-  node: '노드 런타임', python: '파이썬', pyyaml: '파이썬 부품(yaml)', git: 'Git',
-  claude: 'Claude Code', codex: 'Codex', teamclaude: '중계 서버', dash: '한도 화면',
-  face: 'IRIS 창', updater: '업데이트 적용기', guides: '세팅가이드', manage: '중계 관리 스크립트',
-  shims: '실행 바로가기', 'soul-state': '설치 표지', 'first-run': '첫 실행 준비', env: '환경 변수',
-  // 자동 업데이트 모드에서만 나오는 줄
-  precheck: '준비 확인', login: '계정 로그인', relaunch: 'IRIS 창 다시 열기',
-};
-const partState = {};
-let installSource = null;
-// 부품 줄을 그릴 자리. 평소엔 ⓓ 카드 안, 자동 업데이트 모드에서는 업데이트 카드 안.
-let rowsId = 'install-rows';
+const LV_NAME = { R: '가장 바깥(R)', D: '분야(D)', P: '일거리(P)' };
+const PARENT_OF = { R: null, D: 'R', P: 'D' };
+let serverErrors = [];   // 서버가 돌려준 errors[]
+let activePreset = null;
+let stickyNote = false;  // 사용자의 행동에 답한 안내문은 다시 그릴 때 지우지 않는다
 
-function renderInstall() {
-  const keys = Object.keys(partState);
-  $(rowsId).innerHTML = keys.map((k) => {
-    const p = partState[k];
-    const mark = p.status === 'done' ? '<span class="ok">O</span>'
-      : p.status === 'skipped' ? '<span class="idle">-</span>'
-        : p.status === 'error' ? '<span class="bad">X</span>' : '<span class="warn">.</span>';
-    const say = p.status === 'done' ? '끝' : p.status === 'skipped' ? '이미 같은 것이 있어 건너뜀'
-      : p.status === 'error' ? ('실패 — ' + esc(p.error || '')) : '옮기는 중';
-    // 칸별 숫자는 "옮기는 중"일 때만 보인다 — 끝난 줄 옆의 9%·18%는 그 부품의 진행이 아니라
-    // 전체 진행이라 오히려 헷갈린다(전체 진행은 아래 한 줄 바가 말한다).
-    const pct = (p.status === 'running' && p.pct != null) ? p.pct + '%' : '';
-    return '<div class="row"><span class="st">' + mark + '</span><span>' + esc(PART_LABEL[k] || k) + ' — ' + say + '</span><span class="dt">' + pct + '</span></div>';
-  }).join('');
-}
+function newId() { return 'n' + (++seq); }
 
-function installProgressNote(pct) {
-  // pct는 서버가 주는 값이라 방어적으로 0~100으로 가둔다(음수·101이 오면 바가 깨진다).
-  const p = Math.min(100, Math.max(0, Math.floor(Number(pct) || 0)));
-  const filled = Math.floor((p / 100) * BAR_CELLS);
-  return '<div class="mini">[<span class="bar-fill">' + '█'.repeat(filled) + '</span>' + '░'.repeat(BAR_CELLS - filled) + '] ' + p + '%</div>';
-}
-
-// 설치 실패(또는 이어지지 않음)는 막다른 길이 아니다 — 서버는 state.installError만
-// 남기고 다시 POST /api/install 을 받아 준다. 그러니 화면도 반드시 되돌아와야 한다.
-function installRetry(message) {
-  badge('install', '막힘', 'bad');
-  note('install-note', message, 'bad');
-  const b = $('btn-install');
-  b.disabled = false;
-  b.textContent = '다시 시도';
-}
-
-function watchInstall() {
-  if (installSource) return;
-  let sawEvent = false;
-  installSource = new EventSource('/api/install/events');
-  installSource.onmessage = (ev) => {
-    sawEvent = true;
-    let e; try { e = JSON.parse(ev.data); } catch { return; }
-    if (e.part) {
-      partState[e.part] = partState[e.part] || {};
-      partState[e.part].pct = e.pct == null ? partState[e.part].pct : e.pct;
-      partState[e.part].status = e.error ? 'error' : e.skipped ? 'skipped' : (e.status || (e.pct === 100 ? 'done' : 'running'));
-      partState[e.part].error = e.error || null;
-      renderInstall();
-    }
-    if (typeof e.pct === 'number' && !e.part && !e.error) note('install-note', installProgressNote(e.pct));
-    // 실패 이벤트에는 대개 부품 이름이 붙어 온다(install.mjs emitFinal).
-    // 부품 유무와 상관없이 여기서 잡아야 단추가 되살아난다.
-    if (e.error) {
-      installSource.close(); installSource = null;
-      installRetry('설치가 멈췄습니다' + (e.part ? ' — ' + esc(PART_LABEL[e.part] || e.part) : '') +
-        ' (' + esc(e.error) + ').<br>이미 있던 것은 그대로 되돌려 두었습니다. 다시 시도해도 안전합니다.');
-      return;
-    }
-    if (e.done) {
-      done.install = true;
-      badge('install', '완료', 'done');
-      note('install-note', installProgressNote(100) + '<div class="note ok">설치가 끝났습니다.</div>');
-      installSource.close(); installSource = null;
-      relock();
+/** 나무 차례대로(부모 다음에 그 자식) 늘어놓은 항목 목록. 편집기 줄 순서도 이것을 따른다. */
+function orderedNodes() {
+  const coded = assignCodes(nodes);
+  const byId = new Map(coded.map((n) => [String(n.id), n]));
+  const out = [];
+  const seen = new Set();
+  const childrenOf = (pid) => coded.filter((n) => (n.parentId == null || n.parentId === '' ? null : String(n.parentId)) === pid);
+  const walk = (pid, depth) => {
+    for (const n of childrenOf(pid)) {
+      if (seen.has(String(n.id))) continue;
+      seen.add(String(n.id));
+      out.push({ node: byId.get(String(n.id)), depth, src: nodes.find((x) => String(x.id) === String(n.id)) });
+      walk(String(n.id), depth + 1);
     }
   };
-  // 서버가 중간에 다시 뜨면 이벤트 버퍼가 비어 있어 아무것도 오지 않는다.
-  // 그대로 두면 "진행중"에서 영원히 멈춘 것처럼 보이므로 되돌릴 길을 준다.
-  setTimeout(() => {
-    if (!sawEvent && installSource) {
-      installSource.close(); installSource = null;
-      installRetry('설치가 이어지지 않았습니다(설치기가 다시 시작된 것 같습니다). 다시 시도해 주세요.');
-    }
-  }, 5000);
+  walk(null, 0);
+  for (const n of coded) {
+    if (seen.has(String(n.id))) continue;
+    seen.add(String(n.id));
+    out.push({ node: n, depth: 0, src: nodes.find((x) => String(x.id) === String(n.id)) });
+  }
+  return out;
 }
 
-$('btn-install').onclick = async () => {
-  $('btn-install').disabled = true;
-  badge('install', '진행중', 'run');
-  note('install-note', '');
-  const { status, body } = await api('/api/install', {});
-  if (status >= 400) {
-    installRetry('시작하지 못했습니다(' + esc(body.reason || status) + ').');
+function parentOptions(node) {
+  const want = PARENT_OF[node.level];
+  if (want === null) return [];
+  return assignCodes(nodes).filter((n) => n.level === want && String(n.id) !== String(node.id));
+}
+
+function renderPresetButtons() {
+  $('preset-buttons').innerHTML = presets.map((p) =>
+    '<button type="button" data-preset="' + esc(p.id) + '"' + (activePreset === p.id ? ' class="on"' : '') + '>' + esc(p.label) + '</button>').join('')
+    + '<button type="button" data-preset="__clear">처음부터 직접</button>';
+  for (const btn of $('preset-buttons').querySelectorAll('button')) {
+    btn.onclick = () => usePreset(btn.getAttribute('data-preset'));
+  }
+}
+
+function usePreset(id) {
+  laterChosen = false;
+  serverErrors = [];
+  stickyNote = false;
+  if (id === '__clear') { nodes = []; activePreset = null; }
+  else {
+    const p = presets.find((x) => x.id === id);
+    if (!p) return;
+    activePreset = id;
+    nodes = applyPreset(p).map((n) => ({ ...n, id: newId() }));
+    // applyPreset이 만든 부모 아이디를 새 아이디로 다시 잇는다(같은 화면에서 프리셋을 여러 번 눌러도 안 겹치게).
+    const flat = applyPreset(p);
+    const map = new Map(flat.map((n, i) => [n.id, nodes[i].id]));
+    nodes.forEach((n, i) => { n.parentId = flat[i].parentId == null ? null : map.get(flat[i].parentId); });
+  }
+  renderStructure();
+}
+
+function addNode(level) {
+  const parents = presetParentFor(level);
+  if (level !== 'R' && !parents) {
+    stickyNote = true;
+    note('structure-note', level === 'D'
+      ? '분야(D)는 가장 바깥(R) 폴더 안에 들어갑니다. 먼저 「+ 가장 바깥(R)」을 눌러 하나 만들어 주세요.'
+      : '일거리(P)는 분야(D) 폴더 안에 들어갑니다. 먼저 「+ 분야(D)」를 눌러 하나 만들어 주세요.', 'bad');
     return;
   }
-  watchInstall();
-};
-
-// ---------------------------------------------------------------------------
-// ⓔ 로그인 — 구독 하나당 카드 하나, 두 줄(① 로그인 창 → ② 중계 등록)
-// ---------------------------------------------------------------------------
-const PROVIDER_LABEL = { claude: 'Claude 계정 로그인', chatgpt: 'ChatGPT 계정 로그인' };
-
-function renderLoginBoxes() {
-  $('login-boxes').innerHTML = chosenSubs.map((p) =>
-    '<div class="login-box" id="lb-' + p + '">' +
-      '<h3>' + PROVIDER_LABEL[p] + '</h3>' +
-      '<div class="stage"><span class="st idle" id="st1-' + p + '">.</span><span>① 브라우저 로그인 — 평소 쓰는 ' + (p === 'claude' ? 'Claude' : 'ChatGPT') + ' 계정으로 로그인하고 허용</span><span id="re-' + p + '"></span></div>' +
-      '<div class="stage"><span class="st idle" id="st2-' + p + '">.</span><span>② 계정 등록 — 로그인한 계정을 이 컴퓨터의 비서가 쓰도록 등록(자동)</span><span></span></div>' +
-      '<div style="margin-top:10px"><button class="go" id="btn-login-' + p + '">로그인 시작</button></div>' +
-    '</div>').join('');
-  for (const p of chosenSubs) $('btn-login-' + p).onclick = () => startLogin(p);
+  laterChosen = false;
+  const siblings = nodes.filter((n) => n.level === level && String(n.parentId || '') === String(parents || ''));
+  nodes.push({ id: newId(), parentId: parents, level, nameKo: '', nameEn: '', order: siblings.length + 1 });
+  stickyNote = false;
+  note('structure-note', '');
+  renderStructure();
+  const rows = $('node-list').querySelectorAll('.node');
+  const last = rows[rows.length - 1];
+  if (last) { const ko = last.querySelector('input.ko'); if (ko) ko.focus(); }
 }
 
-async function startLogin(provider) {
-  $('btn-login-' + provider).disabled = true;
-  badge('login', '진행중', 'run');
-  const { body } = await api('/api/login', { provider });
-  if (body.ok === false) {
-    note('login-note', '로그인 창을 열지 못했습니다(' + esc(body.reason || '') + ').', 'bad');
-    $('btn-login-' + provider).disabled = false;
+/** 새 항목을 넣을 기본 부모 — 마지막으로 만든 같은 계열 폴더. */
+function presetParentFor(level) {
+  const want = PARENT_OF[level];
+  if (want === null) return null;
+  const candidates = nodes.filter((n) => n.level === want);
+  return candidates.length ? candidates[candidates.length - 1].id : null;
+}
+
+function moveNode(id, dir) {
+  const me = nodes.find((n) => String(n.id) === String(id));
+  if (!me) return;
+  const sibs = nodes.filter((n) => n.level === me.level && String(n.parentId || '') === String(me.parentId || ''))
+    .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+  const i = sibs.indexOf(me);
+  const j = i + dir;
+  if (j < 0 || j >= sibs.length) return;
+  const tmp = sibs[i].order; sibs[i].order = sibs[j].order; sibs[j].order = tmp;
+  renderStructure();
+}
+
+function removeNode(id) {
+  const kill = new Set([String(id)]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const n of nodes) {
+      if (!kill.has(String(n.id)) && n.parentId != null && kill.has(String(n.parentId))) { kill.add(String(n.id)); grew = true; }
+    }
+  }
+  nodes = nodes.filter((n) => !kill.has(String(n.id)));
+  serverErrors = serverErrors.filter((e) => !kill.has(String(e.nodeId)));
+  stickyNote = false;
+  renderStructure();
+}
+
+function renderStructure() {
+  const rows = orderedNodes();
+  if (rows.length === 0) {
+    $('node-list').innerHTML = laterChosen
+      ? '<p class="sub">비서와 함께 정하기로 했습니다. 지금은 <b>R01-나(Me)</b> 한 칸만 만듭니다.</p>'
+      : '<p class="sub">아직 아무것도 없습니다. 위의 보기 중 하나를 누르면 예시가 채워지고, 「+ 가장 바깥(R)」을 누르면 직접 만들 수 있습니다.</p>';
+  } else {
+    $('node-list').innerHTML = rows.map(({ node, depth }) => {
+      const id = esc(node.id);
+      const opts = parentOptions(node);
+      const sel = PARENT_OF[node.level] === null
+        ? '<span class="sub">맨 위</span>'
+        : '<select class="pa" data-id="' + id + '">' +
+          '<option value="">(고르세요)</option>' +
+          opts.map((o) => '<option value="' + esc(o.id) + '"' + (String(o.id) === String(node.parentId) ? ' selected' : '') + '>' + esc(folderName(o)) + '</option>').join('') +
+          '</select>';
+      return '<div class="node ' + (depth === 1 ? 'd' : depth >= 2 ? 'p' : '') + '" data-id="' + id + '">' +
+        '<span class="lv" title="' + esc(LV_NAME[node.level] || node.level) + '">' + esc(node.code || node.level) + '</span>' +
+        '<input type="text" class="ko" data-id="' + id + '" value="' + esc(node.nameKo) + '" maxlength="40" placeholder="한글 이름" aria-label="한글 이름">' +
+        '<input type="text" class="en" data-id="' + id + '" value="' + esc(node.nameEn) + '" maxlength="40" placeholder="비워도 됩니다" aria-label="영어 이름">' +
+        sel +
+        '<span class="ops">' +
+          '<button type="button" class="tiny" data-up="' + id + '" title="위로">↑</button>' +
+          '<button type="button" class="tiny" data-down="' + id + '" title="아래로">↓</button>' +
+          '<button type="button" class="tiny" data-del="' + id + '" title="지우기">✕</button>' +
+        '</span>' +
+        '<div class="msg" hidden></div>' +
+      '</div>';
+    }).join('');
+
+    const list = $('node-list');
+    for (const el of list.querySelectorAll('input.ko')) el.oninput = () => { setField(el.dataset.id, 'nameKo', el.value); };
+    for (const el of list.querySelectorAll('input.en')) el.oninput = () => { setField(el.dataset.id, 'nameEn', el.value); };
+    for (const el of list.querySelectorAll('select.pa')) el.onchange = () => {
+      const n = nodes.find((x) => String(x.id) === String(el.dataset.id));
+      if (!n) return;
+      n.parentId = el.value === '' ? null : el.value;
+      const sibs = nodes.filter((x) => x.level === n.level && String(x.parentId || '') === String(n.parentId || ''));
+      n.order = sibs.length;
+      serverErrors = serverErrors.filter((e) => String(e.nodeId) !== String(n.id));
+      renderStructure();
+    };
+    for (const el of list.querySelectorAll('[data-up]')) el.onclick = () => moveNode(el.getAttribute('data-up'), -1);
+    for (const el of list.querySelectorAll('[data-down]')) el.onclick = () => moveNode(el.getAttribute('data-down'), 1);
+    for (const el of list.querySelectorAll('[data-del]')) el.onclick = () => removeNode(el.getAttribute('data-del'));
+  }
+  refreshStructure();
+}
+
+function setField(id, field, value) {
+  const n = nodes.find((x) => String(x.id) === String(id));
+  if (!n) return;
+  n[field] = value;
+  serverErrors = serverErrors.filter((e) => String(e.nodeId) !== String(id));
+  stickyNote = false;
+  refreshStructure();
+}
+
+/** 줄을 다시 그리지 않고(=글자 입력 중 초점이 튀지 않게) 미리보기와 경고만 새로 그린다. */
+function refreshStructure() {
+  const shown = laterChosen ? laterNodes() : nodes;
+  const lines = renderTree(shown);
+  $('tree-preview').innerHTML = lines.length
+    ? lines.map((l) => esc(l)).join('\n')
+    : '<span class="empty">(아직 없음)</span>';
+
+  const res = validateNodes(nodes, { later: laterChosen });
+  const all = res.errors.concat(serverErrors);
+  const byNode = new Map();
+  for (const e of all) {
+    if (e.nodeId == null) continue;
+    if (!byNode.has(String(e.nodeId))) byNode.set(String(e.nodeId), []);
+    byNode.get(String(e.nodeId)).push(e.message);
+  }
+
+  for (const row of $('node-list').querySelectorAll('.node')) {
+    const id = row.getAttribute('data-id');
+    const msg = row.querySelector('.msg');
+    const n = nodes.find((x) => String(x.id) === String(id));
+    const errs = byNode.get(String(id)) || [];
+    // 영어 이름을 비운 것은 잘못이 아니다 — 나중에 비서가 채울 수 있다고만 알려 준다.
+    const emptyEn = n && String(n.nameKo).trim() !== '' && String(n.nameEn).trim() === '';
+    if (errs.length) {
+      row.classList.add('bad');
+      msg.hidden = false; msg.className = 'msg'; msg.textContent = errs.join(' / ');
+    } else if (emptyEn) {
+      row.classList.remove('bad');
+      msg.hidden = false; msg.className = 'msg warn'; msg.textContent = '영어 이름은 비서가 나중에 채울 수 있어요.';
+    } else {
+      row.classList.remove('bad');
+      msg.hidden = true; msg.textContent = '';
+    }
+  }
+
+  // 아직 아무것도 만들지 않았을 때 "R이 없다"고 나무라지 않는다 — 빈 화면 안내가 이미 말해 준다.
+  const started = nodes.length > 0 || laterChosen;
+  const general = started ? all.filter((e) => e.nodeId == null) : [];
+  if (general.length) note('structure-note', general.map((e) => esc(e.message)).join('<br>'), 'bad');
+  else if (serverErrors.length) note('structure-note', '위에 빨갛게 표시된 줄을 고친 뒤 다시 눌러 주세요.', 'bad');
+  else if (!stickyNote) note('structure-note', '');
+  $('btn-structure').textContent = laterChosen ? '나중에 정하기로 하고 넘어가기' : '이대로 하기';
+}
+
+$('btn-add-R').onclick = () => addNode('R');
+$('btn-add-D').onclick = () => addNode('D');
+$('btn-add-P').onclick = () => addNode('P');
+$('btn-back-structure').onclick = () => show('choice');
+
+$('btn-later').onclick = () => {
+  laterChosen = true;
+  activePreset = null;
+  nodes = [];
+  serverErrors = [];
+  renderPresetButtons();
+  renderStructure();
+  stickyNote = true;
+  note('structure-note', '가장 바깥 폴더 <b>R01-나(Me)</b> 하나만 만들고, 나머지는 비서와 이야기하며 그때그때 만듭니다. 마음이 바뀌면 위에서 보기를 눌러 다시 고를 수 있습니다.', 'ok');
+};
+
+$('btn-structure').onclick = async () => {
+  const res = validateNodes(nodes, { later: laterChosen });
+  if (!res.ok) {
+    serverErrors = [];
+    refreshStructure();
+    const general = res.errors.filter((e) => e.nodeId == null);
+    note('structure-note', general.length ? general.map((e) => esc(e.message)).join('<br>') : '빨갛게 표시된 줄을 고친 뒤 다시 눌러 주세요.', 'bad');
     return;
   }
-  if (body.reused) note('login-note', '이 컴퓨터에 이미 등록된 계정이라 로그인을 건너뜁니다.', 'ok');
-  else note('login-note', '검은 창에서 로그인을 마치면 이 화면이 저절로 다음 줄로 넘어갑니다. 2초마다 확인합니다.');
-  pollLogin();
-}
-
-function setStage(id, state) {
-  const el = $(id); if (!el) return;
-  el.className = 'st ' + (state === 'done' ? 'ok' : state === 'failed' ? 'bad' : 'warn');
-  el.textContent = state === 'done' ? 'O' : state === 'failed' ? 'X' : '.';
-}
-
-function pollLogin() {
-  if (loginTimer) return;
-  loginTimer = setInterval(async () => {
-    let body;
-    try { ({ body } = await api('/api/login/status')); } catch { return; }
-    const providers = body.providers || {};
-    for (const p of Object.keys(providers)) {
-      const s = providers[p];
-      setStage('st1-' + p, s.cli);
-      setStage('st2-' + p, s.relay);
-      // 로그인 창을 닫아 버렸거나 너무 오래 걸린 경우에만 나타나는 단추.
-      const re = $('re-' + p);
-      if (re) {
-        if (s.reopenAvailable && !re.firstChild) {
-          const b = document.createElement('button');
-          b.className = 'ghost'; b.textContent = '다시 열기';
-          b.onclick = () => { re.innerHTML = ''; startLogin(p); };
-          re.appendChild(b);
-        } else if (!s.reopenAvailable) { re.innerHTML = ''; }
-      }
-      // reason이 없는 모양으로 와도 "undefined"를 사람에게 보이지 않게 한다.
-      if (s.relayError) {
-        const why = s.relayError.reason || s.relayError.detail || '까닭을 알 수 없음';
-        note('login-note', PROVIDER_LABEL[p] + ' 등록이 아직 끝나지 않았습니다(' + esc(why) + '). 계속 다시 시도합니다.', 'bad');
-      }
-    }
-    if (body.step === 'handoff' || body.step === 'done') {
-      clearInterval(loginTimer); loginTimer = null;
-      done.login = true;
-      badge('login', '완료', 'done');
-      note('login-note', '로그인이 모두 끝났습니다.', 'ok');
-      relock();
-    }
-  }, 2000);
-}
-
-// ---------------------------------------------------------------------------
-// ⓕ 넘기기
-// ---------------------------------------------------------------------------
-const HANDOFF_WHERE = {
-  'first-request': '첫 요청문을 쓰는 중',
-  launcher: '소환기를 만드는 중',
-  launch: 'IRIS 창을 켜는 중',
-  ready: 'IRIS 창이 준비되기를 기다리는 중',
-  finish: '마무리하는 중',
-};
-
-$('btn-handoff').onclick = async () => {
-  $('btn-handoff').disabled = true;
-  badge('handoff', '진행중', 'run');
-  note('handoff-note', 'IRIS 창을 켜고 첫 대화가 만들어질 때까지 기다립니다(최대 1분).');
+  $('btn-structure').disabled = true;
   try {
-    const { body } = await api('/api/handoff', {});
-    if (!body.ok) {
-      badge('handoff', '막힘', 'bad');
-      if (body.reason === 'guide_version_mismatch') { note('handoff-note', '설치된 안내서와 이 패키지의 안내서 판이 다릅니다.<br>' + esc(body.detail || '') + '<br>위 「설치」 단계를 다시 실행해 주세요 — 같은 부품은 건너뛰고 안내서만 새 판으로 바뀝니다.', 'bad'); badge('handoff', '실패', 'failed'); return; }
-      note('handoff-note', (HANDOFF_WHERE[body.where] || body.where) + ' 실패했습니다' +
-        (body.reason ? ' (' + esc(body.reason) + ')' : '') + '.<br>' + esc(body.detail || '') +
-        '<br>기록: <span class="path">' + esc(body.log || '') + '</span>', 'bad');
-      $('btn-handoff').disabled = false;
+    const payload = {
+      nodes: laterChosen ? [] : nodes.map((n) => ({
+        id: String(n.id), parentId: n.parentId == null ? null : String(n.parentId),
+        level: n.level, nameKo: String(n.nameKo).trim(),
+        nameEn: String(n.nameEn).trim() === '' ? null : String(n.nameEn).trim(),
+        order: Number(n.order) || 1,
+      })),
+      later: laterChosen,
+    };
+    const { body } = await api('/api/structure', payload);
+    if (!body || body.ok === false) {
+      serverErrors = Array.isArray(body && body.errors) ? body.errors : [{ nodeId: null, code: 'unknown', message: (body && body.message) || '저장하지 못했습니다.' }];
+      refreshStructure();
       return;
     }
-    done.handoff = true;
-    badge('handoff', '완료', 'done');
-    note('handoff-note', '<b>설치가 모두 끝났습니다.</b> 이제 IRIS 창에서 비서가 세팅을 이어갑니다 — 그 창의 질문에 답해 주시면 됩니다.<br>' +
-      (body.shortcut
-        ? '다음부터는 바탕화면의 「IRIS」 아이콘을 두 번 누르면 됩니다.'
-        : '다음부터는 <span class="path">' + esc(body.launcher || '') + '</span> 를 두 번 누르면 됩니다(바탕화면 바로가기는 만들지 못했습니다).') +
-      '<br>이 브라우저 탭은 이제 닫으셔도 됩니다.', 'ok');
-    relock();
-  } catch (e) {
-    badge('handoff', '막힘', 'bad');
-    note('handoff-note', '넘기지 못했습니다: ' + esc(e.message), 'bad');
-    $('btn-handoff').disabled = false;
+    badge('structure', '완료', 'done');
+    renderSummary(body.decisions);
+    show('summary');
+  } finally {
+    $('btn-structure').disabled = false;
   }
 };
 
 // ---------------------------------------------------------------------------
-// 자동 업데이트 모드 — 이 화면에는 누를 것이 없다. 서버가 준비 확인 → 바뀐 부품 교체
-// → IRIS 창 다시 열기까지 혼자 하고, 화면은 그 진행만 보여 준다.
+// ⑤ 요약 — 정한 것을 한 장으로. 여기서 「이전」을 누르면 ③④로 돌아가 고칠 수 있다.
+// ---------------------------------------------------------------------------
+const SUB_LABEL = { claude: 'Claude 구독(Claude Code)', chatgpt: 'ChatGPT 구독(Codex)' };
+let decisions = null;
+
+/** 서버가 확정한 decisions를 나무 줄로. 없으면 화면이 들고 있는 항목으로 미리 그린다. */
+function treeLines(dec) {
+  if (dec && Array.isArray(dec.nodes) && dec.nodes.length) {
+    const byId = new Map(dec.nodes.map((n) => [String(n.id), n]));
+    const depthOf = (n) => {
+      let d = 0; let cur = n; let guard = 0;
+      while (cur && cur.parentId != null && guard++ < 10) { cur = byId.get(String(cur.parentId)); if (cur) d++; }
+      return d;
+    };
+    const out = [];
+    const walk = (pid, depth) => {
+      for (const n of dec.nodes.filter((x) => String(x.parentId == null ? '' : x.parentId) === String(pid == null ? '' : pid))) {
+        out.push('  '.repeat(depth) + (n.folderName || folderName(n)));
+        walk(n.id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    if (out.length === dec.nodes.length) return out;
+    return dec.nodes.map((n) => '  '.repeat(depthOf(n)) + (n.folderName || folderName(n)));
+  }
+  return renderTree(laterChosen ? laterNodes() : nodes);
+}
+
+function renderSummary(dec) {
+  if (dec) decisions = dec;
+  const subs = chosenSubs.length ? chosenSubs : ['claude'];
+  const rows = [];
+  rows.push(['<span class="ok">✓</span>', '구독 — ' + subs.map((s) => esc(SUB_LABEL[s] || s)).join(' · '), subs.length > 1 ? '앞장서는 쪽: ' + esc(leadAgent === 'chatgpt' ? 'Codex' : 'Claude Code') : '']);
+  const lines = treeLines(decisions);
+  rows.push(['<span class="ok">✓</span>', '작업 폴더 — ' + (laterChosen ? '지금은 R01-나(Me) 하나만, 나머지는 비서와 함께' : '아래 ' + lines.length + '칸'), '']);
+  const missing = decisions && Array.isArray(decisions.nameEnMissing) ? decisions.nameEnMissing.length : nodes.filter((n) => String(n.nameEn).trim() === '').length;
+  if (missing > 0) rows.push(['<span class="warn">ⓘ</span>', '영어 이름을 비워 둔 폴더 ' + missing + '칸 — 비서가 나중에 채울 수 있어요.', '']);
+  $('summary-rows').innerHTML = rows.map(([st, mid, right]) =>
+    '<div class="row"><span class="st">' + st + '</span><span>' + mid + '</span><span class="dt">' + right + '</span></div>').join('');
+  $('summary-tree').innerHTML = lines.length ? lines.map((l) => esc(l)).join('\n') : '<span class="empty">(없음)</span>';
+}
+
+$('btn-back-summary').onclick = () => { renderStructure(); show('structure'); };
+$('btn-summary').onclick = async () => {
+  $('btn-summary').disabled = true;
+  note('summary-note', '');
+  try {
+    const confirm = await api('/api/summary/confirm', {});
+    if (!confirm.body || confirm.body.ok === false) {
+      note('summary-note', esc((confirm.body && confirm.body.message) || '아직 시작할 수 없습니다. 「이전」으로 돌아가 구독과 폴더를 확인해 주세요.'), 'bad');
+      return;
+    }
+    const start = await api('/api/setup/start', {});
+    if (start.status >= 400 || (start.body && start.body.ok === false)) {
+      note('summary-note', esc((start.body && start.body.message) || '설치를 시작하지 못했습니다.'), 'bad');
+      return;
+    }
+    badge('summary', '완료', 'done');
+    show('setup');
+    watchSetup();
+  } finally {
+    $('btn-summary').disabled = false;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// ⑥ 설치 중 — 아홉 단계. 인터넷은 쓰지 않는다.
+// ---------------------------------------------------------------------------
+const SETUP_STAGES = [
+  ['unpack', '풀기'], ['env', '환경변수'], ['skeleton', '영혼 뼈대'], ['structure', '작업 폴더'],
+  ['venv', '파이썬 환경'], ['adapters', '에이전트 연결'], ['relay', '중계기 준비'], ['ontology', '목록 카드'], ['checks', '검사'],
+];
+const STAGE_WHAT = {
+  unpack: '동봉된 프로그램을 제자리로 옮깁니다', env: '어디서든 부를 수 있게 길을 등록합니다',
+  skeleton: '기본 폴더와 지침을 만듭니다', structure: '고르신 작업 폴더를 만듭니다',
+  venv: '문서 도구가 쓸 파이썬을 오프라인으로 꾸립니다', adapters: '비서와 도구를 이어 줍니다',
+  relay: '계정 연결에 쓸 준비를 합니다', ontology: '무엇이 어디 있는지 적은 목록 카드를 만듭니다', checks: '제대로 됐는지 확인합니다',
+};
+const PART_LABEL = {
+  node: '노드 런타임', python: '파이썬', pyyaml: '파이썬 부품(yaml)', git: 'Git', uv: '꾸림 도구', age: '잠금 도구',
+  codex: 'Codex', relay: '연결 프로그램', dash: '한도 화면', face: 'IRIS 창', messenger: '메신저',
+  tools: '도구 묶음', policy: '지침', updater: '업데이트 적용기', setup: '세팅 재료',
+};
+// 자동 업데이트 카드(⑥ 대신 ⑥')는 부품 id가 아니라 세팅 9단계 id(unpack·env…)를
+// 그대로 방송한다 — PART_LABEL에는 그 9개가 없으니 단계 한글 이름표를 따로 만든다.
+const STAGE_LABEL = Object.fromEntries(SETUP_STAGES);
+const ERROR_HELP = {
+  'E-UNPACK': '파일을 제자리로 옮기다 멈췄습니다. 백신이 잠깐 붙잡았을 수 있으니 「다시 시도」를 한 번 눌러 보세요.',
+  'E-ENV': '길(환경변수) 등록에서 멈췄습니다. 다른 설치 프로그램이 같은 값을 쓰고 있을 수 있습니다.',
+  'E-SKELETON': '기본 폴더를 만들다 멈췄습니다. 그 폴더를 다른 창에서 열어 두었다면 닫고 다시 시도해 주세요.',
+  'E-STRUCTURE': '작업 폴더를 만들다 멈췄습니다. 같은 이름의 폴더가 이미 열려 있는지 확인해 주세요.',
+  'E-VENV': '파이썬 꾸리기에서 멈췄습니다. 문서 도구만 못 쓰게 될 뿐 다른 것은 그대로입니다.',
+  'E-ADAPTERS': '비서와 도구를 잇다 멈췄습니다. 설정 파일 하나가 이미 열려 있을 수 있습니다.',
+  'E-RELAY': '계정 연결 준비에서 멈췄습니다. 이미 IRIS가 돌고 있는 창이 있는지 확인해 주세요.',
+  'E-ONTOLOGY': '목록 카드를 만들다 멈췄습니다. 앞 단계는 모두 끝났으니 다시 시도하면 여기서부터 이어집니다.',
+  'E-CHECKS': '마지막 확인에서 하나가 어긋났습니다. 무엇인지 아래 기록에 적혀 있습니다.',
+};
+
+function stageMark(status) {
+  if (status === 'done') return '<span class="ok">✓</span>';
+  if (status === 'failed') return '<span class="bad">✗</span>';
+  if (status === 'running') return '<span class="warn">…</span>';
+  if (status === 'skipped') return '<span class="idle">-</span>';
+  return '<span class="idle">.</span>';
+}
+
+function renderSetup(s) {
+  const st = s || {};
+  const stages = Array.isArray(st.stages) ? st.stages : [];
+  const byId = new Map(stages.map((x) => [x.id, x]));
+  $('setup-total').innerHTML = bar20(st.percent);
+  $('setup-rows').innerHTML = SETUP_STAGES.map(([id, label]) => {
+    const x = byId.get(id) || {};
+    const status = x.status || 'pending';
+    const detail = status === 'running' ? (x.detail || STAGE_WHAT[id] || '') : (x.detail || '');
+    let html = '<div class="stage-row"><span>' + stageMark(status) + '</span><span>' + esc(label) + '</span><span class="dt">' + esc(detail) + '</span></div>';
+    if (id === 'unpack' && x.sub && x.sub.total) {
+      const pct = Math.floor((Number(x.sub.done) / Number(x.sub.total)) * 100);
+      html += '<div class="stage-row"><span></span><span class="sub-bar">' + bar20(pct) +
+        '<span class="sub">' + esc(PART_LABEL[x.sub.part] || x.sub.part || '') + ' (' + esc(x.sub.done) + '/' + esc(x.sub.total) + ')</span></span></div>';
+    }
+    return html;
+  }).join('');
+
+  if (st.error) {
+    const code = st.error.code || (byId.get(st.stage) || {}).code || '';
+    badge('setup', '막힘', 'bad');
+    note('setup-note', '<b>' + esc(SETUP_STAGES.find((p) => p[0] === st.stage) ? SETUP_STAGES.find((p) => p[0] === st.stage)[1] : st.stage) + '</b>에서 멈췄습니다' +
+      (code ? ' (' + esc(code) + ')' : '') + '.<br>' + esc(ERROR_HELP[code] || st.error.message || '자세한 까닭은 기록 파일에 있습니다.') +
+      '<br>만든 것은 하나도 지우지 않았습니다. 다시 시도하면 멈춘 곳부터 이어서 합니다.', 'bad');
+    $('btn-setup-retry').hidden = false;
+    $('btn-setup-retry').disabled = false;
+    return 'failed';
+  }
+  $('btn-setup-retry').hidden = true;
+  if (st.stage === 'done' || Number(st.percent) >= 100) { badge('setup', '완료', 'done'); return 'done'; }
+  badge('setup', '진행중', 'run');
+  note('setup-note', '');
+  return 'running';
+}
+
+async function setupTick() {
+  let status; let body;
+  try { ({ status, body } = await api('/api/setup/progress')); } catch { return 'error'; }
+  if (status >= 500) return 'error';   // 서버가 대답은 했지만 제 상태를 말하지 못한 것도 실패로 센다
+  const state = renderSetup(body);
+  if (state === 'failed') return 'stop';
+  if (state === 'done') { show('online'); startOnline(); return 'stop'; }
+  return 'ok';
+}
+setupPoll = createPoller(setupTick, 'setup-conn');
+function watchSetup() { setupPoll.start(); }
+
+$('btn-setup-retry').onclick = async () => {
+  $('btn-setup-retry').disabled = true;
+  note('setup-note', '멈춘 곳부터 다시 합니다…');
+  const { body } = await api('/api/setup/retry', {});
+  if (body && body.ok === false) { note('setup-note', esc(body.message || '다시 시작하지 못했습니다.'), 'bad'); $('btn-setup-retry').disabled = false; return; }
+  watchSetup();
+};
+
+// ---------------------------------------------------------------------------
+// ⑦ 계정 연결 — 인터넷 확인 → Claude Code 내려받기 → 구독 로그인 → 계정 연결 확인
+// ---------------------------------------------------------------------------
+const HOST_NAME = {
+  'registry.npmjs.org': '프로그램 보관소(npm)', 'npmjs.org': '프로그램 보관소(npm)',
+  'claude.ai': 'Claude 로그인 자리', 'www.claude.ai': 'Claude 로그인 자리',
+  'chatgpt.com': 'ChatGPT 로그인 자리', 'auth.openai.com': 'ChatGPT 로그인 자리',
+  'api.anthropic.com': 'Claude 연결 자리',
+};
+const SOURCE_NAME = { npm: '프로그램 보관소(npm)', 'claude.ai': 'Claude 공식 설치기(claude.ai)' };
+const PROVIDER_LABEL = { claude: 'Claude 계정 로그인', chatgpt: 'ChatGPT 계정 로그인' };
+const LOGIN_REASON = {
+  'window-closed': '로그인 창이 닫혔습니다. 「다시 열기」를 누르면 다시 띄웁니다(누를 수 있게 되기까지 2분 기다립니다).',
+  'page-blocked': '이 인터넷 망이 로그인 페이지를 막고 있습니다. 집이나 휴대폰 테더링처럼 <b>다른 망</b>에서 설치기를 다시 열어 주세요. 여기까지 한 것은 그대로 남습니다.',
+  'import-failed': '로그인은 됐는데 그 결과를 이 컴퓨터로 옮겨 담지 못했습니다. <b>자동으로 다시 시도합니다</b> — 잠시 기다려 주세요.',
+};
+const LOGIN_STATE_TEXT = {
+  'not-needed': '고르지 않은 구독이라 건너뜁니다', pending: '아래 「로그인」을 누르면 시작합니다',
+  waiting: '아래 「로그인」을 누르고, 열리는 창에서 마치면 저절로 넘어갑니다',
+  'cli-done': '로그인됐습니다. 이 컴퓨터에 옮겨 담는 중입니다', done: '끝났습니다', failed: '아직 끝나지 않았습니다',
+};
+const retryAt = {};   // provider → 「다시 열기」를 누를 수 있게 되는 시각
+let loginBoxesFor = '';
+
+function renderOnlineRows(on) {
+  const o = on || {};
+  const net = o.net || {};
+  const rows = [];
+  const blocked = Array.isArray(net.blocked) ? net.blocked : [];
+  rows.push([
+    net.ok ? 'done' : (o.stage === 'net' ? 'running' : 'failed'),
+    '인터넷 확인',
+    net.ok ? '닿습니다' : (blocked.length ? '막힌 곳: ' + blocked.map((h) => HOST_NAME[h] || h).join(' · ') : '확인 중'),
+  ]);
+  const c = o.claude || {};
+  if (c.state && c.state !== 'skipped') {
+    rows.push([
+      c.state === 'done' ? 'done' : c.state === 'failed' ? 'failed' : c.state === 'downloading' ? 'running' : 'pending',
+      'Claude Code 내려받기',
+      c.state === 'done' ? '받았습니다 — 출처: ' + (SOURCE_NAME[c.source] || c.source || '') :
+        c.state === 'downloading' ? '받는 중 — 출처: ' + (SOURCE_NAME[c.source] || c.source || '') :
+          c.state === 'failed' ? (c.code || '받지 못했습니다') : '차례를 기다립니다',
+    ]);
+  }
+  const ds = o.documentSkills || {};
+  if (ds.state && ds.state !== 'skipped') {
+    rows.push([
+      ds.state === 'done' ? 'done' : ds.state === 'downloading' ? 'running' : 'pending',
+      '문서 작성 스킬 내려받기',
+      ds.state === 'done' ? '받아서 등록했습니다' : ds.state === 'downloading' ? '받는 중' : '받지 못했습니다 — 나중에 다시 열면 이어서 받습니다',
+    ]);
+  }
+  const relay = o.relay || {};
+  rows.push([
+    relay.state === 'done' ? 'done' : relay.state === 'failed' ? 'failed' : relay.state === 'running' ? 'running' : 'pending',
+    '계정 연결 확인',
+    relay.state === 'done' ? ('연결된 계정 ' + (Array.isArray(relay.accounts) ? relay.accounts.length : 0) + '개') :
+      relay.state === 'failed' ? '아직 연결되지 않았습니다' : '로그인이 끝나면 합니다',
+  ]);
+  $('online-rows').innerHTML = rows.map(([status, label, detail]) =>
+    '<div class="stage-row"><span>' + stageMark(status) + '</span><span>' + esc(label) + '</span><span class="dt">' + esc(detail) + '</span></div>').join('');
+
+  if (!net.ok && blocked.length) {
+    note('online-note', '인터넷이 되는 곳에서 설치기를 다시 열면 여기서부터 이어집니다. 지금까지 설치한 것은 그대로 남아 있습니다.', 'bad');
+    $('btn-online-retry').hidden = false;
+  } else if (!o.error) {
+    $('btn-online-retry').hidden = true;
+  }
+}
+
+function renderLoginBoxes(on) {
+  const logins = (on && on.logins) || {};
+  const providers = Object.keys(logins).filter((p) => (logins[p] || {}).state !== 'not-needed');
+  const key = providers.join(',');
+  if (key !== loginBoxesFor) {
+    loginBoxesFor = key;
+    $('login-boxes').innerHTML = providers.map((p) =>
+      '<div class="login-box" id="lb-' + esc(p) + '">' +
+        '<h3>' + esc(PROVIDER_LABEL[p] || p) + '</h3>' +
+        '<p class="sub" id="ltext-' + esc(p) + '">「로그인」을 누르면 검은 창이 잠깐 열리고 곧 브라우저에 로그인 화면이 뜹니다. 평소 쓰는 계정으로 로그인하고 「허용(Authorize)」을 누르세요.</p>' +
+        '<div class="stage" id="lrow-' + esc(p) + '"></div>' +
+        '<div class="acts">' +
+          '<button class="go" id="btn-login-' + esc(p) + '">로그인</button>' +
+          '<button class="ghost" id="btn-reopen-' + esc(p) + '" hidden>다시 열기</button>' +
+        '</div>' +
+      '</div>').join('');
+    for (const p of providers) {
+      $('btn-login-' + p).onclick = () => startLogin(p);
+      $('btn-reopen-' + p).onclick = () => reopenLogin(p);
+    }
+  }
+  for (const p of providers) {
+    const s = logins[p] || {};
+    const row = $('lrow-' + p);
+    if (row) {
+      row.innerHTML = '<span>' + stageMark(s.state === 'done' ? 'done' : s.state === 'failed' ? 'failed' : s.state === 'waiting' || s.state === 'cli-done' ? 'running' : 'pending') + '</span>' +
+        '<span>' + esc(LOGIN_STATE_TEXT[s.state] || '') + '</span><span class="dt"></span>';
+    }
+    const text = $('ltext-' + p);
+    if (text) {
+      if (s.reason && LOGIN_REASON[s.reason]) text.innerHTML = LOGIN_REASON[s.reason];
+      else if (s.state === 'done') text.textContent = '이 구독은 끝났습니다.';
+    }
+    const loginBtn = $('btn-login-' + p);
+    // 'waiting'은 "아직 로그인하지 않음"이라 단추를 살려 둔다. 누른 뒤에는 startLogin이 잠근다.
+    if (loginBtn) {
+      if (s.state === 'done' || s.state === 'cli-done') loginBtn.disabled = true;
+      // 실패했으면 다시 누를 수 있어야 한다(창을 닫은 경우만 「다시 열기」가 그 일을 맡는다).
+      else if (s.state === 'failed' && s.reason !== 'window-closed') loginBtn.disabled = false;
+    }
+    // 실패 까닭을 각 칸이 설명하고 있으면 아래 공용 안내는 지운다(서로 어긋나 보이지 않게).
+    if (s.reason) note('online-note', '');
+    const reopen = $('btn-reopen-' + p);
+    if (reopen) {
+      const wantReopen = s.reason === 'window-closed' && s.state !== 'done';
+      reopen.hidden = !wantReopen;
+      if (wantReopen) {
+        if (!retryAt[p]) retryAt[p] = Date.now() + 120000;
+        const left = Math.ceil((retryAt[p] - Date.now()) / 1000);
+        reopen.disabled = left > 0;
+        reopen.textContent = left > 0 ? '다시 열기 (' + left + '초 뒤)' : '다시 열기';
+      } else { retryAt[p] = 0; }
+    }
+  }
+}
+
+async function startOnline() {
+  badge('online', '진행중', 'run');
+  try { await api('/api/online/start', {}); } catch { /* 아래 폴링이 상태를 다시 본다 */ }
+  watchOnline();
+}
+
+async function onlineTick() {
+  let status; let body;
+  try { ({ status, body } = await api('/api/online/status')); } catch { return 'error'; }
+  if (status >= 500) return 'error';
+  const on = body && body.online ? body.online : body;
+  if (!on || typeof on !== 'object') return 'error';
+  renderOnlineRows(on);
+  renderLoginBoxes(on);
+
+  const logins = on.logins || {};
+  const needed = Object.keys(logins).filter((p) => (logins[p] || {}).state !== 'not-needed');
+  const allLoggedIn = needed.length > 0 && needed.every((p) => (logins[p] || {}).state === 'done');
+  const relay = on.relay || {};
+  if (allLoggedIn && (!relay.state || relay.state === 'pending')) api('/api/online/relay', {}).catch(() => {});
+
+  if (on.stage === 'done' || relay.state === 'done') {
+    badge('online', '완료', 'done');
+    show('done');
+    loadReport();
+    return 'stop';
+  }
+  return 'ok';
+}
+onlinePoll = createPoller(onlineTick, 'online-conn');
+function watchOnline() { onlinePoll.start(); }
+
+async function startLogin(provider) {
+  const btn = $('btn-login-' + provider);
+  if (btn) btn.disabled = true;
+  retryAt[provider] = 0;
+  note('online-note', '로그인 창에서 마치면 이 화면이 저절로 다음으로 넘어갑니다. 1초마다 확인합니다.');
+  const { body } = await api('/api/online/login', { provider });
+  if (body && body.ok === false) {
+    note('online-note', esc(body.message || '로그인 창을 열지 못했습니다.'), 'bad');
+    if (btn) btn.disabled = false;
+  }
+  watchOnline();
+}
+
+async function reopenLogin(provider) {
+  const btn = $('btn-reopen-' + provider);
+  if (btn) btn.disabled = true;
+  retryAt[provider] = 0;
+  const { body } = await api('/api/online/login/retry', { provider });
+  if (body && body.ok === false) note('online-note', esc(body.message || '다시 열지 못했습니다.'), 'bad');
+  watchOnline();
+}
+
+$('btn-online-retry').onclick = () => { note('online-note', ''); startOnline(); };
+
+// ---------------------------------------------------------------------------
+// ⑧ 완료 보고 — 다섯 순서로 읽는다.
+// ---------------------------------------------------------------------------
+const PENDING_WHY = {
+  edge: 'Edge 브라우저가 없어 <b>브라우저 조작</b>은 아직 못 합니다. Edge를 설치하면 그때부터 됩니다.',
+  office: '엑셀·워드·파워포인트가 없어 <b>그 문서의 계산·변환</b>은 아직 못 합니다. 설치하면 그때부터 됩니다.',
+  hancom: '한/글이 없어 <b>HWP 문서 자동화</b>는 아직 못 합니다. 설치하면 그때부터 됩니다.',
+  'image-key': '이미지 만들기 열쇠(키)가 없어 <b>그림 생성</b>은 아직 못 합니다. 나중에 IRIS 설정에서 넣을 수 있습니다.',
+  claude: 'Claude 구독을 고르지 않아 <b>Claude Code</b>는 깔지 않았습니다. 나중에 구독을 더하면 로그인만 하면 됩니다.',
+};
+
+async function loadReport() {
+  drawBar(100);
+  let rep = {};
+  try { ({ body: rep } = await api('/api/report')); } catch { /* 아래 기본 문구로 */ }
+  const handoff = rep.handoff || {};
+  const pending = Array.isArray(rep.pendingCapabilities) ? rep.pendingCapabilities : [];
+  const subs = (handoff.subscriptions || chosenSubs || []).map((s) => SUB_LABEL[s] || s);
+  const folders = handoff.folders || (decisions && decisions.nodes ? decisions.nodes.map((n) => n.folderName) : []);
+  const missing = handoff.nameEnMissing || (decisions && decisions.nameEnMissing) || [];
+
+  const li = (arr) => '<ul>' + arr.map((x) => '<li>' + (typeof x === 'string' ? esc(x) : esc(JSON.stringify(x))) + '</li>').join('') + '</ul>';
+
+  $('report').innerHTML =
+    '<h3>1. 하려던 일</h3><p>이 컴퓨터에 IRIS 한 벌을 설치하고, 비서가 바로 일할 수 있게 폴더·도구·계정 연결까지 마치는 것이었습니다.</p>' +
+    '<h3>2. 기존 자료의 안전</h3><p>설치기는 무엇도 지우거나 덮어쓰지 않았습니다. 이미 있던 파일은 그대로 두고 빠진 것만 채웠습니다. 바탕화면에 만든 것은 「IRIS」 바로가기 하나뿐입니다.</p>' +
+    '<h3>3. 결과</h3>' +
+    '<p>구독: ' + (subs.length ? esc(subs.join(' · ')) : '없음') + (handoff.leadAgent ? ' · 앞장서는 쪽: ' + esc(handoff.leadAgent === 'chatgpt' ? 'Codex' : 'Claude Code') : '') + '</p>' +
+    '<p>만든 작업 폴더 ' + folders.length + '칸' + (folders.length ? ':' : '') + '</p>' + (folders.length ? li(folders) : '') +
+    (handoff.checks ? '<p>검사: ' + esc(typeof handoff.checks === 'string' ? handoff.checks : JSON.stringify(handoff.checks)) + '</p>' : '') +
+    '<h3>4. 남은 일의 뜻</h3>' +
+    (pending.length
+      ? '<ul>' + pending.map((p) => {
+        const id = typeof p === 'string' ? p : (p.id || '');
+        const msg = (typeof p === 'object' && p.message) ? esc(p.message) : (PENDING_WHY[id] || esc(id));
+        return '<li>' + msg + '</li>';
+      }).join('') + '</ul><p class="sub">「남은 일」은 고장이 아니라 <b>이 컴퓨터에 아직 없는 프로그램 때문에 잠시 못 하는 일</b>입니다. 나머지는 지금 그대로 쓸 수 있습니다.</p>'
+      : '<p>남은 일이 없습니다. 모든 기능을 바로 쓸 수 있습니다.</p>') +
+    (missing.length ? '<p class="sub">영어 이름을 비워 둔 폴더 ' + missing.length + '칸은 비서가 첫 대화에서 채우자고 제안할 것입니다.</p>' : '') +
+    '<h3>5. 이제 하실 일</h3>' +
+    '<p>아래 <b>「IRIS 열기」</b>를 누르세요. 창이 열리면 비서가 먼저 인사하고 무엇부터 할지 물어봅니다. 그다음부터는 바탕화면의 「IRIS」 아이콘을 두 번 누르면 됩니다. 이 브라우저 탭은 닫으셔도 됩니다.</p>' +
+    (rep.markdown ? '<details><summary>설치 기록 전문 보기' + (rep.markdownPath ? ' (' + esc(rep.markdownPath) + ')' : '') + '</summary><pre>' + esc(rep.markdown) + '</pre></details>' : '');
+}
+
+$('btn-open-face').onclick = async () => {
+  $('btn-open-face').disabled = true;
+  note('done-note', 'IRIS 창을 엽니다…');
+  const { body } = await api('/api/open-face', {});
+  if (body && body.ok === false) {
+    note('done-note', esc(body.message || 'IRIS 창을 열지 못했습니다.') + ' 바탕화면의 「IRIS」 아이콘을 두 번 눌러 주세요.', 'bad');
+    $('btn-open-face').disabled = false;
+    return;
+  }
+  note('done-note', 'IRIS 창이 열렸습니다. 이 브라우저 탭은 닫으셔도 됩니다.', 'ok');
+};
+
+// ---------------------------------------------------------------------------
+// 자동 업데이트 모드(--auto) — 이 화면에는 누를 것이 없다. 2.x 부품 교체용이며,
+// 1.x 영수증(schema<2)은 서버가 step="reinstall-required"로 돌려준다.
 // ---------------------------------------------------------------------------
 let autoSource = null;
+const autoParts = {};
+
+function renderAutoRows() {
+  $('auto-rows').innerHTML = Object.keys(autoParts).map((k) => {
+    const p = autoParts[k];
+    const mark = p.status === 'done' ? '<span class="ok">✓</span>' : p.status === 'skipped' ? '<span class="idle">-</span>'
+      : p.status === 'error' ? '<span class="bad">✗</span>' : '<span class="warn">…</span>';
+    const say = p.status === 'done' ? '끝' : p.status === 'skipped' ? '이미 같은 것이 있어 건너뜀'
+      : p.status === 'error' ? ('실패 — ' + esc(p.error || '')) : '바꾸는 중';
+    return '<div class="row"><span class="st">' + mark + '</span><span>' + esc(STAGE_LABEL[k] || PART_LABEL[k] || k) + ' — ' + say + '</span><span class="dt"></span></div>';
+  }).join('');
+}
 
 function autoFail(message) {
   badge('auto', '막힘', 'bad');
   note('auto-note', message, 'bad');
-  const b = $('btn-auto-retry');
-  b.hidden = false;
-  b.disabled = false;
-}
-
-function autoDone(result) {
-  badge('auto', '완료', 'done');
-  $('btn-auto-retry').hidden = true;
-  const versions = (result && result.from && result.to) ? ' (v' + esc(result.from) + ' → v' + esc(result.to) + ')' : '';
-  note('auto-note', installProgressNote(100) +
-    '<div class="note ok">업데이트가 끝났습니다' + versions + '. IRIS 창을 엽니다.<br>이 브라우저 탭은 이제 닫으셔도 됩니다.</div>');
+  $('btn-auto-retry').hidden = false;
+  $('btn-auto-retry').disabled = false;
 }
 
 function watchAuto() {
@@ -589,22 +1295,22 @@ function watchAuto() {
     sawEvent = true;
     let e; try { e = JSON.parse(ev.data); } catch { return; }
     if (e.part) {
-      partState[e.part] = partState[e.part] || {};
-      partState[e.part].pct = e.pct == null ? partState[e.part].pct : e.pct;
-      partState[e.part].status = e.error ? 'error' : e.skipped ? 'skipped' : (e.status || (e.pct === 100 ? 'done' : 'running'));
-      partState[e.part].error = e.error || null;
-      renderInstall();
+      autoParts[e.part] = autoParts[e.part] || {};
+      autoParts[e.part].status = e.error ? 'error' : e.skipped ? 'skipped' : (e.status || (e.pct === 100 ? 'done' : 'running'));
+      autoParts[e.part].error = e.error || null;
+      renderAutoRows();
     }
-    if (typeof e.pct === 'number' && !e.part && !e.error) note('auto-note', installProgressNote(e.pct));
+    if (typeof e.pct === 'number' && !e.part && !e.error) note('auto-note', bar20(e.pct));
     if (e.error) {
       autoSource.close(); autoSource = null;
-      autoFail('업데이트가 멈췄습니다' + (e.part ? ' — ' + esc(PART_LABEL[e.part] || e.part) : '') +
-        ' (' + esc(e.error) + ').<br>이미 있던 것은 그대로 되돌려 두었습니다. 다시 시도해도 안전합니다.');
+      autoFail('업데이트가 멈췄습니다 (' + esc(e.error) + ').<br>이미 있던 것은 그대로 되돌려 두었습니다. 다시 시도해도 안전합니다.');
       return;
     }
     if (e.done) {
       autoSource.close(); autoSource = null;
-      api('/api/state').then(({ body }) => autoDone(body && body.autoResult)).catch(() => autoDone(null));
+      badge('auto', '완료', 'done');
+      $('btn-auto-retry').hidden = true;
+      note('auto-note', bar20(100) + '<div class="note ok">업데이트가 끝났습니다. IRIS 창을 엽니다.<br>이 브라우저 탭은 이제 닫으셔도 됩니다.</div>');
     }
   };
   setTimeout(() => {
@@ -618,116 +1324,92 @@ function watchAuto() {
 async function startAuto() {
   badge('auto', '진행중', 'run');
   $('btn-auto-retry').disabled = true;
-  note('auto-note', installProgressNote(0));
+  note('auto-note', bar20(0));
   const { status, body } = await api('/api/auto', {});
-  if (status >= 400) {
-    autoFail('시작하지 못했습니다(' + esc(body.reason || status) + ').');
-    return;
-  }
+  if (status >= 400) { autoFail('시작하지 못했습니다(' + esc((body && body.message) || status) + ').'); return; }
   watchAuto();
 }
 $('btn-auto-retry').onclick = startAuto;
 
-// 자동 모드에서는 여섯 단계 카드와 단계 진행 바를 전부 감춘다 — 누를 것이 없는 화면에
-// 잠긴 카드 여섯 장을 보여 주면 "내가 뭘 해야 하나" 하는 화면이 되어 버린다.
-function enterAutoMode(st) {
-  rowsId = 'auto-rows';
-  for (const s of STEPS) $('card-' + s).hidden = true;
+function enterAutoMode() {
   $('bar-wrap').hidden = true;
+  for (const c of ALL_CARDS) { const el = $('card-' + c); if (el) el.hidden = true; }
   $('card-auto').hidden = false;
   $('lead').innerHTML = '<b>새 판으로 바꾸는 중입니다.</b> 사람이 할 일은 없습니다 — 끝나면 IRIS 창이 저절로 열립니다.';
-
-  if (st.install && st.install.parts) {
-    for (const k of Object.keys(st.install.parts)) partState[k] = { status: st.install.parts[k], pct: null };
-    renderInstall();
-  }
-  if (st.step === 'done' && st.autoResult && st.autoResult.ok) { autoDone(st.autoResult); return; }
-  if (st.installError) {
-    autoFail('지난번 업데이트가 멈췄습니다 (' + esc(st.installError) + ').<br>이미 있던 것은 그대로 되돌려 두었습니다. 다시 시도해도 안전합니다.');
-    return;
-  }
-  if (st.step === 'auto') { badge('auto', '진행중', 'run'); watchAuto(); return; }
   startAuto();
 }
 
-// ---------------------------------------------------------------------------
-// 새로고침 복원 — 서버가 들고 있는 state를 그대로 다시 그린다
-// ---------------------------------------------------------------------------
-async function restore() {
-  let st;
-  try { ({ body: st } = await api('/api/state')); } catch { relock(); return; }
+function enterReinstallMode() {
+  $('bar-wrap').hidden = true;
+  for (const c of ALL_CARDS) { const el = $('card-' + c); if (el) el.hidden = true; }
+  $('card-reinstall').hidden = false;
+  $('lead').textContent = '지금 설치된 판으로는 자동 업데이트를 할 수 없습니다.';
+}
 
+// ---------------------------------------------------------------------------
+// 복원 — 서버가 들고 있는 step으로 첫 화면을 정한다(새로고침·설치 이어하기).
+// ---------------------------------------------------------------------------
+async function loadPresets() {
   try {
-    const h = await (await fetch('/api/health')).json();
-    $('ver').textContent = 'v' + (h.version || '?');
-  } catch { /* 버전 표시는 없어도 그만 */ }
-
-  // 자동 업데이트 모드는 여기서 갈라진다(아래 마법사 복원은 아예 돌지 않는다).
-  if (st.auto && st.auto.eligible) { enterAutoMode(st); return; }
-
-  if (st.precheck) renderPrecheck(st.precheck);
-
-  if (st.soul && st.soul.root) {
-    done.name = true;
-    badge('name', '완료', 'done');
-    note('name-note', '여기에 설치합니다: <span class="path">' + esc(st.soul.root) + '</span>' +
-      (st.soul.existing === 'soul' ? '<br>이미 IRIS 비서가 설치된 폴더입니다. 그 안의 것은 지우지 않고, 부족한 것만 채웁니다.' : ''), 'ok');
+    const res = await fetch('/api/presets');
+    const data = await res.json();
+    presets = Array.isArray(data && data.presets) ? data.presets : [];
+  } catch {
+    try {
+      const res = await fetch('./presets.json');
+      const data = await res.json();
+      presets = Array.isArray(data && data.presets) ? data.presets : [];
+    } catch { presets = []; }
   }
+  renderPresetButtons();
+}
 
-  if (st.choice && st.choice.subscriptions && st.choice.subscriptions.length) {
+async function restore() {
+  await loadPresets();
+
+  let st = {};
+  try { ({ body: st } = await api('/api/state')); } catch { show('precheck'); runPrecheck(); return; }
+  if (st.version) $('ver').textContent = 'v' + st.version;
+
+  if (st.step === 'reinstall-required') { enterReinstallMode(); return; }
+  if (st.step === 'auto') { enterAutoMode(); return; }
+
+  if (st.choice && Array.isArray(st.choice.subscriptions) && st.choice.subscriptions.length) {
     chosenSubs = st.choice.subscriptions;
-    done.choice = true;
+    leadAgent = st.choice.leadAgent || chosenSubs[0];
     $('sub-claude').checked = chosenSubs.indexOf('claude') >= 0;
     $('sub-chatgpt').checked = chosenSubs.indexOf('chatgpt') >= 0;
     badge('choice', '완료', 'done');
-    note('choice-note', '첫 세팅은 <b>' + (st.choice.leadAgent === 'claude' ? 'Claude Code' : 'Codex') + '</b>가 맡습니다.', 'ok');
-    renderLoginBoxes();
   }
-
-  if (st.install && st.install.parts) {
-    for (const k of Object.keys(st.install.parts)) partState[k] = { status: st.install.parts[k], pct: null };
-    renderInstall();
+  if (st.decisions && Array.isArray(st.decisions.nodes)) {
+    decisions = st.decisions;
+    laterChosen = !!st.decisions.later;
+    nodes = st.decisions.nodes.map((n) => ({
+      id: String(n.id != null ? n.id : newId()), parentId: n.parentId == null ? null : String(n.parentId),
+      level: n.level, nameKo: n.nameKo || '', nameEn: n.nameEn || '', order: n.order || 1,
+    }));
+    badge('structure', '완료', 'done');
   }
+  if (st.precheck) renderPrecheck(st.precheck);
+  renderStructure();
+  renderSummary(st.decisions);
 
-  // 레지스트리를 건드리지 않고 돌린 설치(--no-user-env)라는 사실은 화면에도 남긴다.
-  const envNotice = st.userEnvSkipped
-    ? '<div class="note">이 설치는 <b>환경 변수를 실제로 쓰지 않는 모드</b>로 돌았습니다(리허설). 영수증에 <code>env.applied: false</code>로 남습니다.</div>'
-    : '';
+  const target = STEPS.indexOf(st.step) >= 0 ? st.step : 'precheck';
+  show(target);
 
-  const beyondInstall = st.step === 'login' || st.step === 'handoff' || st.step === 'done';
-  if (beyondInstall) {
-    done.install = true;
-    badge('install', '완료', 'done');
-    note('install-note', installProgressNote(100) + '<div class="note ok">설치가 끝났습니다.</div>' + envNotice);
-    $('btn-install').disabled = true;
-  } else if (st.step === 'install') {
-    // 서버는 실패를 state.installError에 남기고 재시도를 받아 준다.
-    // 그 값을 무시하면 새로고침한 화면이 영원히 "진행중"에 갇힌다.
-    if (st.installError) {
-      installRetry('지난번 설치가 멈췄습니다 (' + esc(st.installError) + ').<br>이미 있던 것은 그대로 되돌려 두었습니다. 다시 시도해도 안전합니다.');
-    } else {
-      badge('install', '진행중', 'run');
-      $('btn-install').disabled = true;
-      watchInstall(); // 5초 안에 아무 이벤트도 안 오면 watchInstall이 재시도로 되돌린다
-    }
-  } else if (envNotice) {
-    note('install-note', envNotice);
+  if (target === 'precheck') { runPrecheck(); return; }
+  if (target === 'locate') { runLocate(); return; }
+  if (target === 'setup') {
+    if (st.setup) renderSetup(st.setup);
+    watchSetup();
+    return;
   }
-
-  if (st.step === 'handoff' || st.step === 'done') {
-    done.login = true;
-    badge('login', '완료', 'done');
-    for (const p of chosenSubs) { setStage('st1-' + p, 'done'); setStage('st2-' + p, 'done'); }
-    for (const p of chosenSubs) { const b = $('btn-login-' + p); if (b) b.disabled = true; }
-  } else if (st.login && Object.keys(st.login).length) { badge('login', '진행중', 'run'); pollLogin(); }
-
-  if (st.step === 'done') {
-    done.handoff = true;
-    badge('handoff', '완료', 'done');
-    note('handoff-note', '이미 끝난 설치입니다.', 'ok');
+  if (target === 'online') {
+    if (st.online) { renderOnlineRows(st.online); renderLoginBoxes(st.online); }
+    startOnline();
+    return;
   }
-
-  relock();
+  if (target === 'done') { loadReport(); return; }
 }
 
 restore();

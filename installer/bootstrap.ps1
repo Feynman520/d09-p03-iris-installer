@@ -10,8 +10,14 @@ param(
   # Automatic update mode: passed through to server.mjs as --auto. Set by the
   # installer .cmd when it is run with --auto, which is how the updater starts
   # this installer for a structural update. The server still refuses to run
-  # silently unless the target already has an install receipt.
-  [switch]$Auto
+  # silently unless the target already has a v2 install receipt (a 1.x receipt
+  # answers "reinstall required" and changes nothing).
+  [switch]$Auto,
+  # Resume mode: passed through to server.mjs as --resume. Set by the installer
+  # .cmd when it is run with --resume, which is how the IRIS window's
+  # "continue setup" button restarts an install that stopped before the online
+  # steps finished. The server re-reads the receipt and reopens at that point.
+  [switch]$Resume
 )
 $ErrorActionPreference = 'Stop'
 
@@ -43,7 +49,7 @@ function Log($m) {
   Write-Host $m
 }
 
-Log "Starting. ZipRoot=$ZipRoot Port=$Port Auto=$($Auto.IsPresent)"
+Log "Starting. ZipRoot=$ZipRoot Port=$Port Auto=$($Auto.IsPresent) Resume=$($Resume.IsPresent)"
 
 # --- Stage: location (exit 10) -------------------------------------------
 # Two symptoms of "the user did not extract the zip first": Windows Explorer
@@ -192,6 +198,7 @@ $serverOut = Join-Path $work 'server.out.log'
 $serverErr = Join-Path $work 'server.err.log'
 $serverArgs = @("`"$server`"", '--zip-root', "`"$ZipRoot`"", '--port', $Port, '--node-dir', "`"$nodeDir`"")
 if ($Auto) { $serverArgs += '--auto' }
+if ($Resume) { $serverArgs += '--resume' }
 $proc = Start-Process -FilePath $nodeExe `
   -ArgumentList $serverArgs `
   -WindowStyle Hidden -PassThru `

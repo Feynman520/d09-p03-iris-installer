@@ -1,40 +1,52 @@
 #!/usr/bin/env node
-// IRIS installer local server. Launched by installer/bootstrap.ps1 as:
+// IRIS installer local server (v2). Launched by installer/bootstrap.ps1 as:
 //   node server.mjs --zip-root "<zipRoot>" --port 3460 --node-dir "<nodeDir>"
-// node:http only, no dependencies, ESM. 127.0.0.1 only. English/code
-// messages only -- Korean UI text lives in installer/ui/index.html, not
-// here (repo-wide constraint: server messages are for logs/JSON, not
-// screens).
+//                   [--resume] [--auto] [--no-user-env]
+// node:http only, no dependencies, ESM. 127.0.0.1 only.
+//
+// State machine (docs/설치기-API-v2.md -- the contract this file and
+// installer/ui/index.html both implement, neither one alone):
+//   precheck -> locate -> choice -> structure -> summary -> setup -> online -> done
+// plus two flag-only steps: `auto` (the updater's part swap) and
+// `reinstall-required` (an --auto run over a 1.x receipt).
+//
+// Division of labour: this server asks the questions, keeps the answers and
+// mirrors progress. It does NOT install anything itself -- the offline work is
+// `installer/setup/engine.mjs` (T13~T18) and the online work is
+// `installer/lib/online.mjs` (T19), both reached through the thin adapters in
+// lib/adapters/ so a missing module answers `E-NOT-IMPLEMENTED` instead of
+// stopping the server from booting.
+//
+// Korean here is only what the screen shows verbatim (`message` fields);
+// everything else -- logs, codes, comments -- stays ASCII. The product name of
+// the relay is never written in a user-facing message (설계-v2 7절).
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { initialState, loadState, saveState } from './lib/state.mjs';
-import { precheck } from './lib/precheck.mjs';
-import { validateSoulName, detectExisting } from './lib/soulname.mjs';
-import { install as defaultInstall } from './lib/install.mjs';
-import { ensureProxy as defaultEnsureProxy } from './lib/proxy.mjs';
 import {
-  startCliLogin as defaultStartCliLogin,
-  cliLoginStatus as defaultCliLoginStatus,
-  relayImport as defaultRelayImport,
-  relayStatus as defaultRelayStatus,
-  resolveTeamclaudeConfigPath,
-  countProviderAccounts as defaultCountProviderAccounts,
-} from './lib/login.mjs';
+  initialState, loadState, saveState, normalizeState, isSamePackage,
+  initialSetup, markSetupStage, setupPercent,
+} from './lib/state.mjs';
+import { precheck as defaultPrecheck } from './lib/precheck.mjs';
+import { validateSoulName } from './lib/soulname.mjs';
 import {
-  readReceipt, writeReceipt, setLogin as setReceiptLogin, markStep as markReceiptStep,
+  validateNodes, buildDecisions, writeDecisions, readDecisions, decisionsPath,
+} from './lib/structure-rules.mjs';
+import {
+  readReceipt, writeReceipt, newReceiptV2, ensureV2Fields, setPrecheck,
+  isLegacyReceipt, setupAllDone, onlineDone, markStep as markReceiptStep,
+  backupLegacyReceipt, SETUP_STAGE_IDS,
 } from './lib/receipt.mjs';
-import {
-  writeFirstRequest as defaultWriteFirstRequest,
-  writeFaceLauncher as defaultWriteFaceLauncher,
-  writeFirstSessionSpec as defaultWriteFirstSessionSpec,
-  launchFace as defaultLaunchFace,
-  relaunchFace as defaultRelaunchFace,
-  waitFaceReady as defaultWaitFaceReady,
-  finish as defaultFinish,
-} from './lib/handoff.mjs';
+import { createSetupRunner } from './lib/adapters/setup-runner.mjs';
+import { createOnlineRunner } from './lib/adapters/online-runner.mjs';
+// Update mode only (POST /api/auto). The v1 `install()` is deliberately NOT
+// imported any more: an update runs the SAME v2 engine the wizard runs, with
+// the stages an update can change reset to `pending` first (lib/update-plan).
+import { planUpdateReset, applyUpdateReset } from './lib/update-plan.mjs';
+import { relaunchFace as defaultRelaunchFace, finish as defaultFinish } from './lib/handoff.mjs';
+import { run as defaultRun } from '../lib/run.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -60,9 +72,7 @@ function sendJson(res, status, obj, extraHeaders = {}) {
 // the request/socket itself -- that is the caller's job, and only *after*
 // the 413 JSON response has been written and flushed (see withBody). Doing
 // it here raced the response write against the socket teardown and produced
-// a client-side ECONNRESET instead of the coded 413 (fix round 1 finding 1).
-// Memory still stays bounded: once overLimit flips, further chunks are
-// dropped on the floor (never pushed to `chunks`) instead of being buffered.
+// a client-side ECONNRESET instead of the coded 413.
 function readJsonBody(req, limit = BODY_LIMIT) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -94,24 +104,18 @@ function readJsonBody(req, limit = BODY_LIMIT) {
 }
 
 // ---------------------------------------------------------------------------
-// local-origin guard (2026-09-12 final review I3)
+// local-origin guard
 // ---------------------------------------------------------------------------
 // The installer server binds 127.0.0.1 only, but "local" is not "safe": any
 // page the person happens to have open in the same browser can POST to
-// http://127.0.0.1:3460/api/... (drive-by CSRF), and that means naming a
-// soul folder, starting the install, or quitting the installer from a
-// foreign site. Two cheap, complementary checks close it:
-//
-//   1. Origin: browsers send it on every cross-origin request (and on all
-//      POSTs). A present Origin that is not this very server is rejected.
-//      An absent Origin is allowed on purpose -- same-origin GETs,
-//      EventSource, bootstrap.ps1's Invoke-WebRequest health probe and
-//      verify/static.mjs's smoke check all send none.
-//   2. Content-Type: application/json cannot be produced by a plain
-//      <form> post (the CORS "simple request" content types are
-//      form-urlencoded / multipart / text-plain), so requiring it on every
-//      /api POST forces any cross-site attempt into a preflight, which
-//      check 1 then refuses.
+// http://127.0.0.1:3460/api/... (drive-by CSRF). Two cheap checks close it:
+//   1. Origin: a present Origin that is not this very server is rejected. An
+//      absent Origin is allowed on purpose -- same-origin GETs, EventSource,
+//      bootstrap.ps1's health probe and verify/static.mjs's smoke check all
+//      send none.
+//   2. Content-Type: application/json cannot be produced by a plain <form>
+//      post, so requiring it on every /api POST forces any cross-site attempt
+//      into a preflight, which check 1 then refuses.
 export function allowedOrigins(port) {
   return [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
 }
@@ -130,72 +134,142 @@ export function checkApiRequest(req, port) {
   return { ok: true };
 }
 
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-};
+// ---------------------------------------------------------------------------
+// static files -- an allow-list of exactly three, nothing else
+// ---------------------------------------------------------------------------
+// v2 replaces the old "serve anything under ui/" handler with a fixed table.
+// The wizard is one page plus one module plus one data file, so a table is
+// both simpler and strictly safer: no path can be built that reaches
+// bootstrap.ps1 or the payload, whatever a URL encodes.
+const STATIC_FILES = new Map([
+  ['/', { file: 'index.html', type: 'text/html; charset=utf-8' }],
+  ['/index.html', { file: 'index.html', type: 'text/html; charset=utf-8' }],
+  ['/structure.mjs', { file: 'structure.mjs', type: 'text/javascript; charset=utf-8' }],
+  ['/presets.json', { file: 'presets.json', type: 'application/json; charset=utf-8' }],
+]);
 
-// Static files come only from installer/ui/ -- GET / -> ui/index.html
-// (which does not exist yet as of Task 10; Task 14 adds it, so this
-// currently 404s, by design). path.normalize + a startsWith prefix check
-// keeps `..`/absolute-path segments in the URL from escaping uiDir.
 function serveStatic(uiDir, pathname, res) {
-  let rel;
-  try {
-    rel = decodeURIComponent(pathname === '/' ? 'index.html' : pathname.slice(1));
-  } catch {
-    sendJson(res, 400, { ok: false, reason: 'bad_request' });
+  const entry = STATIC_FILES.get(pathname);
+  if (!entry) {
+    sendJson(res, 404, { ok: false, reason: 'not_found' });
     return;
   }
-  const resolved = path.normalize(path.join(uiDir, rel));
-  const uiDirNormalized = path.normalize(uiDir);
-  if (resolved !== uiDirNormalized && !resolved.startsWith(uiDirNormalized + path.sep)) {
-    sendJson(res, 403, { ok: false, reason: 'forbidden' });
-    return;
-  }
-  fs.readFile(resolved, (err, data) => {
+  fs.readFile(path.join(uiDir, entry.file), (err, data) => {
     if (err) {
       sendJson(res, 404, { ok: false, reason: 'not_found' });
       return;
     }
-    const ext = path.extname(resolved).toLowerCase();
-    writeHeaders(res, 200, {
-      'Content-Type': MIME[ext] ?? 'application/octet-stream',
-      'Content-Length': data.length,
-    });
+    writeHeaders(res, 200, { 'Content-Type': entry.type, 'Content-Length': data.length });
     res.end(data);
   });
 }
 
-function readPackageVersion(zipRoot) {
+// ---------------------------------------------------------------------------
+// zip-side readers
+// ---------------------------------------------------------------------------
+function readPayloadManifest(zipRoot) {
   try {
-    const manifestPath = path.join(zipRoot, 'payload', 'manifest.json');
-    const mf = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    return mf?.package?.version ?? 'unknown';
+    return JSON.parse(fs.readFileSync(path.join(zipRoot, 'payload', 'manifest.json'), 'utf8'));
   } catch {
-    return 'unknown';
+    return null;
   }
 }
 
-// --no-user-env / IRIS_INSTALLER_NO_USER_ENV=1: a userpath implementation
-// that records what install() *would* have written to HKCU\Environment and
-// writes nothing. The receipt still gets the same env values (that is what
-// the setting-up agent reads), only the registry is left alone. Exists for
-// rehearsals on a machine that is already a working IRIS soul -- a live
-// install there would repoint CLAUDE_CONFIG_DIR / CODEX_HOME /
+function readPackageVersion(zipRoot) {
+  return readPayloadManifest(zipRoot)?.package?.version ?? 'unknown';
+}
+
+// lock.json is a build-time artifact that also travels in the zip next to
+// installer/. Fall back to the repo copy when running from a git checkout.
+function readLock(zipRoot) {
+  const candidates = [
+    zipRoot ? path.join(zipRoot, 'lock.json') : null,
+    path.resolve(HERE, '..', 'lock.json'),
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { /* try next */ }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// soul detection
+// ---------------------------------------------------------------------------
+// docs/설치기-API-v2.md `soul.mode`:
+//   empty        없거나 빈 폴더                  -> 그냥 설치
+//   iris         v2 영수증이 있는 IRIS           -> 이어하기/고치기
+//   iris-legacy  1.x 영수증 또는 soul-state.json -> 자료 보존 이어 설치 (S09)
+//   foreign      IRIS 표시가 없는데 비어 있지 않음 -> 막음
+// Read-only: this never creates the folder, so probing the developer PC's real
+// C:\IRIS changes nothing.
+//
+// Top-level names only IRIS (or this installer) ever creates. They matter for
+// the "foreign" verdict: as soon as the location is confirmed the installer
+// starts logging to <root>\_agent\setup\installer.log, so a run that stops
+// right after that leaves a folder whose ONLY content is our own bookkeeping --
+// and the next run must not then refuse its own log as someone else's files.
+// Judging "foreign" on names that are not ours, rather than on "not empty",
+// is what makes a second run of an interrupted install possible.
+const IRIS_OWNED_ENTRIES = new Set([
+  '_agent', '_ontology', '_trash', '_cleanup', '_document-templates', '_backup',
+  'soul-state.json', 'AGENTS.md', 'CLAUDE.md', '_cosmos.ico', 'desktop.ini',
+]);
+
+export function detectSoulMode(root, { fsFn = fs, readReceiptFn = readReceipt } = {}) {
+  let entries;
+  try {
+    entries = fsFn.readdirSync(root);
+  } catch {
+    return 'empty'; // does not exist (or is not a readable directory)
+  }
+  if (entries.length === 0) return 'empty';
+  const receipt = readReceiptFn(root);
+  if (receipt) return isLegacyReceipt(receipt) ? 'iris-legacy' : 'iris';
+  if (entries.includes('soul-state.json')) return 'iris-legacy';
+  if (entries.every((e) => IRIS_OWNED_ENTRIES.has(e))) return 'empty';
+  return 'foreign';
+}
+
+const SOUL_MESSAGE = {
+  empty: '설치할 자리가 비어 있습니다. 이대로 진행합니다.',
+  iris: '이미 IRIS가 설치된 폴더입니다. 기존 자료는 그대로 두고 이어서 진행합니다.',
+  'iris-legacy': '예전 판 IRIS 폴더입니다. 안에 있는 자료는 건드리지 않고 새 부품과 지침만 놓습니다.',
+  foreign: '이 폴더에 IRIS가 아닌 자료가 있습니다. 그 자료를 다른 곳으로 옮긴 뒤 「다시 확인」을 눌러 주세요.',
+};
+
+// ---------------------------------------------------------------------------
+// re-run verdict (docs/설치기-API-v2.md "재실행·모드")
+// ---------------------------------------------------------------------------
+// 영수증이 있으면: setup 전부 done + online 미완 -> online / 전부 done -> done
+// / 중간까지 갔으면 -> setup. 영수증이 없고 decisions.json 만 있으면 -> summary.
+// `--resume` (Face 「설치 이어하기」) forces this verdict over any saved state.
+export function resumeVerdict(root, { readReceiptFn = readReceipt, fsFn = fs } = {}) {
+  if (!root) return null;
+  const receipt = readReceiptFn(root);
+  if (receipt && !isLegacyReceipt(receipt)) {
+    if (setupAllDone(receipt)) {
+      return onlineDone(receipt)
+        ? { step: 'done', reason: 'all-done' }
+        : { step: 'online', reason: 'setup-done' };
+    }
+    const started = SETUP_STAGE_IDS.some((id) => {
+      const s = receipt.setup?.[id]?.status;
+      return s && s !== 'pending';
+    });
+    if (started) return { step: 'setup', reason: 'setup-partial' };
+  }
+  if (readDecisions(root, { fs: fsFn })) return { step: 'summary', reason: 'decisions-only' };
+  return null;
+}
+
+// --no-user-env / IRIS_INSTALLER_NO_USER_ENV=1: a userpath implementation that
+// records what the install *would* have written to HKCU\Environment and writes
+// nothing. Exists for rehearsals on a machine that is already a working IRIS
+// soul -- a live install there would repoint CLAUDE_CONFIG_DIR / CODEX_HOME /
 // ANTHROPIC_BASE_URL and the user Path at the rehearsal folder.
 export function recordingUserpath(record = []) {
   return {
     record,
-    // install() reads these two to stamp receipt.env.applied=false +
-    // skippedReason, so a rehearsal receipt can never be mistaken for a real
-    // install's (fix round 1 finding 3).
     recording: true,
     skippedReason: 'no-user-env',
     addUserPath: async (dir) => {
@@ -227,10 +301,9 @@ function withBody(handler) {
       const status = err.statusCode ?? 400;
       if (status === 413) {
         // The client may still be streaming the rest of an oversized body.
-        // Write the JSON response (with Connection: close so the socket is
-        // not reused for a request we never fully read) and only destroy
-        // the request stream once that response has actually been flushed,
-        // so the client sees the coded 413 instead of a connection reset.
+        // Write the JSON response (with Connection: close so the socket is not
+        // reused for a request we never fully read) and only destroy the
+        // request stream once that response has actually been flushed.
         sendJson(res, 413, { ok: false, reason: 'bad_request' }, { Connection: 'close' });
         res.on('finish', () => { req.destroy(); });
       } else {
@@ -246,58 +319,26 @@ function withBody(handler) {
 // server
 // ---------------------------------------------------------------------------
 
-function readPayloadManifest(zipRoot) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(zipRoot, 'payload', 'manifest.json'), 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-// lock.json is a build-time artifact that also travels in the zip next to
-// installer/ (it is what says which parts exist, their kinds and the
-// download-only ones). Fall back to the repo copy when running from a git
-// checkout (dev / rehearsal).
-function readLock(zipRoot) {
-  const candidates = [
-    zipRoot ? path.join(zipRoot, 'lock.json') : null,
-    path.resolve(HERE, '..', 'lock.json'),
-  ].filter(Boolean);
-  for (const p of candidates) {
-    try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { /* try next */ }
-  }
-  return null;
-}
-
 export function startServer({
   port = 3460,
   zipRoot,
   nodeDir,
   stateFile,
   onQuit,
-  installFn = defaultInstall,
-  ensureProxyFn = defaultEnsureProxy,
-  startCliLoginFn = defaultStartCliLogin,
-  cliLoginStatusFn = defaultCliLoginStatus,
-  relayImportFn = defaultRelayImport,
-  relayStatusFn = defaultRelayStatus,
-  countProviderAccountsFn = defaultCountProviderAccounts,
-  teamclaudeConfigPath,
-  writeFirstRequestFn = defaultWriteFirstRequest,
-  writeFaceLauncherFn = defaultWriteFaceLauncher,
-  writeFirstSessionSpecFn = defaultWriteFirstSessionSpec,
-  launchFaceFn = defaultLaunchFace,
-  relaunchFaceFn = defaultRelaunchFace,
-  waitFaceReadyFn = defaultWaitFaceReady,
-  finishFn = defaultFinish,
+  // v2 seams (all injectable so tests never write under C:\ or spawn anything)
+  precheckFn = defaultPrecheck,
+  setupRunner = createSetupRunner(),
+  onlineRunner = createOnlineRunner(),
   readReceiptFn = readReceipt,
-  facePort,
+  writeReceiptFn = writeReceipt,
+  runFn = defaultRun,
+  openFaceFn,
+  // update-mode (POST /api/auto) seams. The install itself is `setupRunner`
+  // (the same v2 engine as the wizard) -- there is no v1 install seam any more.
+  relaunchFaceFn = defaultRelaunchFace,
+  finishFn = defaultFinish,
   faceDir,
   faceNodeExe,
-  faceExtraArgs,
-  faceEnv,
-  faceSpecOverrides,
-  desktopDir,
   workDir,
   noUserEnv = false,
   // 2026-09-13 user decision: the soul folder is ALWAYS C:\IRIS -- the product
@@ -306,17 +347,26 @@ export function startServer({
   // exists only so the developer PC (whose real C:\IRIS must not be touched)
   // can rehearse the installer against a throwaway root.
   soulName = process.env.IRIS_INSTALLER_SOUL_NAME || 'IRIS',
-  // Automatic update mode (2026-09-14): IRIS-설치.cmd --auto, which is how
-  // _agent\shared\tools\updater\apply.mjs starts this installer for a
-  // structural update (P02 docs\설계-업데이트-2026-09-14.md 4-2 / 5-2). The
-  // env var is what actually travels, because the updater spawns the .cmd
-  // with it set; the flag exists so the .cmd can be run by hand the same way.
+  // Test-only seam: an absolute root that replaces C:\<soulName> entirely, so
+  // a unit test can drive the whole machine (decisions.json, the receipt, the
+  // logs) against a throwaway folder without ever creating anything under C:\.
+  // Never set by bootstrap.ps1 or the .cmd -- the product folder is fixed.
+  soulRoot: soulRootOverride = null,
+  // Automatic update mode: IRIS-설치.cmd --auto, which is how the updater
+  // starts this installer for a structural update.
   auto = process.env.IRIS_INSTALLER_AUTO === '1',
+  // Face 「설치 이어하기」: IRIS-설치.cmd --resume. Forces the receipt verdict.
+  resume = process.env.IRIS_INSTALLER_RESUME === '1',
 } = {}) {
   const uiDir = path.join(HERE, 'ui');
   const version = readPackageVersion(zipRoot);
   const userEnvSkipped = noUserEnv || process.env.IRIS_INSTALLER_NO_USER_ENV === '1';
   const userEnvRecord = [];
+  const logDir = workDir ?? (process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, 'IRIS-Installer')
+    : path.join(os.tmpdir(), 'IRIS-Installer'));
+  const serverLog = path.join(logDir, 'server.log');
+
   if (userEnvSkipped) {
     console.log('================================================================');
     console.log('[iris-installer] --no-user-env ACTIVE: HKCU\\Environment will NOT');
@@ -326,161 +376,706 @@ export function startServer({
     console.log('================================================================');
   }
 
-  // Restore prior progress (refresh / re-run) but always take this run's
-  // zipRoot/nodeDir -- the invocation just told us where those actually are
-  // right now.
-  let state = loadState(stateFile);
-  // A saved state belongs to the package that wrote it. Re-running a NEWER zip
-  // over a PC whose previous run had reached login/handoff/done used to resume
-  // right there (2026-09-14, second PC): the copy step never ran, the guides
-  // stayed at the old version, yet the handoff wrote a first request naming the
-  // new guide -- the agent then found no such file. A different package version
-  // therefore starts from the beginning (install() itself still skips parts
-  // that are already at the same version, so this costs nothing).
-  if (state && state.packageVersion !== version) {
-    console.log(`[iris-installer] saved progress is from package ${state.packageVersion ?? '?'}; this zip is ${version} -- starting over`);
-    state = null;
+  // --- logging ------------------------------------------------------------
+  // Always %LOCALAPPDATA%\IRIS-Installer\server.log; once the soul root is
+  // CONFIRMED, a copy also goes to <root>\_agent\setup\installer.log so the log
+  // travels with the install (설계-v2 4-2).
+  //
+  // "Confirmed" is load-bearing, not pedantry: writing the log the moment the
+  // root is merely *known* creates <root>\_agent\setup\installer.log before the
+  // person has been asked anything -- and then the very next question, "is this
+  // folder free?", answers "no, someone else's files are in it", because the
+  // only thing in it is our own log. Nothing goes under the soul root until
+  // POST /api/locate has said the folder is ours to use (or a receipt already
+  // proved it is).
+  // Set ONLY by: a successful POST /api/locate (mode !== 'foreign'), a receipt
+  // that already proves the folder is ours (the re-run verdict), or the start
+  // of an update run. Cleared again by a locate that says 'foreign'.
+  let soulConfirmed = false;
+
+  // Every route that WRITES under the soul root goes through this first. Two
+  // things it stops, both of which put files in a folder nobody agreed to:
+  //   - jumping straight to /api/structure or /api/setup/start (a stale page,
+  //     a bookmark, a script) before the location was ever confirmed;
+  //   - doing so after /api/locate refused the folder as someone else's.
+  // Reading routes (/api/state, /api/setup/progress) are deliberately not
+  // guarded -- a screen must always be able to ask where it is.
+  function requireLocated(res) {
+    if (!state.soul?.root) {
+      sendJson(res, 409, { ok: false, reason: 'no_soul', message: '설치 위치 확인을 먼저 해 주세요.' });
+      return false;
+    }
+    if (!soulConfirmed) {
+      sendJson(res, 409, { ok: false, reason: 'no_locate', message: '설치 위치 확인을 먼저 해 주세요.' });
+      return false;
+    }
+    return true;
   }
-  // A finished run is finished: re-running the same zip by hand means the
-  // person wants to install or repair again, not to look at last time's
-  // "done" screen (the automatic-update path resets below on its own).
-  if (state && state.step === 'done' && !auto) {
-    console.log('[iris-installer] previous run had finished -- starting over');
-    state = null;
+
+  function soulLogPath() {
+    const root = state?.soul?.root;
+    return soulConfirmed && root ? path.join(root, '_agent', 'setup', 'installer.log') : null;
   }
-  if (!state) {
-    state = initialState({ zipRoot, nodeDir });
-  } else {
-    state.zipRoot = zipRoot;
-    state.nodeDir = nodeDir;
+
+  function log(line) {
+    const stamped = `${new Date().toISOString()} ${line}\n`;
+    for (const file of [serverLog, soulLogPath()]) {
+      if (!file) continue;
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.appendFileSync(file, stamped, 'utf8');
+      } catch { /* logging must never break a step */ }
+    }
   }
-  state.packageVersion = version;
+
+  // --- state --------------------------------------------------------------
+  const restored = loadState(stateFile);
+  const samePackage = isSamePackage(restored, version);
+  if (restored && !samePackage) {
+    console.log(`[iris-installer] saved progress is from package ${restored.packageVersion ?? '?'}; this zip is ${version} -- starting over`);
+  }
+  let state = samePackage
+    ? normalizeState(restored, { zipRoot, nodeDir, packageVersion: version })
+    : initialState({ zipRoot, nodeDir, packageVersion: version });
   // Always this run's value: the screen shows a notice when the install did not
   // really write HKCU\Environment, and a restored state must not claim
   // otherwise in either direction.
   state.userEnvSkipped = userEnvSkipped;
 
-  // --- automatic update mode ------------------------------------------------
-  // Only ever taken over an install that already has a receipt. Anything else
-  // -- the flag on a fresh PC, a soul name that does not validate -- falls
-  // through to the normal six-step wizard, so the automatic flag can never
-  // turn a first install into a silent one.
+  const save = () => saveState(stateFile, state);
+
+  // --- soul root ----------------------------------------------------------
+  const soulValidation = soulRootOverride
+    ? { ok: true, path: soulRootOverride }
+    : validateSoulName(soulName);
+  const soulRoot = soulValidation.ok ? soulValidation.path : null;
+
+  function refreshSoul() {
+    if (!soulRoot) {
+      state.soul = { name: soulName, root: null, mode: null, reason: soulValidation.reason };
+      return state.soul;
+    }
+    state.soul = {
+      name: soulName,
+      root: soulRoot,
+      mode: detectSoulMode(soulRoot, { readReceiptFn }),
+    };
+    return state.soul;
+  }
+  refreshSoul();
+
+  // --- automatic update mode ----------------------------------------------
+  // Only ever taken over an install that already has a v2 receipt. A 1.x
+  // receipt is refused outright (D2-24): 2.0 lays out a different soul, so an
+  // in-place part swap would leave a half-2.0 install nobody can reason about.
   function autoEligibility() {
     if (!auto) return { requested: false, eligible: false, reason: 'not_requested' };
-    const validation = validateSoulName(soulName);
-    if (!validation.ok) return { requested: true, eligible: false, reason: `name_${validation.reason}` };
-    const prior = readReceiptFn(validation.path);
-    if (!prior) return { requested: true, eligible: false, reason: 'no_receipt', root: validation.path };
+    if (!soulValidation.ok) return { requested: true, eligible: false, reason: `name_${soulValidation.reason}` };
+    const prior = readReceiptFn(soulRoot);
+    if (!prior) return { requested: true, eligible: false, reason: 'no_receipt', root: soulRoot };
+    if (isLegacyReceipt(prior)) {
+      return {
+        requested: true,
+        eligible: false,
+        reason: 'legacy_receipt',
+        root: soulRoot,
+        schema: prior.schema ?? 1,
+        from: prior.package?.version ?? null,
+        to: version,
+      };
+    }
     return {
       requested: true,
       eligible: true,
       name: soulName,
-      root: validation.path,
+      root: soulRoot,
       from: prior.package?.version ?? null,
       to: version,
       choice: prior.choice ?? null,
     };
   }
   state.auto = autoEligibility();
+
   // A previous run's leftovers must never decide this one. state.json lives in
   // %LOCALAPPDATA%\IRIS-Installer and survives forever, so an automatic update
-  // could open on a `step:'done'` + `autoResult.ok` left by the *last* update
-  // (the screen would replay that old success) or on an `installError` left by
-  // a first install that failed months ago (the screen would show that error
-  // and offer 「다시 시도」). In both cases enterAutoMode() returns before it
-  // ever calls startAuto(), and the daemon has already been shut down by the
-  // updater -- so the person is left with no IRIS window and no update. The
-  // verdict has to be made here, on the server, before the screen reads the
-  // state: this run is an update, therefore the run-specific fields start
-  // empty. (`step` goes back to the initial 'precheck'; POST /api/auto sets it
-  // to 'auto', which is how a *mid-run* browser refresh still reconnects to the
-  // live stream -- startServer() runs once per process, not per request.)
+  // could open on a `step:'done'` left by the *last* update. The verdict is
+  // made here, on the server, before the screen reads the state.
   if (state.auto.eligible) {
+    // NOT soulConfirmed yet: merely *being* an update candidate must not put a
+    // file in the soul folder. POST /api/auto confirms it when the run starts.
     state.step = 'precheck';
     state.autoResult = null;
     state.installError = null;
     state.install = null;
+  } else if (state.auto.reason === 'legacy_receipt') {
+    // --auto over a 1.x install: change nothing at all, just say so.
+    state.step = 'reinstall-required';
+    state.autoResult = null;
+    log(`auto refused: receipt schema ${state.auto.schema} < 2 at ${soulRoot}`);
+  } else {
+    // --- re-run verdict --------------------------------------------------
+    // Applied on a fresh start always, and over a restored state only when
+    // --resume says so (that is what Face's 「설치 이어하기」 passes).
+    const verdict = resumeVerdict(soulRoot, { readReceiptFn });
+    if (verdict && (resume || !samePackage || state.step === 'precheck')) {
+      // A receipt or a decisions.json under this root is proof the folder is
+      // already ours, so the soul-side log may start immediately.
+      soulConfirmed = true;
+      state.step = verdict.step;
+      state.resume = { ...verdict, forced: resume };
+      if (verdict.step === 'summary' || verdict.step === 'setup') {
+        state.decisions = state.decisions ?? readDecisions(soulRoot);
+      }
+      const prior = readReceiptFn(soulRoot);
+      if (prior && !isLegacyReceipt(prior)) {
+        state.choice = state.choice ?? prior.choice ?? null;
+        state.decisions = state.decisions ?? readDecisions(soulRoot);
+      }
+      log(`resume verdict: step=${verdict.step} (${verdict.reason}) forced=${resume}`);
+    } else if (resume) {
+      state.resume = { step: null, reason: 'nothing-to-resume', forced: true };
+    }
   }
-  saveState(stateFile, state);
+  save();
+  log(`start version=${version} step=${state.step} soul=${state.soul?.mode ?? 'unknown'} auto=${state.auto.eligible} resume=${resume}`);
 
+  // =========================================================================
+  // routes
+  // =========================================================================
   const routes = new Map();
 
   routes.set('GET /api/health', async (req, res) => {
     sendJson(res, 200, {
-      ok: true, name: 'iris-installer', version, step: state.step, auto: state.auto?.eligible === true,
+      ok: true,
+      name: 'iris-installer',
+      version,
+      step: state.step,
+      auto: state.auto?.eligible === true,
     });
   });
 
   routes.set('GET /api/state', async (req, res) => {
-    sendJson(res, 200, state);
+    sendJson(res, 200, { ok: true, name: 'iris-installer', version, ...state });
   });
 
+  // --- ① 준비 확인 ---------------------------------------------------------
   routes.set('POST /api/precheck', withBody(async (body, req, res) => {
-    const result = await precheck();
+    const result = await precheckFn();
     state.precheck = result;
-    state.step = 'name';
-    saveState(stateFile, state);
-    sendJson(res, 200, result);
+    const canProceed = (result?.blockers ?? []).length === 0;
+    if (canProceed && state.step === 'precheck') state.step = 'locate';
+    save();
+    log(`precheck blockers=${(result?.blockers ?? []).length} warnings=${(result?.warnings ?? []).length}`);
+    sendJson(res, 200, { ok: true, result, canProceed });
   }));
 
-  // The body's `name` is deliberately ignored: the folder is fixed (see
-  // `soulName` above). The name rules still run so a bad override on the
-  // developer PC is refused instead of producing a broken root.
-  routes.set('POST /api/name', withBody(async (body, req, res) => {
-    const name = soulName;
-    const validation = validateSoulName(name);
-    if (!validation.ok) {
-      sendJson(res, 200, { ok: false, reason: validation.reason, name });
+  // --- ② 설치 위치 ---------------------------------------------------------
+  routes.set('POST /api/locate', withBody(async (body, req, res) => {
+    if (!soulValidation.ok) {
+      sendJson(res, 200, {
+        ok: false,
+        root: null,
+        mode: null,
+        reason: soulValidation.reason,
+        message: '설치 폴더 이름을 쓸 수 없습니다. 설치기를 다시 받아 실행해 주세요.',
+      });
       return;
     }
-    const existing = detectExisting(validation.path);
-    if (existing === 'conflict') {
-      sendJson(res, 200, { ok: false, reason: 'conflict', name, path: validation.path });
-      return;
-    }
-    state.soul = { name, root: validation.path, existing };
-    state.step = 'choice';
-    saveState(stateFile, state);
-    sendJson(res, 200, { ok: true, name, path: validation.path, existing });
+    const soul = refreshSoul();
+    const ok = soul.mode !== 'foreign';
+    // A refusal also REVOKES an earlier confirmation: the person may have
+    // pointed the installer at a folder, been refused, and must not then be
+    // able to write into it by skipping ahead.
+    soulConfirmed = ok;
+    if (ok && (state.step === 'precheck' || state.step === 'locate')) state.step = 'choice';
+    save();
+    log(`locate root=${soul.root} mode=${soul.mode}`);
+    sendJson(res, 200, { ok, root: soul.root, mode: soul.mode, message: SOUL_MESSAGE[soul.mode] });
   }));
 
-  // Decision rule = docs/설계.md D7/§3-3 ⓒ: choosing both subscriptions has
-  // Claude Code lead the initial setup.
+  // --- ③ 구독 -------------------------------------------------------------
+  // 설계-v2 5절 ④-2: 둘 다 고르면 Claude 가 주도한다. 옛 guideEdition 은 폐지.
   routes.set('POST /api/choice', withBody(async (body, req, res) => {
     const subs = Array.isArray(body?.subscriptions)
       ? [...new Set(body.subscriptions.filter((s) => s === 'claude' || s === 'chatgpt'))]
       : [];
     if (subs.length === 0) {
-      sendJson(res, 200, { ok: false, reason: 'empty' });
+      sendJson(res, 200, { ok: false, reason: 'empty', message: '구독을 적어도 하나는 골라 주세요.' });
       return;
     }
     const leadAgent = subs.includes('claude') ? 'claude' : 'chatgpt';
-    const guideEdition = leadAgent;
-    state.choice = { subscriptions: subs, leadAgent, guideEdition };
-    saveState(stateFile, state);
-    sendJson(res, 200, { ok: true, leadAgent, guideEdition });
+    state.choice = { subscriptions: subs, leadAgent };
+    if (state.step === 'choice') state.step = 'structure';
+    save();
+    sendJson(res, 200, { ok: true, leadAgent });
   }));
 
-  // --- install (copy) step ------------------------------------------------
-  // The copy runs in the background while the screen watches
-  // GET /api/install/events. Events are also buffered, so a browser that
-  // refreshes mid-install (or connects after POST) replays everything it
-  // missed instead of showing an empty progress bar. The receipt under the
-  // soul root -- not this buffer -- stays the source of truth.
+  // --- ④ 작업 폴더 구성 -----------------------------------------------------
+  routes.set('POST /api/structure', withBody(async (body, req, res) => {
+    if (!requireLocated(res)) return;
+    const root = state.soul.root;
+    const later = body?.later === true;
+    const nodes = Array.isArray(body?.nodes) ? body.nodes : [];
+    const verdict = validateNodes(nodes, { later });
+    if (!verdict.ok) {
+      sendJson(res, 200, { ok: false, errors: verdict.errors });
+      return;
+    }
+    const decisions = buildDecisions({ nodes, later });
+    let saved;
+    try {
+      saved = writeDecisions(root, decisions);
+    } catch (err) {
+      sendJson(res, 200, {
+        ok: false,
+        code: 'E-DECISIONS-WRITE',
+        message: '적어 주신 폴더 구성을 저장하지 못했습니다. 로그 경로를 복사해 알려 주세요.',
+        detail: String(err?.message ?? err),
+      });
+      return;
+    }
+    state.decisions = decisions;
+    state.decisionsPath = saved;
+    if (state.step === 'structure') state.step = 'summary';
+    save();
+    log(`structure nodes=${decisions.nodes.length} later=${decisions.later} -> ${saved}`);
+    sendJson(res, 200, { ok: true, decisions });
+  }));
+
+  routes.set('GET /api/presets', async (req, res) => {
+    fs.readFile(path.join(uiDir, 'presets.json'), (err, data) => {
+      if (err) {
+        sendJson(res, 200, { schema: 1, presets: [] });
+        return;
+      }
+      writeHeaders(res, 200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': data.length,
+      });
+      res.end(data);
+    });
+  });
+
+  // --- ⑤ 요약 확인 ---------------------------------------------------------
+  // The one click that turns answers into an install. This is also where the
+  // v2 receipt is created (or refreshed), so the engine and every later step
+  // read the answers from one place on disk rather than from this process.
+  routes.set('POST /api/summary/confirm', withBody(async (body, req, res) => {
+    if (!requireLocated(res)) return;
+    const root = state.soul.root;
+    if (!state.choice) {
+      sendJson(res, 409, { ok: false, reason: 'no_choice', message: '구독 선택을 먼저 해 주세요.' });
+      return;
+    }
+    const decisions = state.decisions ?? readDecisions(root);
+    if (!decisions) {
+      sendJson(res, 409, { ok: false, reason: 'no_decisions', message: '작업 폴더 구성을 먼저 마쳐 주세요.' });
+      return;
+    }
+    state.decisions = decisions;
+    try {
+      const manifest = readPayloadManifest(state.zipRoot);
+      const prior = readReceiptFn(root);
+      // S09 (1.x 위에 2.0 을 새로 놓는 길): 옛 영수증은 그 PC 에 1.x 가 무엇을
+      // 깔아 두었는지 아는 유일한 기록이다. v2 영수증으로 덮어쓰기 전에 반드시
+      // 옆에 사본을 남긴다 -- 설치기의 제1원칙은 "사용자 자료를 지우지 않는다"
+      // 이고, 남이 만든 기록도 사용자 자료다. 사본이 이미 있으면 건드리지
+      // 않는다(두 번째 실행이 첫 번째의 원본을 덮어쓰면 뜻이 없다).
+      if (prior && isLegacyReceipt(prior)) {
+        const backup = backupLegacyReceipt(root, prior);
+        log(`legacy receipt (schema ${prior.schema ?? 1}) ${backup.written ? 'backed up to' : 'already backed up at'} ${backup.path}`);
+      }
+      const receipt = prior && !isLegacyReceipt(prior)
+        ? ensureV2Fields(prior)
+        : newReceiptV2({ root, name: state.soul.name, manifest, createdBy: 'iris-installer' });
+      setPrecheck(receipt, state.precheck?.recorded ?? null);
+      receipt.choice = state.choice;
+      receipt.decisionsPath = decisionsPath(root);
+      markReceiptStep(receipt, 'precheck', 'done');
+      markReceiptStep(receipt, 'locate', 'done');
+      markReceiptStep(receipt, 'choice', 'done');
+      markReceiptStep(receipt, 'structure', 'done');
+      markReceiptStep(receipt, 'summary', 'done');
+      writeReceiptFn(root, receipt);
+    } catch (err) {
+      sendJson(res, 200, {
+        ok: false,
+        code: 'E-RECEIPT-WRITE',
+        message: '설치 기록을 만들지 못했습니다. 로그 경로를 복사해 알려 주세요.',
+        detail: String(err?.message ?? err),
+      });
+      return;
+    }
+    state.step = 'setup';
+    state.setup = initialSetup();
+    save();
+    log('summary confirmed -> setup');
+    sendJson(res, 200, { ok: true });
+  }));
+
+  // --- ⑥ 세팅 엔진 ---------------------------------------------------------
+  let setupRunning = false;
+
+  function buildSetupContext(root) {
+    const toolsDir = path.join(root, '_agent', 'shared', 'tools');
+    const pathParts = [
+      state.nodeDir,
+      path.join(toolsDir, 'node'),
+      path.join(toolsDir, 'python'),
+      path.join(toolsDir, 'git', 'cmd'),
+    ].filter(Boolean);
+    return {
+      root,
+      payloadDir: path.join(state.zipRoot ?? '', 'payload'),
+      manifest: readPayloadManifest(state.zipRoot),
+      lock: readLock(state.zipRoot),
+      receipt: readReceiptFn(root),
+      decisions: state.decisions ?? readDecisions(root),
+      choice: state.choice,
+      precheck: state.precheck?.recorded ?? null,
+      log,
+      progress: (sub) => {
+        const id = state.setup.stage;
+        if (!id) return;
+        markSetupStage(state.setup, { id, sub });
+        save();
+      },
+      run: runFn,
+      fs,
+      env: { ...process.env, PATH: `${pathParts.join(';')};${process.env.PATH ?? ''}` },
+      offline: true,
+      toolsDir,
+      ...(userEnvSkipped ? { userpath: recordingUserpath(userEnvRecord) } : {}),
+    };
+  }
+
+  async function runSetupNow() {
+    const root = state.soul?.root;
+    setupRunning = true;
+    state.step = 'setup';
+    state.setup.error = null;
+    save();
+    try {
+      const result = await setupRunner.runSetup(buildSetupContext(root), {
+        onStage: (event) => {
+          if (!event || !event.id) return;
+          markSetupStage(state.setup, event);
+          save();
+        },
+      });
+      if (result?.ok) {
+        for (const entry of state.setup.stages) {
+          if (entry.status === 'pending' || entry.status === 'running') entry.status = 'done';
+        }
+        state.setup.percent = 100;
+        state.setup.error = null;
+        state.setup.pending = result.pending ?? [];
+        state.step = 'online';
+        log('setup done -> online');
+      } else {
+        const failed = result?.failed ?? { id: state.setup.stage, code: result?.code ?? 'E-SETUP', message: result?.message ?? null };
+        // markSetupStage first, THEN the summary error -- marking a stage
+        // 'failed' rewrites setup.error from the stage's own detail, which
+        // would otherwise clobber the (better) message the engine returned.
+        if (failed.id) {
+          markSetupStage(state.setup, {
+            id: failed.id, status: 'failed', code: failed.code ?? 'E-SETUP', detail: failed.message ?? null,
+          });
+        }
+        state.setup.error = {
+          id: failed.id ?? state.setup.stage,
+          code: failed.code ?? 'E-SETUP',
+          message: failed.message ?? '설치 도중 멈췄습니다.',
+        };
+        state.setup.percent = setupPercent(state.setup);
+        log(`setup failed at ${state.setup.error.id} (${state.setup.error.code})`);
+      }
+    } catch (err) {
+      state.setup.error = {
+        id: state.setup.stage,
+        code: err?.code ?? 'E-SETUP',
+        message: '설치 도중 멈췄습니다. 「다시 시도」를 눌러 주세요.',
+        detail: String(err?.message ?? err),
+      };
+      log(`setup threw: ${String(err?.stack ?? err)}`);
+    } finally {
+      setupRunning = false;
+      save();
+    }
+  }
+
+  function startSetup(res) {
+    if (!requireLocated(res)) return;
+    if (setupRunning) {
+      sendJson(res, 202, { ok: true, running: true });
+      return;
+    }
+    sendJson(res, 202, { ok: true, running: true });
+    // Deliberately not awaited: the response is out and the screen now polls
+    // GET /api/setup/progress.
+    runSetupNow();
+  }
+
+  routes.set('POST /api/setup/start', withBody(async (body, req, res) => { startSetup(res); }));
+
+  // 「다시 시도」 = 실패한 단계부터. The engine skips every stage the receipt
+  // already marks `done`, so restarting it IS "resume from the failed stage".
+  routes.set('POST /api/setup/retry', withBody(async (body, req, res) => { startSetup(res); }));
+
+  routes.set('GET /api/setup/progress', async (req, res) => {
+    sendJson(res, 200, { ok: true, ...state.setup, running: setupRunning });
+  });
+
+  // --- ⑦ 온라인 묶음 -------------------------------------------------------
+  let onlineRunning = false;
+
+  async function runOnlineStart() {
+    const root = state.soul?.root;
+    const subs = state.choice?.subscriptions ?? [];
+    onlineRunning = true;
+    try {
+      state.online.stage = 'net';
+      save();
+      const net = await onlineRunner.checkNet({ root, subscriptions: subs });
+      state.online.net = { ok: net?.ok === true, blocked: net?.blocked ?? [], code: net?.code ?? null };
+      save();
+      if (!net?.ok) {
+        state.online.stage = 'net';
+        log(`online net blocked: ${(net?.blocked ?? []).join(',') || net?.code || 'unknown'}`);
+        return;
+      }
+      if (subs.includes('claude')) {
+        state.online.stage = 'claude';
+        state.online.claude = { state: 'downloading', source: null, code: null };
+        save();
+        const got = await onlineRunner.installClaude({ root, nodeDir: state.nodeDir });
+        state.online.claude = {
+          state: got?.ok ? 'done' : 'failed',
+          source: got?.source ?? null,
+          code: got?.code ?? null,
+        };
+        save();
+
+        // document-skills: 허가서상 꾸러미에 못 싣는 클로드 플러그인이라
+        // 여기서 받아 등록한다(설계-v2 13절). 받지 못해도 설치를 멈추지
+        // 않는다 — `pending` 으로 남고 완료 보고의 "남은 일"에 실린다.
+        state.online.stage = 'document-skills';
+        state.online.documentSkills = { state: 'downloading', code: null };
+        save();
+        const skills = typeof onlineRunner.installDocumentSkills === 'function'
+          ? await onlineRunner.installDocumentSkills({
+            root, zipRoot: state.zipRoot, lock: readLock(state.zipRoot), subscriptions: subs,
+          })
+          : { ok: false, state: 'pending', code: 'E-NOT-IMPLEMENTED' };
+        state.online.documentSkills = {
+          state: skills?.ok ? 'done' : (skills?.state === 'skipped' ? 'skipped' : 'pending'),
+          code: skills?.code ?? null,
+        };
+        log(`online document-skills ${state.online.documentSkills.state}${skills?.code ? ` (${skills.code})` : ''}`);
+      } else {
+        state.online.claude = { state: 'skipped', source: null, code: null };
+        state.online.documentSkills = { state: 'skipped', code: null };
+      }
+      state.online.stage = 'login';
+      for (const provider of subs) {
+        state.online.logins[provider] = state.online.logins[provider]
+          ?? { state: 'waiting', cli: 'pending', relay: 'pending', reason: null };
+      }
+    } catch (err) {
+      state.online.error = { code: 'E-ONLINE', detail: String(err?.message ?? err) };
+      log(`online start threw: ${String(err?.stack ?? err)}`);
+    } finally {
+      onlineRunning = false;
+      save();
+    }
+  }
+
+  routes.set('POST /api/online/start', withBody(async (body, req, res) => {
+    // ⑦ 도 ⑥ 과 똑같이 영혼 폴더에 쓴다(claude.exe·설정·영수증). 위치 확인을
+    // 건너뛴 채(또는 'foreign' 판정을 받고도) 여기로 바로 들어오는 길을 막는다.
+    if (!requireLocated(res)) return;
+    if (onlineRunning) {
+      sendJson(res, 202, { ok: true, running: true });
+      return;
+    }
+    sendJson(res, 202, { ok: true, running: true });
+    runOnlineStart();
+  }));
+
+  routes.set('GET /api/online/status', async (req, res) => {
+    const root = state.soul?.root;
+    const subs = state.choice?.subscriptions ?? [];
+    // Refresh whichever provider is mid-login; everything else is already
+    // settled in state.online.
+    for (const provider of subs) {
+      const entry = state.online.logins[provider];
+      if (!entry || entry.state === 'done' || entry.state === 'not-needed') continue;
+      try {
+        const st = await onlineRunner.loginStatus({ provider, root, nodeDir: state.nodeDir });
+        if (st && st.code !== 'E-NOT-IMPLEMENTED') {
+          state.online.logins[provider] = {
+            state: st.state ?? entry.state,
+            cli: st.cli ?? entry.cli,
+            relay: st.relay ?? entry.relay,
+            reason: st.reason ?? null,
+          };
+        }
+      } catch { /* a polling route must never throw */ }
+    }
+    const allLoggedIn = subs.length > 0 && subs.every((p) => state.online.logins[p]?.state === 'done');
+    if (allLoggedIn && state.online.stage === 'login') state.online.stage = 'relay';
+    save();
+    sendJson(res, 200, { ok: true, step: state.step, ...state.online, running: onlineRunning });
+  });
+
+  async function doLogin(body, res, { retry }) {
+    const provider = body?.provider;
+    if (provider !== 'claude' && provider !== 'chatgpt') {
+      sendJson(res, 200, { ok: false, reason: 'bad_provider', message: '알 수 없는 구독입니다.' });
+      return;
+    }
+    if (!requireLocated(res)) return;
+    const started = await onlineRunner.startLogin({
+      provider, root: state.soul.root, nodeDir: state.nodeDir, retry: !!retry,
+    });
+    state.online.logins[provider] = {
+      state: started?.ok ? (started.state ?? 'waiting') : 'failed',
+      cli: started?.cli ?? 'pending',
+      relay: started?.relay ?? 'pending',
+      reason: started?.reason ?? null,
+    };
+    state.online.stage = 'login';
+    save();
+    log(`online login provider=${provider} retry=${!!retry} ok=${started?.ok === true}`);
+    sendJson(res, 200, {
+      ok: started?.ok === true,
+      provider,
+      ...(started?.code ? { code: started.code } : {}),
+      ...(started?.message ? { message: started.message } : {}),
+    });
+  }
+
+  routes.set('POST /api/online/login', withBody(async (body, req, res) => doLogin(body, res, { retry: false })));
+  routes.set('POST /api/online/login/retry', withBody(async (body, req, res) => doLogin(body, res, { retry: true })));
+
+  routes.set('POST /api/online/relay', withBody(async (body, req, res) => {
+    if (!requireLocated(res)) return;
+    const root = state.soul.root;
+    const relay = await onlineRunner.startRelay({ root, nodeDir: state.nodeDir });
+    state.online.relay = {
+      state: relay?.ok ? (relay.state ?? 'done') : 'failed',
+      accounts: relay?.accounts ?? 0,
+      code: relay?.code ?? null,
+    };
+    state.online.stage = 'relay';
+    if (relay?.ok) {
+      state.online.completed = true;
+      state.step = 'done';
+      try {
+        const receipt = readReceiptFn(root);
+        if (receipt && !isLegacyReceipt(receipt)) {
+          ensureV2Fields(receipt);
+          receipt.online = { ...state.online };
+          markReceiptStep(receipt, 'online', 'done');
+          writeReceiptFn(root, receipt);
+        }
+      } catch { /* the receipt is the engine's; a failure here is not fatal */ }
+      // 인수 문서(handoff.json)는 ⑨ 검사가 로그인 전에 써 둔 것이라 아직
+      // `login-pending` 이다. 로그인·중계기가 끝난 지금이 `ready` 로 바뀌는
+      // 유일한 순간이다(계약 = docs/인수문서-handoff-v2.md). 엔진처럼 동적으로
+      // 부른다 — 이 모듈이 없어도 서버는 떠야 한다.
+      try {
+        const { refreshHandoffAfterOnline } = await import('./setup/handoff.mjs');
+        const r = refreshHandoffAfterOnline({
+          root, receipt: readReceiptFn(root), choice: state.choice, fs, log,
+        });
+        log(`handoff refresh: ${r?.written ? r.handoff?.state : `skipped(${r?.reason ?? 'unknown'})`}`);
+      } catch (err) {
+        log(`handoff refresh failed: ${String(err?.message ?? err)}`);
+      }
+      log('online relay ok -> done');
+    }
+    save();
+    sendJson(res, 200, {
+      ok: relay?.ok === true,
+      ...(relay?.code ? { code: relay.code } : {}),
+      ...(relay?.message ? { message: relay.message } : {}),
+      accounts: state.online.relay.accounts,
+    });
+  }));
+
+  // --- ⑧ 완료 보고 ---------------------------------------------------------
+  routes.set('GET /api/report', async (req, res) => {
+    const root = state.soul?.root;
+    if (!root) {
+      sendJson(res, 409, { ok: false, reason: 'no_soul' });
+      return;
+    }
+    const setupDir = path.join(root, '_agent', 'setup');
+    let handoff = null;
+    try {
+      handoff = JSON.parse(fs.readFileSync(path.join(setupDir, 'handoff.json'), 'utf8'));
+    } catch { /* not written yet */ }
+    let markdown = null;
+    let markdownPath = null;
+    try {
+      const reports = fs.readdirSync(setupDir)
+        .filter((f) => f.startsWith('설치보고-') && f.endsWith('.md'))
+        .sort();
+      if (reports.length > 0) {
+        markdownPath = path.join(setupDir, reports[reports.length - 1]);
+        markdown = fs.readFileSync(markdownPath, 'utf8');
+      }
+    } catch { /* not written yet */ }
+    const pendingCapabilities = handoff?.pendingCapabilities ?? state.setup?.pending ?? [];
+    state.report = { markdownPath, handoffPath: handoff ? path.join(setupDir, 'handoff.json') : null, pendingCapabilities };
+    save();
+    sendJson(res, 200, { ok: true, markdown, handoff, pendingCapabilities });
+  });
+
+  routes.set('POST /api/open-face', withBody(async (body, req, res) => {
+    // Face 를 여는 것도 그 폴더를 "우리 것"으로 다루는 일이다(실행기·바로가기).
+    if (!requireLocated(res)) return;
+    const root = state.soul.root;
+    try {
+      const opener = openFaceFn ?? ((opts) => relaunchFaceFn(opts));
+      const result = await opener({
+        root,
+        ...(faceDir ? { faceDir } : {}),
+        ...(faceNodeExe ? { nodeExe: faceNodeExe } : {}),
+      });
+      log(`open-face ok=${result?.ok === true}`);
+      sendJson(res, 200, { ok: result?.ok === true, ...(result?.pid ? { pid: result.pid } : {}) });
+    } catch (err) {
+      sendJson(res, 200, {
+        ok: false,
+        code: 'E-OPEN-FACE',
+        message: 'IRIS 창을 열지 못했습니다. 바탕화면의 「IRIS」 바로가기를 눌러 주세요.',
+        detail: String(err?.message ?? err),
+      });
+    }
+  }));
+
+  // --- 로그 경로 복사 -------------------------------------------------------
+  routes.set('POST /api/log/path', withBody(async (body, req, res) => {
+    sendJson(res, 200, { ok: true, path: serverLog, soulPath: soulLogPath() });
+  }));
+
+  // =========================================================================
+  // update mode (POST /api/auto) -- the updater's no-click run over a v2
+  // install. Since 2.0 it runs the SAME setup engine as the wizard (the v1
+  // `install()` only knew 12 of the 33 parts and had the python layout wrong);
+  // what an update adds is only "which stages may re-run" (lib/update-plan.mjs)
+  // and this SSE stream, which no other path uses.
+  // =========================================================================
   const installEvents = [];
   const sseClients = new Set();
-  let installRunning = false;
+  let autoRunning = false;
 
   function pushEvent(event) {
     installEvents.push(event);
     if (event.part) {
       state.install = state.install ?? { parts: {} };
-      // `status` is authoritative when the event carries one. The old
-      // pct === 100 heuristic was wrong for every part but the last: install()
-      // reports a part's completion at floor((i+1)/total*100) -- 9, 18, ... 90
-      // -- so ten of eleven parts stayed 'running' forever in the state a
-      // refreshed screen reads back (fix round 1 finding 2). pct is now only
-      // the fallback for an event that has no status at all.
       state.install.parts[event.part] = event.error ? 'error'
         : event.skipped ? 'skipped'
           : event.status ? event.status
@@ -492,57 +1087,6 @@ export function startServer({
     }
   }
 
-  routes.set('POST /api/install', withBody(async (body, req, res) => {
-    if (!state.soul?.root) {
-      sendJson(res, 409, { ok: false, reason: 'no_soul' });
-      return;
-    }
-    if (installRunning) {
-      sendJson(res, 202, { ok: true, running: true });
-      return;
-    }
-    const manifest = readPayloadManifest(state.zipRoot);
-    const lock = readLock(state.zipRoot);
-    if (!manifest || !lock) {
-      sendJson(res, 500, { ok: false, reason: 'payload_unreadable' });
-      return;
-    }
-
-    installRunning = true;
-    installEvents.length = 0;
-    state.step = 'install';
-    state.install = { parts: {} };
-    state.userEnvSkipped = userEnvSkipped;
-    saveState(stateFile, state);
-    sendJson(res, 202, { ok: true });
-
-    // Deliberately not awaited: the HTTP response is already out and the
-    // caller now follows /api/install/events.
-    installFn({
-      root: state.soul.root,
-      name: state.soul.name,
-      existing: state.soul.existing,
-      zipRoot: state.zipRoot,
-      manifest,
-      lock,
-      choice: state.choice ?? { subscriptions: [], leadAgent: 'claude', guideEdition: 'claude' },
-      ...(userEnvSkipped ? { userpath: recordingUserpath(userEnvRecord) } : {}),
-      onProgress: (e) => pushEvent({ part: null, pct: null, done: false, error: null, ...e }),
-    }).then(() => {
-      state.step = 'login';
-      saveState(stateFile, state);
-    }).catch((err) => {
-      // install() already emitted the coded error event; state.install.parts
-      // keeps the failing part marked 'error' for a screen refresh.
-      state.step = 'install';
-      state.installError = err?.code ?? String(err?.message ?? err);
-      saveState(stateFile, state);
-    }).finally(() => {
-      installRunning = false;
-      saveState(stateFile, state);
-    });
-  }));
-
   routes.set('GET /api/install/events', async (req, res) => {
     writeHeaders(res, 200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -552,16 +1096,6 @@ export function startServer({
     sseClients.add(res);
     req.on('close', () => { sseClients.delete(res); });
   });
-
-  // --- automatic update run (ⓐ → ⓓ → ⓕ, no clicks) -------------------------
-  // The whole six-step wizard collapses into one server-side run: the parts
-  // whose version or hash changed are replaced (install()'s own receipt-based
-  // skip check is what decides that -- the same code the interactive
-  // "기존 영혼" path uses), the login step is skipped because the accounts are
-  // already registered, and the window is reopened with the plain launcher
-  // instead of a first-session handoff. Progress rides the same SSE stream the
-  // wizard's copy step uses, so the screen only has to render it.
-  let autoRunning = false;
 
   async function runAuto(info, manifest, lock) {
     const root = info.root;
@@ -577,60 +1111,111 @@ export function startServer({
         return { ok: false, reason: String(err?.message ?? err) };
       }
     };
-    // Set the moment the happy path reopens the window, so a failure *after*
-    // that (finishFn throwing, say) does not open a second one.
     let relaunched = null;
 
     // 설계 4-5: 실패 항목이 있어도 창은 다시 연다 -- the updater shut the daemon
-    // down before handing over, and install() rolls a failed part back to its
-    // .prev copy, so what reopens is the version that was working a minute ago.
-    // Without this the person is left staring at a browser tab with no IRIS
-    // window at all, which is a worse outcome than the failed update itself.
+    // down before handing over, and the unpack stage rolls a failed part back
+    // to its .prev copy, so what reopens is the version that worked a minute ago.
     const failAuto = (where, reason, detail = null) => {
       if (relaunched === null) relaunched = relaunchFace();
       state.step = 'auto';
       state.installError = reason;
       state.autoResult = { ok: false, where, reason, detail, relaunched: relaunched?.ok ?? false };
-      saveState(stateFile, state);
+      save();
       pushEvent({ part: 'relaunch', pct: null, skipped: false, status: relaunched?.ok ? 'done' : 'error', error: null, done: false });
       pushEvent({ part: where, pct: null, skipped: false, status: 'error', error: reason, detail, done: true });
     };
 
     try {
-      // ⓐ 준비 확인 -- read-only, and a machine that cannot even go offline-far
-      // must not start swapping folders.
       forward({ part: 'precheck', pct: 0, status: 'running' });
-      const pre = await precheck();
+      const pre = await precheckFn();
       state.precheck = pre;
-      saveState(stateFile, state);
-      if (!pre.allOk && !pre.canProceedOffline) { failAuto('precheck', 'precheck_failed'); return; }
+      save();
+      if ((pre?.blockers ?? []).length > 0) { failAuto('precheck', 'precheck_failed'); return; }
       forward({ part: 'precheck', pct: 5, status: 'done' });
 
-      // ⓑ 자리 + ⓒ 구독 -- both already answered, by the receipt.
-      state.soul = { name: info.name, root, existing: 'soul' };
-      state.choice = info.choice ?? { subscriptions: ['claude'], leadAgent: 'claude', guideEdition: 'claude' };
-      saveState(stateFile, state);
+      state.soul = { name: info.name, root, mode: 'iris' };
+      state.choice = info.choice ?? { subscriptions: ['claude'], leadAgent: 'claude' };
+      state.decisions = state.decisions ?? readDecisions(root);
+      save();
 
-      // ⓓ 바뀐 부품만 교체 (.prev 보존, 사용자 자료 무접촉)
-      await installFn({
-        root,
-        name: info.name,
-        existing: 'soul',
-        zipRoot: state.zipRoot,
-        manifest,
-        lock,
-        choice: state.choice,
-        ...(userEnvSkipped ? { userpath: recordingUserpath(userEnvRecord) } : {}),
-        // install()'s own terminal event says "the copy step finished", which
-        // in this run is only the middle of the job -- so `done` is stripped
-        // and the one true terminal frame is emitted at the end of runAuto().
-        onProgress: forward,
+      // --- 업데이트 = 세팅 엔진 한 번 더 --------------------------------
+      // 판단(어느 단계를 다시 도나)은 lib/update-plan.mjs, 실행은 ⑤ 엔진이다.
+      // 여기서 하는 일은 셋뿐: 영수증의 해당 단계를 `pending` 으로 되돌리고,
+      // 마법사와 **똑같은** ctx 로 엔진을 부르고, 단계 진행을 이 화면의 SSE
+      // 틀(part/pct/status)로 옮겨 방송하는 것.
+      const priorReceipt = ensureV2Fields(readReceiptFn(root) ?? {});
+      const plan = planUpdateReset({ receipt: priorReceipt, lock, manifest });
+      applyUpdateReset(priorReceipt, plan);
+      try {
+        writeReceiptFn(root, priorReceipt);
+      } catch (err) {
+        failAuto('receipt', 'receipt_write_failed', String(err?.message ?? err));
+        return;
+      }
+      log(`auto reset stages=${plan.reset.join(',')} kept=${plan.keptDone.join(',') || '-'} changedParts=${plan.changed.length}`);
+
+      state.setup = initialSetup();
+      save();
+      const result = await setupRunner.runSetup(buildSetupContext(root), {
+        onStage: (event) => {
+          if (!event || !event.id) return;
+          markSetupStage(state.setup, event);
+          save();
+          forward({
+            part: event.id,
+            pct: typeof event.percent === 'number' ? Math.min(95, event.percent) : null,
+            status: event.status === 'skipped-done' ? 'skipped' : event.status,
+            ...(event.status === 'skipped-done' ? { skipped: true } : {}),
+          });
+        },
       });
+      if (!result?.ok) {
+        const failed = result?.failed ?? { id: 'setup', code: result?.code ?? 'E-SETUP', message: result?.message ?? null };
+        state.setup.error = {
+          id: failed.id ?? 'setup',
+          code: failed.code ?? 'E-SETUP',
+          message: failed.message ?? '업데이트 도중 멈췄습니다.',
+        };
+        save();
+        failAuto(failed.id ?? 'setup', failed.code ?? 'E-SETUP', failed.message ?? null);
+        return;
+      }
+      for (const entry of state.setup.stages) {
+        if (entry.status === 'pending' || entry.status === 'running') entry.status = 'done';
+      }
+      state.setup.percent = 100;
+      state.setup.pending = result.pending ?? [];
 
-      // ⓔ 로그인 -- 이미 등록된 계정이라 건너뛴다.
+      // 새 판을 실제로 놓았으니 영수증의 판 표시도 새 것으로. 엔진이 방금
+      // 영수증을 여러 번 고쳐 썼으므로 디스크에서 다시 읽어서 고친다.
+      try {
+        const after = ensureV2Fields(readReceiptFn(root) ?? priorReceipt);
+        const pkg = manifest?.package ?? {};
+        after.package = {
+          ...(after.package ?? {}),
+          name: pkg.name ?? after.package?.name ?? 'IRIS',
+          version: pkg.version ?? after.package?.version ?? null,
+          built: pkg.built ?? manifest?.built ?? after.package?.built ?? null,
+          guideVersion: pkg.guideVersion ?? after.package?.guideVersion ?? null,
+          license: pkg.license ?? after.package?.license ?? 'MIT',
+        };
+        after.update = {
+          from: info.from ?? null,
+          to: info.to ?? (pkg.version ?? null),
+          at: new Date().toISOString(),
+          reset: plan.reset,
+          changedParts: plan.changed,
+        };
+        markReceiptStep(after, 'setup', 'done');
+        writeReceiptFn(root, after);
+      } catch (err) {
+        // 판 표시를 못 고쳐도 설치 자체는 끝났다 — 기록만 남기고 계속한다.
+        log(`auto receipt version refresh failed: ${String(err?.message ?? err)}`);
+      }
+
       forward({ part: 'login', pct: 96, status: 'skipped', skipped: true });
 
-      // ⓕ IRIS 창 다시 열기. install() already refreshed the receipt.
       const relaunch = relaunchFace();
       relaunched = relaunch;
       forward({ part: 'relaunch', pct: 99, status: relaunch?.ok ? 'done' : 'error' });
@@ -639,7 +1224,7 @@ export function startServer({
         root,
         receipt: readReceiptFn(root),
         ...(workDir ? { workDir } : {}),
-        setStep: (s) => { state.step = s; saveState(stateFile, state); },
+        setStep: (s) => { state.step = s; save(); },
         quit: () => {
           setTimeout(() => { if (onQuit) onQuit(); else process.exit(0); }, 1500);
         },
@@ -649,14 +1234,13 @@ export function startServer({
         ok: true, from: info.from, to: info.to, relaunched: relaunch?.ok ?? false, pid: relaunch?.pid ?? null,
       };
       state.step = 'done';
-      saveState(stateFile, state);
+      save();
       pushEvent({ part: null, pct: 100, skipped: false, status: 'done', error: null, done: true });
     } catch (err) {
-      failAuto('install', err?.code ?? 'install_failed', String(err?.message ?? err));
+      failAuto('setup', err?.code ?? 'install_failed', String(err?.message ?? err));
     } finally {
       autoRunning = false;
-      installRunning = false;
-      saveState(stateFile, state);
+      save();
     }
   }
 
@@ -678,332 +1262,17 @@ export function startServer({
     }
 
     autoRunning = true;
-    installRunning = true;
+    soulConfirmed = true; // a v2 receipt is proof the folder is ours
     installEvents.length = 0;
     state.step = 'auto';
     state.install = { parts: {} };
     state.installError = null;
     state.autoResult = null;
     state.userEnvSkipped = userEnvSkipped;
-    saveState(stateFile, state);
+    save();
     sendJson(res, 202, { ok: true, from: info.from, to: info.to });
 
-    // Deliberately not awaited, exactly like POST /api/install: the response
-    // is already out and the screen now follows /api/install/events.
     runAuto(info, manifest, lock);
-  }));
-
-  // --- login step ----------------------------------------------------------
-  // Two-stage flow (task-13-brief.md): ① startCliLogin opens the CLI's own
-  // OAuth in a proxy-free console; ② once that credential file exists,
-  // relayImport hands it to TeamClaude and relayStatus polls the config
-  // file's per-provider account count. GET /api/login/status is what the
-  // screen polls every 2s -- it also advances stage ①→② and, once every
-  // chosen subscription is fully done, flips the receipt/state to handoff.
-  const relayImportInFlight = new Set();
-
-  // I2: pass the soul root so the receipt (written by install()) is the first
-  // place the path comes from -- this process cannot see the user env var
-  // install() just wrote, and must not fall back to %USERPROFILE%\.config on
-  // a machine that is already an IRIS soul.
-  function getTeamclaudeConfigPath() {
-    return teamclaudeConfigPath ?? resolveTeamclaudeConfigPath({ root: state.soul?.root });
-  }
-
-  routes.set('POST /api/login', withBody(async (body, req, res) => {
-    const provider = body?.provider;
-    if (provider !== 'claude' && provider !== 'chatgpt') {
-      sendJson(res, 200, { ok: false, reason: 'bad_provider' });
-      return;
-    }
-    if (!state.soul?.root) {
-      sendJson(res, 409, { ok: false, reason: 'no_soul' });
-      return;
-    }
-    const root = state.soul.root;
-    const configPath = getTeamclaudeConfigPath();
-    const [proxyResult, accountsBefore] = await Promise.all([
-      ensureProxyFn({ root, nodeDir: state.nodeDir, teamclaudeConfigPath: configPath }),
-      countProviderAccountsFn({ teamclaudeConfigPath: configPath, provider }).catch(() => 0),
-    ]);
-
-    // Already registered (2026-09-14 audit): a re-run over an installed PC has
-    // this provider's credential file AND its account in the relay already.
-    // Starting the CLI login again would open a browser for nothing, and the
-    // relay stage waits for the account COUNT TO GROW -- which it never does
-    // for an account that is already there -- so the wizard would hang here.
-    // The automatic update path skips login for the same reason; do the same.
-    const priorLogin = readReceiptFn(root)?.login?.[provider];
-    const registered = !!priorLogin && (priorLogin.relay === true || priorLogin.relay === 'done')
-      && accountsBefore > 0 && cliLoginStatusFn({ provider, root }) === 'done';
-    if (registered) {
-      state.login = state.login ?? {};
-      state.login[provider] = {
-        startedAt: new Date().toISOString(), accountsBefore, cli: 'done', relay: 'done',
-        relayMethod: priorLogin.relayMethod ?? 'receipt', relayError: null, pid: null, reused: true,
-      };
-      saveState(stateFile, state);
-      sendJson(res, 200, { ok: true, reused: true, proxy: proxyResult });
-      return;
-    }
-
-    const { pid } = startCliLoginFn({
-      root, nodeDir: state.nodeDir, provider, teamclaudeConfigPath: configPath,
-    });
-
-    state.login = state.login ?? {};
-    state.login[provider] = {
-      startedAt: new Date().toISOString(),
-      accountsBefore,
-      cli: 'pending',
-      relay: 'pending',
-      relayMethod: null,
-      relayError: null,
-      pid,
-    };
-
-    // Record which TeamClaude config path is in play (brief: receipt
-    // env.teamclaudeConfig). Only meaningful once the receipt exists
-    // (created by install's copy step, which always runs before login).
-    const receipt = readReceipt(root);
-    if (receipt) {
-      receipt.env = receipt.env ?? {};
-      receipt.env.teamclaudeConfig = configPath;
-      writeReceipt(root, receipt);
-    }
-
-    saveState(stateFile, state);
-    sendJson(res, 200, { ok: true, alive: proxyResult.alive, started: proxyResult.started, pid });
-  }));
-
-  routes.set('GET /api/login/status', async (req, res) => {
-    const root = state.soul?.root;
-    const subs = state.choice?.subscriptions ?? [];
-    if (!root || !state.login || subs.length === 0) {
-      sendJson(res, 200, { ok: true, step: state.step, providers: {} });
-      return;
-    }
-    const configPath = getTeamclaudeConfigPath();
-
-    for (const provider of subs) {
-      const entry = state.login[provider];
-      if (!entry) continue;
-
-      if (entry.cli !== 'done') {
-        entry.cli = cliLoginStatusFn({ provider, root });
-      }
-
-      // Stage ①→② handoff: kick off relayImport exactly once per provider,
-      // and never run two at the same time for the same provider (this
-      // route is polled every 2s and relayImport can be slow -- a real
-      // spawn/CLI call).
-      if (entry.cli === 'done' && entry.relayMethod == null && !relayImportInFlight.has(provider)) {
-        relayImportInFlight.add(provider);
-        relayImportFn({ provider, root, nodeDir: state.nodeDir, teamclaudeConfigPath: configPath })
-          .then((r) => {
-            if (r.ok) {
-              entry.relayMethod = r.method;
-              entry.relayError = null;
-            } else {
-              // Fix round 1 finding 1: login.mjs now reports (instead of
-              // hiding behind a silent config replacement) when TeamClaude's
-              // config file could not be safely read. Surface it here so a
-              // screen (Task 14) can show the person something other than an
-              // endless spinner; relayMethod stays null so the next poll
-              // retries (the read failure may be transient -- e.g. the live
-              // server mid-write).
-              entry.relayError = { reason: r.reason, detail: r.detail };
-            }
-            saveState(stateFile, state);
-          })
-          .catch((err) => {
-            entry.relayError = { reason: 'relay_import_failed', detail: String(err?.message ?? err) };
-            saveState(stateFile, state);
-          })
-          .finally(() => { relayImportInFlight.delete(provider); });
-      }
-
-      if (entry.relayMethod != null && entry.relay !== 'done') {
-        entry.relay = await relayStatusFn({
-          teamclaudeConfigPath: configPath, provider, accountsBefore: entry.accountsBefore,
-        });
-      }
-    }
-    saveState(stateFile, state);
-
-    const allDone = subs.every((p) => state.login[p]?.cli === 'done' && state.login[p]?.relay === 'done');
-    if (allDone && state.step !== 'handoff') {
-      const receipt = readReceipt(root);
-      if (receipt) {
-        for (const provider of subs) {
-          setReceiptLogin(receipt, provider, { cli: true, relay: true, relayMethod: state.login[provider].relayMethod });
-        }
-        markReceiptStep(receipt, 'login', 'done');
-        writeReceipt(root, receipt);
-      }
-      state.step = 'handoff';
-      saveState(stateFile, state);
-    }
-
-    const now = Date.now();
-    // 2 minutes (was 60 -- 2026-09-13 review): a beginner who closed the black
-    // window by mistake, or whose browser never opened, must not sit for an
-    // hour before the screen offers "다시 열기". A real browser login takes
-    // well under two minutes; a second window is harmless if the first is
-    // still open (same credential file, first one to finish wins).
-    const REOPEN_AFTER_MS = 2 * 60 * 1000;
-    const providers = {};
-    for (const provider of subs) {
-      const entry = state.login[provider];
-      if (!entry) continue;
-      const elapsedMs = now - Date.parse(entry.startedAt);
-      providers[provider] = {
-        cli: entry.cli,
-        relay: entry.relay,
-        relayMethod: entry.relayMethod,
-        relayError: entry.relayError ?? null,
-        reopenAvailable: entry.cli !== 'done' && elapsedMs > REOPEN_AFTER_MS,
-      };
-    }
-    sendJson(res, 200, { ok: true, step: state.step, providers });
-  });
-
-  // --- handoff step (ⓕ) -----------------------------------------------------
-  // 설계 4-2/4-3: write the first request + the Face session spec, drop the
-  // `<이름> Face.cmd` launcher (+ desktop shortcut), start Face, and only
-  // call it done once the daemon answers /api/health with one live session.
-  // Each stage reports its own `where` so the screen can say which one broke.
-  let handoffRunning = false;
-
-  function handoffLog(root, line) {
-    const file = path.join(root, '_agent', 'setup', 'package-install.log');
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.appendFileSync(file, `${new Date().toISOString()} handoff ${line}\n`, 'utf8');
-    } catch { /* logging must never break the handoff */ }
-    return file;
-  }
-
-  routes.set('POST /api/handoff', withBody(async (body, req, res) => {
-    const root = state.soul?.root;
-    if (!root) {
-      sendJson(res, 409, { ok: false, reason: 'no_soul' });
-      return;
-    }
-    if (handoffRunning) {
-      sendJson(res, 202, { ok: true, running: true });
-      return;
-    }
-    handoffRunning = true;
-    const logFile = path.join(root, '_agent', 'setup', 'package-install.log');
-    const fail = (where, err, extra = {}) => {
-      const detail = String(err?.message ?? err);
-      const reason = err?.code ?? null;
-      handoffLog(root, `${where} failed${reason ? ` (${reason})` : ''}: ${detail}`);
-      sendJson(res, 200, { ok: false, where, reason, detail, log: logFile, ...extra });
-    };
-
-    try {
-      const manifest = readPayloadManifest(state.zipRoot);
-      const edition = state.choice?.guideEdition ?? 'claude';
-      const leadAgent = state.choice?.leadAgent ?? 'claude';
-
-      // ⓪ 안내서 판 대조: 첫 요청문은 이 zip 의 안내서 이름을 가리키므로, 영수증(= 실제로 복사된 것)의
-      // 안내서 판이 다르면 인계하지 않는다 -- 에이전트가 없는 파일을 찾게 되기 때문(2026-09-14 실기).
-      const receiptNow = readReceiptFn(root);
-      const wantGuide = manifest?.package?.guideVersion == null ? null : String(manifest.package.guideVersion);
-      const haveGuide = receiptNow?.package?.guideVersion == null ? null : String(receiptNow.package.guideVersion);
-      if (wantGuide && haveGuide && wantGuide !== haveGuide) {
-        fail('guide-version', Object.assign(
-          new Error(`설치된 안내서는 v${haveGuide}, 이 패키지의 안내서는 v${wantGuide}입니다 -- 설치(복사) 단계를 다시 실행한 뒤 인계합니다`),
-          { code: 'guide_version_mismatch' },
-        ));
-        return;
-      }
-
-      // ① 첫 요청문 + ② 첫 세션 spec
-      let first;
-      let spec;
-      try {
-        first = writeFirstRequestFn(root, { edition, manifest });
-        spec = writeFirstSessionSpecFn(root, {
-          leadAgent, promptFile: first.path, ...(faceSpecOverrides ?? {}),
-        });
-        handoffLog(root, `first-request guide=${first.guide?.basename} agent=${spec.spec.agent} model=${spec.spec.model}`);
-      } catch (err) { fail('first-request', err); return; }
-
-      // ③ 소환기 + 바탕화면 바로가기 (바로가기 실패는 치명적이지 않다)
-      let launcher;
-      try {
-        launcher = await writeFaceLauncherFn(root, state.soul.name, { desktopDir });
-        handoffLog(root, `launcher ${launcher.cmdPath} shortcut=${launcher.shortcut?.ok === true}`);
-      } catch (err) { fail('launcher', err); return; }
-
-      // ④ Face 실행
-      let launched;
-      try {
-        launched = launchFaceFn({
-          root,
-          nodeDir: state.nodeDir,
-          nodeExe: faceNodeExe,
-          faceDir,
-          spec: spec.path,
-          ...(facePort ? { port: facePort } : {}),
-          ...(faceExtraArgs ? { extraArgs: faceExtraArgs } : {}),
-          ...(faceEnv ? { env: faceEnv } : {}),
-        });
-        handoffLog(root, `launch pid=${launched.pid}`);
-      } catch (err) { fail('launch', err); return; }
-
-      // ⑤ 준비 확인: /api/health 200 + *이 영혼 폴더*의 세션 1개 이상.
-      // root를 넘기는 것이 핵심 — 이미 Face를 쓰던 PC에서는 남의 세션이 전역
-      // 개수를 채워 버린다(fix round 1 finding 1).
-      const ready = await waitFaceReadyFn({ root, port: facePort ?? 3458 });
-      if (!ready.ok) {
-        handoffLog(root, `ready failed after ${ready.tries} tries sessions=${ready.sessions ?? '?'} wanted=${ready.wantedCwd ?? root}`);
-        sendJson(res, 200, {
-          ok: false, where: 'ready', reason: 'no_session_in_soul', pid: launched.pid, tries: ready.tries,
-          detail: ready.error ?? (ready.sessions
-            ? `face daemon is up with ${ready.sessions} session(s), none of them in ${root}`
-            : 'face daemon did not report a session in this soul folder'),
-          sessions: ready.sessions ?? null,
-          log: logFile, faceLog: launched.logFile ?? null,
-        });
-        return;
-      }
-
-      // ⑥ 마무리: 영수증 · state · 캐시 · 자기 서버 종료
-      let finished;
-      try {
-        const receipt = readReceipt(root);
-        finished = finishFn({
-          root,
-          receipt,
-          ...(workDir ? { workDir } : {}),
-          setStep: (s) => { state.step = s; saveState(stateFile, state); },
-          quit: () => {
-            setTimeout(() => { if (onQuit) onQuit(); else process.exit(0); }, 1500);
-          },
-        });
-      } catch (err) { fail('finish', err); return; }
-
-      handoffLog(root, `done session=${ready.session?.id ?? '?'} cwd=${ready.session?.cwd ?? '?'} sessions=${ready.health?.sessions} faceVersion=${ready.health?.version ?? 'unknown'}`);
-      sendJson(res, 200, {
-        ok: true,
-        pid: launched.pid,
-        sessionId: ready.session?.id ?? null,
-        sessionCwd: ready.session?.cwd ?? null,
-        sessions: ready.health?.sessions ?? null,
-        faceVersion: ready.health?.version ?? null,
-        launcher: launcher.cmdPath,
-        shortcut: launcher.lnkPath,
-        firstRequest: first.path,
-        cacheRemoved: finished?.cacheRemoved ?? false,
-        log: logFile,
-      });
-    } finally {
-      handoffRunning = false;
-    }
   }));
 
   routes.set('POST /api/quit', async (req, res) => {
@@ -1012,6 +1281,18 @@ export function startServer({
       if (onQuit) onQuit();
       else process.exit(0);
     }, 200);
+  });
+
+  // Routes that v1 had and v2 does not. 410 rather than 404 so an old cached
+  // page (or a stale bookmark) gets a verdict instead of looking like a broken
+  // server.
+  for (const gone of ['POST /api/name', 'POST /api/install', 'POST /api/login', 'POST /api/handoff']) {
+    routes.set(gone, async (req, res) => {
+      sendJson(res, 410, { ok: false, reason: 'gone', step: state.step });
+    });
+  }
+  routes.set('GET /api/login/status', async (req, res) => {
+    sendJson(res, 410, { ok: false, reason: 'gone', step: state.step });
   });
 
   const server = http.createServer(async (req, res) => {
@@ -1078,6 +1359,8 @@ function parseArgs(argv) {
     // Automatic update mode (also IRIS_INSTALLER_AUTO=1) -- bootstrap.ps1
     // passes this through from IRIS-설치.cmd --auto.
     else if (a === '--auto') args.auto = true;
+    // Resume mode (also IRIS_INSTALLER_RESUME=1) -- Face's 「설치 이어하기」.
+    else if (a === '--resume') args.resume = true;
     else throw new Error(`unknown arg: ${a}`);
   }
   return args;
@@ -1099,3 +1382,5 @@ if (isMain) {
       process.exit(1);
     });
 }
+
+export { parseArgs };

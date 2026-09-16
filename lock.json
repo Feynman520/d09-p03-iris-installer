@@ -1,24 +1,37 @@
 {
-  "schema": 1,
-  "package": { "version": "1.4.5", "guideVersion": "14" },
+  "$comment": [
+    "IRIS 설치 패키지 부품 잠금표 v2 (schema 2). 이 파일 하나가 부품의 유일한 진실 소스다 -- 옛 v7-lock.json은 여기에 통합됐다.",
+    "필드 뜻과 kind별 필수 항목은 docs/lock-schema.md가 정본. 요약: 모든 항목은 kind·license·dest·file 을 갖고,",
+    "url=version+sha256, git=commit(40자)+pinnedAt, npm-prefix=version+integrity, claude-release=version+sha256+fallback,",
+    "wheelhouse=sha256+expectedCount, dir/file=source 로 잠근다.",
+    "움직이는 참조 금지: 어떤 값도 latest / main / HEAD / * 일 수 없다(커밋·판·지문으로만 고정).",
+    "dest 는 영혼 루트 기준 '폴더' 경로다(POSIX 구분자). '/' 는 영혼 루트 자체."
+  ],
+  "schema": 2,
+  "package": { "version": "2.0.0" },
   "parts": {
     "node": {
       "kind": "url",
-      "version": "24.17.0",
-      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-win-x64.zip",
-      "sha256": "f2aa33b35b75aca5f3f7b85675a6f6423201053e9381911e64961f3bda2528ab",
-      "sha256Source": "vendor",
-      "file": "node/node-v24.17.0-win-x64.zip",
-      "license": "MIT"
+      "version": "24.21.0",
+      "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
+      "sha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
+      "sha256Source": "vendor SHASUMS256.txt (2026-09-15)",
+      "file": "runtime/node-v24.21.0-win-x64.zip",
+      "dest": "_agent/shared/tools/node",
+      "license": "MIT",
+      "note": "Node 24 LTS(Krypton) 최신 패치. 압축 안에 node-v24.21.0-win-x64/ 한 겹이 더 있다(strip 1)."
     },
     "python": {
       "kind": "url",
-      "version": "3.12.10",
-      "url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
-      "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
-      "sha256Source": "computed 2026-09-11 from official URL",
-      "file": "python/python-3.12.10-embed-amd64.zip",
-      "license": "PSF-2.0"
+      "version": "3.12.14",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "sha256": "e90c1b6419da3bd812dd73bb3de40287a21abf153438147639ec5e20375ea93f",
+      "sha256Source": "computed 2026-09-15 from official release URL (T02 실측, 46,184,075 bytes)",
+      "bytes": 46184075,
+      "file": "runtime/cpython-3.12.14+20260901-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "dest": "_agent/shared/tools/python",
+      "license": "PSF-2.0",
+      "note": "T02 실측으로 임베드 판(3.12.10 embed)에서 python-build-standalone 으로 교체 -- 임베드 판은 venv·pip 가 온전치 않았다. install_only 묶음은 최상위에 python/ 한 겹이 있다(strip 1)."
     },
     "pyyaml": {
       "kind": "url",
@@ -26,32 +39,81 @@
       "url": "https://files.pythonhosted.org/packages/86/bf/899e81e4cce32febab4fb42bb97dcdf66bc135272882d1987881a4b519e9/pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
       "sha256": "5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b",
       "sha256Source": "vendor",
-      "file": "python/PyYAML-6.0.3-cp312-cp312-win_amd64.whl",
-      "license": "MIT"
+      "file": "runtime/PyYAML-6.0.3-cp312-cp312-win_amd64.whl",
+      "dest": "_agent/shared/tools/python/Lib/site-packages",
+      "license": "MIT",
+      "note": "온톨로지 파이썬 6개가 쓰는 유일한 외부 묶음. standalone 런타임에 오프라인으로 푼다."
+    },
+    "uv": {
+      "kind": "url",
+      "version": "0.12.14",
+      "url": "https://files.pythonhosted.org/packages/a1/ef/a75902b853204678521a62439fe041d549a8fa2fc3e59b1875c78463fc8a/uv-0.12.14-py3-none-win_amd64.whl",
+      "sha256": "0a2f922544d045164422274ac2b15946b4d3d5435c02c6c8803d6d9eed0850cb",
+      "sha256Source": "PyPI JSON API digests.sha256 (2026-09-15)",
+      "bytes": 17715561,
+      "fallback": {
+        "version": "0.11.21",
+        "url": "https://files.pythonhosted.org/packages/3d/51/e682e060813424467f14ae964dd7022f8fc537fea5803b5aab0ba1eca9cc/uv-0.11.21-py3-none-win_amd64.whl",
+        "sha256": "d956ba9470d5267cc0ea3d7572cac3bf045bc78adad5b031b5558c6df13d2e19",
+        "note": "T02 실측으로 검증된 판. 0.12.x 로 오프라인 venv 생성이 막히면 이 판으로 되돌린다."
+      },
+      "file": "runtime/uv-0.12.14-py3-none-win_amd64.whl",
+      "dest": "_agent/shared/tools/uv/0.12.14",
+      "license": "Apache-2.0 OR MIT",
+      "note": "문서 MCP venv 를 wheelhouse 에서 오프라인으로 만드는 도구."
+    },
+    "age": {
+      "kind": "url",
+      "version": "1.3.2",
+      "url": "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-windows-amd64.zip",
+      "sha256": "f48d8f8f9ebe903ab5027ed067652f2cc1db94bc206976430133b905dcd8e8c7",
+      "sha256Source": "computed 2026-09-15 from official release URL; 릴리스에 SHA256SUMS 자산이 없어(.proof 시그섬 증명만) 내려받아 계산, 크기 20,250,704 bytes 가 릴리스 자산 메타데이터와 일치",
+      "bytes": 20250704,
+      "file": "runtime/age-v1.3.2-windows-amd64.zip",
+      "dest": "_agent/shared/tools/age/1.3.2",
+      "license": "BSD-3-Clause",
+      "note": "시크릿 금고용. 2.0.0 에서는 동봉만 하고 쓰지 않는다(설계 D2-06)."
     },
     "git": {
       "kind": "url",
-      "version": "2.54.0.windows.1",
-      "url": "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip",
-      "sha256": "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668",
-      "sha256Source": "vendor",
-      "file": "git/MinGit-2.54.0-64-bit.zip",
+      "version": "2.55.0.5",
+      "url": "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip",
+      "sha256": "56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e",
+      "sha256Source": "vendor release notes checksum table (2026-09-15)",
+      "file": "runtime/MinGit-2.55.0.5-64-bit.zip",
+      "dest": "_agent/shared/tools/git",
       "license": "GPL-2.0-only"
     },
     "claude": {
-      "kind": "npm-prefix",
-      "npm": "@anthropic-ai/claude-code",
-      "version": "2.1.270",
-      "file": "agents/claude-code-2.1.270.zip",
+      "kind": "claude-release",
+      "version": "2.1.272",
+      "url": "https://downloads.claude.ai/claude-code-releases/2.1.272/win32-x64/claude.exe",
+      "manifestUrl": "https://downloads.claude.ai/claude-code-releases/2.1.272/manifest.json",
+      "sha256": "cd8d8d33e549ba5973428bcf18310164227d68ca756925242c47d3b0d48bf4dc",
+      "sha256Source": "official manifest.json platforms.win32-x64.checksum (2026-09-15)",
+      "bytes": 230228640,
+      "binName": "claude.exe",
+      "fallback": {
+        "kind": "npm-prefix",
+        "npm": "@anthropic-ai/claude-code",
+        "version": "2.1.272",
+        "integrity": "sha512-sOwHBM69H8Zka3/D3rc2VNNemPYNlgfYTdhsoqPoXZdK5KcKQlzoue4asJ2RVc+tGb/Pz1qxjVV9nVJQ87W7Ng==",
+        "note": "출처 2. npm 저장소가 막힌 망에서는 출처 1(downloads.claude.ai)이, 반대 상황에서는 이쪽이 산다(설계 D2-18)."
+      },
+      "file": "agents/claude-code-2.1.272.zip",
+      "dest": "_agent/shared/tools/claude",
       "redistribute": "download",
       "license": "Proprietary (SEE LICENSE IN README.md -- LICENSE.md: (c) Anthropic PBC. All rights reserved)",
-      "bin": "bin/claude.exe"
+      "bin": "bin/claude.exe",
+      "note": "허가서 때문에 zip 에 넣지 않고 설치 중 내려받는 유일한 실행 부품(설계 D2-09)."
     },
     "codex": {
       "kind": "npm-prefix",
       "npm": "@openai/codex",
       "version": "0.154.0",
+      "integrity": "sha512-FV/x1OHXYv/ifjf3mXj9ThTTAWcUZN6cGIRQRhRxkKNOPuImu1WW0c8ev1vUkE9XGH90dEnYG1tBjIkxRikg0w==",
       "file": "agents/codex-0.154.0.zip",
+      "dest": "_agent/shared/tools/codex",
       "redistribute": "bundle",
       "license": "Apache-2.0",
       "bin": "bin/codex.js"
@@ -60,10 +122,21 @@
       "kind": "npm-prefix",
       "npm": "@karpeleslab/teamclaude",
       "version": "1.1.16",
+      "integrity": "sha512-aRwUO7xVldJGkYXp9FPNivQY2qC8rrBCer7sSL9ubf1s3SDLU+bPvGAqJjbcs5GIJY2jN871LAP9jUIXehyr3A==",
+      "integritySource": "npm registry dist.integrity (2026-09-15)",
+      "versionNote": "판 1.1.16 고정 -- patches/teamclaude/rules.json 이 이 판을 전제로 만들어졌다(올리지 않는다).",
       "file": "relay/teamclaude-1.1.16+iris.zip",
+      "dest": "_agent/shared/tools/teamclaude",
       "patches": "patches/teamclaude/rules.json",
       "license": "MIT",
       "bin": "src/index.js"
+    },
+    "manage": {
+      "kind": "file",
+      "source": "patches/teamclaude/teamclaude-manage.ps1",
+      "file": "relay/teamclaude-manage.ps1",
+      "dest": "_agent/shared/tools/teamclaude",
+      "license": "MIT"
     },
     "face": {
       "kind": "dir",
@@ -71,7 +144,9 @@
       "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "modules", "daemon/__pycache__", ".stack"],
       "npmCi": true,
       "file": "face/iris-face.zip",
-      "license": "MIT"
+      "dest": "_agent/shared/tools/face",
+      "license": "MIT",
+      "note": "판은 P02 package.json 에서 빌드 때 읽어 manifest 에 넣는다(손으로 적지 않는다)."
     },
     "messenger": {
       "kind": "url",
@@ -80,14 +155,9 @@
       "sha256": "33889f23b39213fc4ce27306d60e3e7f8d33fe257fb0f753a30c637d6a77556b",
       "sha256Source": "vendor",
       "file": "face/iris-messenger-v0.3.2.zip",
+      "dest": "_agent/shared/tools/face/modules/messenger",
       "license": "MIT",
-      "note": "IRIS Messenger module, installed into face\\modules\\messenger through Face's own signed-module installer (default since 1.4.0, user decision 2026-09-14)"
-    },
-    "updater": {
-      "kind": "dir",
-      "source": "./updater",
-      "file": "updater/iris-updater.zip",
-      "license": "MIT"
+      "note": "2026-09-15 확인 결과 0.3.2 가 여전히 최신 릴리스다. Face 자체 서명 모듈 설치기로 꽂는다(1.4.0 결정 유지)."
     },
     "dash": {
       "kind": "dir",
@@ -106,27 +176,254 @@
         }
       ],
       "file": "dash/teamclaude-dash.zip",
+      "dest": "_agent/shared/tools/teamclaude-dash",
       "license": "MIT"
     },
-    "manage": {
+    "updater": {
+      "kind": "dir",
+      "source": "./updater",
+      "file": "updater/iris-updater.zip",
+      "dest": "_agent/shared/tools/updater",
+      "license": "MIT"
+    },
+    "superpowers": {
+      "kind": "git",
+      "repo": "https://github.com/obra/superpowers.git",
+      "commit": "b36e0829c6d0140e93cfef2ca599b1b07d4a7797",
+      "tag": "v6.3.0",
+      "version": "6.3.0",
+      "pinnedAt": "2026-08-12",
+      "expectedSkillCount": 14,
+      "env": { "SUPERPOWERS_DISABLE_TELEMETRY": "1" },
+      "file": "tools/superpowers.zip",
+      "dest": "_agent/shared/skills/superpowers/v6.3.0",
+      "license": "MIT",
+      "note": "릴리스 태그 v6.3.0 의 커밋. 이 PC 는 claude-plugins-official 미러로 같은 6.3.0 을 쓰고 있다."
+    },
+    "self-improve": {
+      "kind": "git",
+      "repo": "https://github.com/Feynman520/d06-p01-self-improve.git",
+      "commit": "4b07c2855e46a1b57535a1b8f5107f52bbabb590",
+      "version": "0.2.0",
+      "pinnedAt": "2026-09-07",
+      "include": ["server", ".claude-plugin", ".mcp.json", "skills", "package.json", "LICENSE", "README.md"],
+      "entry": "server/index.js",
+      "env": { "SELF_IMPROVE_DIR": "_agent/shared/self-improvement" },
+      "file": "tools/self-improve.zip",
+      "dest": "_agent/shared/tools/self-improve/0.2.0",
+      "license": "MIT",
+      "note": "플러그인 + MCP 겸용. 판은 .claude-plugin/plugin.json 기준. include 는 실행에 필요한 것만 집는다(T08) -- 저장소의 docs/ 옛 계획문서에 이 PC 의 사용자 폴더 경로가, AGENTS.md 에 작업 폴더 경로가 들어 있어 정화가 막았다. 시험·지침·한국어 README 는 설치본에 필요 없다."
+    },
+    "playwright-mcp": {
+      "kind": "npm-prefix",
+      "npm": "@playwright/mcp",
+      "version": "0.0.81",
+      "integrity": "sha512-c4eVex1nS53IzLHlwAm0J9ZISDTvA7RndFX8oVcQOrmvIrKSkByazpq79lZHWJuWTB7Gpk0sLBQoRepyIgmneA==",
+      "tarball": "https://registry.npmjs.org/@playwright/mcp/-/mcp-0.0.81.tgz",
+      "env": { "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1" },
+      "entry": "node_modules/@playwright/mcp/cli.js",
+      "file": "tools/playwright-mcp.zip",
+      "dest": "_agent/shared/tools/npm/playwright-mcp/0.0.81",
+      "redistribute": "bundle",
+      "license": "Apache-2.0",
+      "note": "브라우저는 내려받지 않는다 -- 설치·실행 모두 윈도 내장 Edge 채널을 쓴다(설계 D2-11). env 는 수집(T07)과 설치 양쪽에 걸어야 한다."
+    },
+    "ui-ux-pro-max": {
+      "kind": "npm-prefix",
+      "npm": "ui-ux-pro-max-cli",
+      "version": "2.15.0",
+      "integrity": "sha512-D0J/C40xrzzi5si6ZLtRGbEE5v3QjL7d4wJNnasmP3yfDSrGiuqVCdwQiqCNnIkbqOuVoA/uonR2o1WKXh3urw==",
+      "tarball": "https://registry.npmjs.org/ui-ux-pro-max-cli/-/ui-ux-pro-max-cli-2.15.0.tgz",
+      "entry": "node_modules/ui-ux-pro-max-cli/dist/index.js",
+      "file": "tools/ui-ux-pro-max.zip",
+      "dest": "_agent/shared/tools/npm/ui-ux-pro-max/2.15.0",
+      "redistribute": "bundle",
+      "license": "MIT CLI metadata; bundled skill assets state CC-BY-NC-4.0 in package README",
+      "licenseNotice": "비상업 사용 조건(CC-BY-NC-4.0)이 붙은 스킬 자산이 들어 있다 -- 부품 허가서 목록과 화면 표기에서 이 문구를 지우지 않는다.",
+      "note": "Codex 쪽 스킬 생성기."
+    },
+    "hwp-automation": {
+      "kind": "git",
+      "repo": "https://github.com/Feynman520/d01-p01-hwp-form-automation-mcp.git",
+      "commit": "825f8a13dba0876f4f8e81222c1e35155bc68e8e",
+      "pinnedAt": "2026-07-07",
+      "entry": "server.py",
+      "requires": ["Hangul Office"],
+      "runtime": "document-mcp",
+      "file": "tools/hwp-automation.zip",
+      "dest": "_agent/shared/tools/document-mcp/hwp/825f8a1",
+      "license": "MIT"
+    },
+    "excel-automation": {
+      "kind": "git",
+      "repo": "https://github.com/Feynman520/d01-p02-excel-engine-mcp.git",
+      "commit": "4684bb17a8d1f160dfe7b18e2a454ecb947da74e",
+      "pinnedAt": "2026-07-07",
+      "entry": "server.py",
+      "requires": ["Microsoft Excel"],
+      "runtime": "document-mcp",
+      "file": "tools/excel-automation.zip",
+      "dest": "_agent/shared/tools/document-mcp/excel/4684bb1",
+      "license": "MIT"
+    },
+    "ppt-automation": {
+      "kind": "git",
+      "repo": "https://github.com/Feynman520/d01-p03-ppt-engine-mcp.git",
+      "commit": "32ec4d80c2f3ffd10e5017583c57297b8e6a9041",
+      "pinnedAt": "2026-07-07",
+      "entry": "server.py",
+      "requires": ["Microsoft PowerPoint"],
+      "runtime": "document-mcp",
+      "file": "tools/ppt-automation.zip",
+      "dest": "_agent/shared/tools/document-mcp/ppt/32ec4d8",
+      "license": "MIT"
+    },
+    "word-automation": {
+      "kind": "git",
+      "repo": "https://github.com/Feynman520/d01-p04-word-engine-mcp.git",
+      "commit": "e8fe5990cfc9caa9a75276cc73ae409064154684",
+      "pinnedAt": "2026-07-07",
+      "entry": "server.py",
+      "requires": ["Microsoft Word"],
+      "runtime": "document-mcp",
+      "file": "tools/word-automation.zip",
+      "dest": "_agent/shared/tools/document-mcp/word/e8fe599",
+      "license": "MIT"
+    },
+    "pdf-automation": {
+      "kind": "git",
+      "repo": "https://github.com/Feynman520/d01-p05-pdf-engine-mcp.git",
+      "commit": "b8acf47b4088aeed14983fac5ca1452a72fb5559",
+      "pinnedAt": "2026-07-17",
+      "entry": "server.py",
+      "requires": [],
+      "runtime": "document-mcp",
+      "file": "tools/pdf-automation.zip",
+      "dest": "_agent/shared/tools/document-mcp/pdf/b8acf47",
+      "license": "MIT"
+    },
+    "document-mcp-wheelhouse": {
+      "kind": "wheelhouse",
+      "requirementsIn": "payload-src/manifests/python-locks/document-mcp/requirements.in",
+      "requirementsInSha256": "1476fb7cc8e73ce4fae2701c7a308d17c623c0d9eca80c4dcbaa0eaa28d81639",
+      "requirementsLock": "payload-src/manifests/python-locks/document-mcp/requirements.lock",
+      "sha256": "a2085c24af30b2b2032764f6eb87bfc4aa261e710e433c3f7ca461b4457a228f",
+      "pythonTag": "cp312",
+      "platform": "win_amd64",
+      "expectedCount": 43,
+      "venv": "_agent/runtime/venvs/document-mcp",
+      "file": "tools/wheelhouse/",
+      "dest": "_agent/shared/tools/python-wheelhouse/document-mcp",
+      "license": "various (per-wheel; 수집 때 policy/licenses 로 모은다)",
+      "note": "문서 MCP 5종이 함께 쓰는 오프라인 바퀴집. requirements.lock 의 지문이 바퀴 묶음의 정체성이다. 두 파일은 줄끝이 CRLF 이고 지문이 그 바이트 위에서 계산됐다 -- .gitattributes 의 'payload-src/manifests/** -text' 가 이를 지킨다(줄끝을 고치면 지문이 깨진다)."
+    },
+    "document-skills": {
+      "kind": "git",
+      "repo": "https://github.com/anthropics/skills.git",
+      "commit": "34040c9c568585f6929bedeaad110ad08f079624",
+      "pinnedAt": "2026-09-10",
+      "include": ["skills/xlsx", "skills/docx", "skills/pptx", "skills/pdf"],
+      "file": "tools/document-skills.zip",
+      "dest": "_agent/shared/tools/claude/document-skills/34040c9",
+      "redistribute": "download",
+      "license": "Proprietary (source-available; skills/*/LICENSE.txt -- (c) 2025 Anthropic PBC)",
+      "licenseNotice": "허가서가 재배포를 금지한다(원문: users may not 'Extract these materials from the Services or retain copies of these materials outside the Services' / 'Reproduce or copy these materials'). 그래서 zip 동봉이 아니라 claude 부품과 같은 '설치 중 내려받기'로 둔다 -- 설계 D2-09 의 '동봉' 예외 두 번째다. 사용자 확인 필요.",
+      "note": "이 PC 는 marketplace anthropic-agent-skills(= anthropics/skills, source './')의 document-skills 플러그인으로 쓰고 있다. 플러그인 전용 하위 폴더가 없어 subdir 대신 네 스킬 폴더를 include 로 집는다."
+    },
+    "frontend-design": {
+      "kind": "git",
+      "repo": "https://github.com/anthropics/claude-plugins-official.git",
+      "commit": "da823e86c8feef13b73b6712af11eadd38c992f6",
+      "pinnedAt": "2026-09-14",
+      "subdir": "plugins/frontend-design",
+      "file": "tools/frontend-design.zip",
+      "dest": "_agent/shared/tools/claude/frontend-design/da823e8",
+      "license": "Apache-2.0",
+      "note": "이 PC 마켓플레이스 스냅샷(.gcs-sha)과 같은 커밋."
+    },
+    "insane-search": {
+      "kind": "git",
+      "repo": "https://github.com/fivetaku/insane-search.git",
+      "commit": "c020292fedcf1213d815acceacf600402fe72332",
+      "tag": "v0.16.3",
+      "version": "0.16.3",
+      "pinnedAt": "2026-09-08",
+      "file": "tools/insane-search.zip",
+      "dest": "_agent/shared/tools/claude/insane-search/0.16.3",
+      "license": "MIT",
+      "note": "이 PC 는 마켓플레이스 gptaku-plugins(fivetaku/gptaku_plugins)의 사본으로 쓰고 있으나, 원본 저장소는 이쪽이고 판이 더 새롭다."
+    },
+    "hooks": {
+      "kind": "dir",
+      "source": "payload-src/policy/hooks",
+      "asciiRequired": true,
+      "file": "tools/hooks.zip",
+      "dest": "_agent/claude/scripts",
+      "license": "MIT",
+      "note": "PreToolUse 안전 훅 2종(block-blanket-kill.ps1 · guard-iris-path.py)과 각 .test.py. 원본은 이 PC 의 _agent 스크립트지만, T20 이 사고 날짜·이 PC 전용 경로를 일반화한 사본을 저장소 안에 두었으므로 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다). .ps1 은 순수 ASCII -- 2026-09-15 확인. 훅 등록은 클로드·코덱스 양쪽(T14)."
+    },
+    "hwpx-templates": {
+      "kind": "dir",
+      "source": "C:/IRIS/_document-templates",
+      "exclude": ["__pycache__", "AGENTS.md", "CLAUDE.md"],
+      "file": "tools/hwpx-templates.zip",
+      "dest": "_document-templates",
+      "license": "MIT",
+      "note": "기본양식 2개(.hwpx) + 스타일 문서 + iris_hwpx_layout.py·iris_hwpx_table_widths.py 와 각 시험. 양식 안 개인정보 0 검사는 정화(T08) 몫."
+    },
+    "gen-image": {
       "kind": "file",
-      "source": "patches/teamclaude/teamclaude-manage.ps1",
-      "file": "relay/teamclaude-manage.ps1",
-      "license": "MIT"
+      "source": "payload-src/tools/gen-image.py",
+      "file": "tools/gen-image.py",
+      "dest": "_agent/claude/tools",
+      "license": "MIT",
+      "note": "코덱스 구독 우선 -> OpenAI API 폴백. 키가 없으면 pending. 원본(이 PC 의 _agent/claude/tools/gen-image.py)은 설정 폴더 경로를 통째로 박아 두어 정화가 막았다 -- T08 이 CLAUDE_CONFIG_DIR·CODEX_HOME·IRIS_ROOT 에서 유도하도록 일반화한 사본을 저장소 안에 두고 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다)."
     },
-    "guides": {
-      "kind": "glob",
-      "source": "C:/IRIS/_setup-guides",
-      "pattern": "비서 에이전트 세팅가이드(*실행판)_v{guideVersion}_*_최신.md",
-      "minCount": 2,
+    "ontology": {
+      "kind": "dir",
+      "source": "C:/IRIS/_ontology",
+      "include": ["build_graph.py", "validate.py", "query.py", "render_view.py", "check_fresh.py", "view_data.py", "view_app.js", "view_template.html"],
       "redact": [
         {
-          "find": "기존 `C:\\IRIS`는 먼저 카드·도구·지침을 확인한다.",
-          "replace": "기존 설치는 먼저 카드·도구·지침을 확인한다."
+          "file": "query.py",
+          "findRegex": "iris:[a-z0-9]{8}",
+          "replace": "iris:00000001",
+          "note": "도움말 본문의 예시 등록번호가 이 PC 그래프의 진짜 ID 다. 문서용 자리표시자(0 일곱 개 + 숫자)로 바꾼다."
         }
       ],
-      "file": "guides/",
-      "license": "MIT"
+      "file": "setup/ontology.zip",
+      "dest": "_ontology",
+      "license": "MIT",
+      "note": "registry.yml 은 여기에 담지 않는다 -- 빈 템플릿을 T20 이 policy 쪽에서 따로 쓴다. graph.json 등 산출물도 제외."
+    },
+    "ontology-spec": {
+      "kind": "file",
+      "source": "C:/IRIS/IRIS-온톨로지.md",
+      "redact": [
+        { "findRegex": "예 `iris:[a-z0-9]{8}`\\.", "replace": "예 `iris:00000001`." },
+        { "findRegex": "예 `iris:[a-z0-9]{8}/S03`\\.", "replace": "예 `iris:00000001/S03`." },
+        { "findRegex": "id: iris:[a-z0-9]{8}", "replace": "id: iris:00000001" },
+        { "findRegex": "canonical: \\[iris:[a-z0-9]{8}/", "replace": "canonical: [iris:00000002/" },
+        { "findRegex": "extends: iris:[a-z0-9]{8}", "replace": "extends: iris:00000003" },
+        {
+          "findRegex": "accounts:\\r\\n[\\s\\S]*?\\r\\n```",
+          "replace": "accounts:\r\n  main-account:\r\n    id: \"(계정 이메일 주소)\"\r\n    used_for: [google-workspace, notebooklm, rclone]\r\npersons:\r\n  family-1:\r\n    label: 가족 구성원\r\n    roles: [예시 역할]\r\n    sensitive: true\r\n```",
+          "note": "등록부 예시의 계정·사람 블록이 실제 계정 이름과 가족 정보로 적혀 있다. 모양만 남기고 중립 예시로 바꾼다."
+        },
+        { "findRegex": "\\| `C:[\\\\/]IRIS[\\\\/]IRIS-온톨로지\\.md`", "replace": "| `IRIS-온톨로지.md`(영혼 루트)" }
+      ],
+      "file": "setup/IRIS-온톨로지.md",
+      "dest": "/",
+      "license": "MIT",
+      "note": "온톨로지 명세서. 영혼 루트에 그대로 놓인다. redact 는 T08: 예시 등록번호 5곳을 문서용 자리표시자로, 등록부 예시의 계정·사람 블록을 중립 예시로, 배치 표의 절대경로 한 곳을 상대 표기로 바꾼다. 원본(이 PC 의 명세서)은 건드리지 않는다."
+    },
+    "folder-icon": {
+      "kind": "file",
+      "source": "C:/IRIS/_cosmos.ico",
+      "file": "policy/_cosmos.ico",
+      "dest": "/",
+      "license": "MIT",
+      "note": "별밭 폴더 아이콘(설계 D2-08). desktop.ini 는 설치 엔진이 쓴다."
     }
   }
 }
