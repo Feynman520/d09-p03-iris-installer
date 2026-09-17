@@ -276,8 +276,8 @@ async function main() {
     // proxy.port 누락, 시작 스크립트 파이프 대기). `/api/online/relay` 는 로그인 상태를 묻지 않고
     // 중계기를 띄워 건강 확인까지 한다. 오프라인(net 차단)에서도 로컬 중계기는 뜰 수 있어 시도한다.
     try {
-      const relay = await post('/api/online/relay');
-      const body = await relay.json().catch(() => ({}));
+      const relay = await post('/api/online/relay');   // { status, json } — Response 가 아니다
+      const body = relay.json ?? {};
       const status = await getJson('/api/online/status').catch(() => null);
       result.relayProbe = {
         status: relay.status,
