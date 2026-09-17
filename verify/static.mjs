@@ -591,6 +591,31 @@ async function main() {
       );
     }
 
+    // ⑲ no zero-byte FILE anywhere in the zip (2026-09-18, home-desktop
+    // update failure "inflate exceeded declared size: installer/ui/.gitkeep").
+    // bsdtar deflates even an empty file (csize 2, usize 0) and the IRIS 창
+    // updater (P02 daemon/zip.mjs) inflates with `maxOutputLength: usize`;
+    // Node rejects maxOutputLength 0 with a RangeError, which the updater
+    // reports as "exceeded declared size". One empty placeholder therefore
+    // makes EVERY update of every installed PC fail. Until the P02 reader is
+    // fixed (Math.max(1, usize)) the package must ship no empty file at all.
+    {
+      const empty = [];
+      const walkAll = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          if (entry.isDirectory()) walkAll(p);
+          else if (entry.isFile() && fs.statSync(p).size === 0) empty.push(path.relative(tmpDir, p).split(path.sep).join('/'));
+        }
+      };
+      walkAll(tmpDir);
+      record(
+        '⑲ no zero-byte file in the zip (IRIS 창 updater cannot inflate one)',
+        empty.length === 0,
+        empty.length === 0 ? 'clean' : `found: ${empty.join(', ')}`,
+      );
+    }
+
     // ⑱ manifest is schema:2 with every payload file fingerprinted (bytes +
     // sha256), per build/pack.mjs's buildPackManifest() -- manifest.json
     // itself is the one file exempt (it cannot fingerprint itself).

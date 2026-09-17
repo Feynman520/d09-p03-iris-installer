@@ -16,8 +16,9 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-pack-'));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
 test('pack: zip exists at IRIS-Setup_v<version>_<date>.zip, .sha256 matches, listing has IRIS-설치.cmd + payload/manifest.json', async () => {
-  // Fake stage: one installer file (+ its own ui/.gitkeep, mirroring the
-  // real placeholder's shape) and one payload part alongside a manifest --
+  // Fake stage: one installer file (+ a ui/ file -- deliberately NOT an
+  // empty .gitkeep: a zero-byte entry breaks the IRIS 창 updater, static ⑲)
+  // and one payload part alongside a manifest --
   // deliberately NOT the real project installer/ dir, so this test stays
   // stable across Task 9+'s real installer UI work.
   //
@@ -30,7 +31,7 @@ test('pack: zip exists at IRIS-Setup_v<version>_<date>.zip, .sha256 matches, lis
   fs.mkdirSync(path.join(installerDir, 'ui'), { recursive: true });
   fs.writeFileSync(path.join(installerDir, 'IRIS-설치.cmd'), '@echo off\necho hi\npause\n');
   fs.writeFileSync(path.join(installerDir, 'bootstrap.ps1'), "Write-Host 'hi'\nexit 0\n");
-  fs.writeFileSync(path.join(installerDir, 'ui', '.gitkeep'), '');
+  fs.writeFileSync(path.join(installerDir, 'ui', 'index.html'), '<!doctype html><title>hi</title>\n');
 
   const stageDir = path.join(tmp, 'stage');
   fs.mkdirSync(path.join(stageDir, 'payload', 'node'), { recursive: true });
@@ -61,7 +62,7 @@ test('pack: zip exists at IRIS-Setup_v<version>_<date>.zip, .sha256 matches, lis
   assert.ok(fs.existsSync(path.join(extractDir, 'IRIS-설치.cmd')), 'zip missing IRIS-설치.cmd at root');
   assert.ok(fs.existsSync(path.join(extractDir, 'payload', 'manifest.json')), 'zip missing payload/manifest.json');
   assert.ok(fs.existsSync(path.join(extractDir, 'installer', 'IRIS-설치.cmd')), 'zip missing installer/IRIS-설치.cmd');
-  assert.ok(fs.existsSync(path.join(extractDir, 'installer', 'ui', '.gitkeep')), 'zip missing installer/ui/.gitkeep');
+  assert.ok(fs.existsSync(path.join(extractDir, 'installer', 'ui', 'index.html')), 'zip missing installer/ui/index.html');
   assert.ok(fs.existsSync(path.join(extractDir, 'payload', 'node', 'part.txt')), 'zip missing payload/node/part.txt');
 
   // Fix round 1 finding #1: pack() must force CRLF on .cmd/.ps1 regardless
