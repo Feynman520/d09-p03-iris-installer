@@ -15,7 +15,12 @@
 #   refused for the same reason. Nothing a guest-control session can say makes
 #   Windows hand it a full token -- the elevation has to already exist.
 #
-# So there are two channels, and this file picks whichever the VM has:
+# So there are three channels, and this file picks whichever the VM has:
+#
+#   [runas]  (2026-09-17, first choice) The bake left ConsentPromptBehaviorAdmin=0,
+#            so `Start-Process -Verb RunAs` from the guest-control session gets
+#            a High-integrity token WITHOUT any prompt (measured). Output is
+#            written by the elevated shell into a file and echoed back.
 #
 #   [baked]  (IRIS-Win11-v2 and later -- the only one that actually works)
 #            The unattended install baked a SYSTEM agent into the image
@@ -81,6 +86,34 @@ function Show-Result {
   }
   Write-Output 'ELEVATED-RUN-NO-RESULT'
   exit 1
+}
+
+# --- [runas] 프롬프트 없는 자기 승격 ------------------------------------------
+# 2026-09-17 실측(VM S07·S03·S04·S05): 구운 SYSTEM 대리인 작업(IRIS-VM-Agent)은 굽던 순간
+# 한 번 뜬 뒤 재부팅·스냅샷 복원 뒤에는 다시 서지 않았다(schtasks 폴백 등록분). 그런데 같은
+# 굽기가 `ConsentPromptBehaviorAdmin=0` 을 남겨 두어, 손님 제어 세션(걸러진 토큰)에서도
+# `Start-Process -Verb RunAs` 가 **묻지 않고** 높은 무결성 토큰을 준다(High Mandatory Level
+# 실측). 그래서 이 문을 먼저 쓴다. RunAs 는 표준출력을 못 받으므로 승격된 파워셸이 스스로
+# 파일로 적게 하고 되읽는다.
+$cpba = $null
+try { $cpba = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction Stop).ConsentPromptBehaviorAdmin } catch { $cpba = $null }
+if ($cpba -eq 0) {
+  Write-Output 'ELEVATE-CHANNEL runas'
+  $rid = 'runas-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + (Get-Random -Maximum 100000)
+  $rOut = Join-Path $env:PUBLIC ($rid + '.out')
+  $rCmd = "& '" + $ps + "' " + $argLine + " *> '" + $rOut + "'; exit `$LASTEXITCODE"
+  $rExit = 99
+  try {
+    $rp = Start-Process -FilePath $ps -Verb RunAs -PassThru -WindowStyle Hidden `
+      -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $rCmd)
+    $null = $rp.Handle
+    if (-not $rp.WaitForExit($TimeoutSeconds * 1000)) { try { $rp.Kill() } catch {}; Write-Output ('ELEVATE-TIMEOUT after ' + $TimeoutSeconds + ' s (runas)') }
+    else { $rExit = $rp.ExitCode; if ($null -eq $rExit) { $rExit = 0 } }
+  } catch {
+    Write-Output ('RUNAS-FAILED ' + $_.Exception.Message)
+  }
+  Write-Output ('ELEVATE-EXIT ' + $rExit)
+  Show-Result -AgentOut $rOut
 }
 
 # --- [baked] 구운 SYSTEM 대리인에게 부탁한다 ---------------------------------

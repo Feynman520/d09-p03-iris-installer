@@ -33,8 +33,12 @@ const SUBS = String(arg('--subscriptions', 'claude')).split(',').map((s) => s.tr
 const PRESET = arg('--preset', 'teacher');
 const SKIP_ONLINE = flag('--skip-online');
 const SERVER_WAIT_MS = Number(arg('--server-wait-ms', 5 * 60 * 1000));
-const SETUP_TIMEOUT_MS = Number(arg('--setup-timeout-ms', 45 * 60 * 1000));
-const ONLINE_TIMEOUT_MS = Number(arg('--online-timeout-ms', 20 * 60 * 1000));
+// 2026-09-16 실측(4 GB/2 vCPU 손님): 세팅 9단계가 unpack 27분 + venv 10분 등 **약 45분**,
+// 온라인은 230MB claude.exe 내려받기+첫 실행 확인으로 10분+ 가 걸린다. 45분 한도는
+// checks(88%) 직전에 끊겨 S01 이 "진행 조회 시간 초과"로 끝났다. 넉넉히 잡는다 —
+// 정말 멈춘 손님은 run.mjs 의 install 한도(LONG_PHASES)가 따로 끊는다.
+const SETUP_TIMEOUT_MS = Number(arg('--setup-timeout-ms', 120 * 60 * 1000));
+const ONLINE_TIMEOUT_MS = Number(arg('--online-timeout-ms', 40 * 60 * 1000));
 
 const JSON_HDR = { 'Content-Type': 'application/json' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -191,6 +195,8 @@ async function driveLegacy() {
 
   const deadline = Date.now() + SETUP_TIMEOUT_MS;
   let lastStep = null;
+  let lastError = null;
+  let retries = 0;
   for (;;) {
     const st = await getJson('/api/state');
     if (st?.step !== lastStep) { lastStep = st?.step; note('legacy-step', { step: st?.step }); }
@@ -198,6 +204,21 @@ async function driveLegacy() {
     if (st?.step && st.step !== 'install' && st.step !== 'choice' && st.step !== 'name' && st.step !== 'precheck') {
       result.state = st;
       return st;
+    }
+    // 2026-09-17 VM S09 실측: 1.4.5 는 뿌리 검사의 파워셸 프로브가 느린 손님에서 시간 초과하면
+    // `installError: "not-ntfs"` 로 복사를 접는다(2.0.0 Task 26 이 고친 바로 그 버그 — 옛 zip 은
+    // 못 고친다). 그 뒤에도 step 은 'install' 그대로라 여기가 120분을 헛기다렸다. 오류가 보이면
+    // 45초 뒤 다시 시작한다(두 번째는 파워셸이 따뜻해 통과한다). 네 번까지.
+    if (st?.installError && st.installError !== lastError) {
+      lastError = st.installError;
+      note('legacy-install-error', { error: st.installError, retries });
+      if (retries >= 4) throw new Error(`1.x 복사가 계속 실패합니다: ${st.installError}`);
+      retries += 1;
+      await sleep(45000);
+      const again = await post('/api/install');
+      note('legacy-install-retry', { status: again.status, attempt: retries });
+      lastError = null;
+      continue;
     }
     if (Date.now() > deadline) throw new Error('1.x 복사가 끝나지 않았습니다(state 조회 시간 초과)');
     await sleep(2000);

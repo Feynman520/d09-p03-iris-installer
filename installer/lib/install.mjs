@@ -580,10 +580,19 @@ export function defaultVerifiers({ root, manifest, lock, zipRoot, patchRulesFile
 // soul so nothing is written to the user's %APPDATA%.
 export const defaultNpmInstall = ({ nodeExe, npmCli, prefix, spec, cacheDir }) => {
   assertOnline(`npm install ${spec}`);
+  // 2026-09-16 VM S01 실측(깨끗한 PC, 시스템 node 없음): 꾸러미의 postinstall 이
+  // `node install.cjs` 를 이름으로 부르는데 자식의 PATH 에 동봉 node 가 없어
+  // "'node'은(는) 내부 또는 외부 명령… 이 아닙니다" 로 npm 폴백 전체가 실패했다.
+  // 이 개발 PC 는 시스템 node 가 있어 못 잡았다. 동봉 node 폴더를 PATH 맨 앞에 둔다.
+  const nodeDir = path.dirname(nodeExe);
+  const basePath = process.env.PATH ?? process.env.Path ?? '';
+  const env = { ...process.env, npm_config_cache: cacheDir };
+  for (const k of Object.keys(env)) if (k.toLowerCase() === 'path') delete env[k];
+  env.PATH = basePath ? `${nodeDir};${basePath}` : nodeDir;
   return run(
     nodeExe,
     [npmCli, 'install', '-g', '--prefix', prefix, spec, '--no-fund', '--no-audit'],
-    { env: { ...process.env, npm_config_cache: cacheDir }, timeoutMs: 600000 },
+    { env, timeoutMs: 600000 },
   );
 };
 

@@ -4,7 +4,17 @@
 이 개발 PC의 진짜 `C:\IRIS`를 건드리지 않고, 버릴 수 있는 윈도 손님(guest) 안에서
 **배포할 zip 그대로**를 설치해 본다.
 
-## 지금 상태 (2026-09-16 T23e — 권한을 **구운** 두 번째 기준 이미지)
+## 지금 상태 (2026-09-17 — 승격 통로는 `runas` 가 1순위)
+
+- 기준 VM `IRIS-Win11-v2`(4 GB · 2 vCPU · 스냅샷 `clean`·`no-office`)는 완성됐고 2.0.1 S01 이 통과했다(`docs/검증기록.md` 3차 절).
+- **구운 SYSTEM 대리인(IRIS-VM-Agent)은 재부팅 뒤 서지 않았다**(schtasks 폴백 등록분, 09-17 실측). 대신 굽기가 남긴
+  `ConsentPromptBehaviorAdmin=0` 덕에 손님 제어 세션의 `Start-Process -Verb RunAs` 가 **묻지 않고** 높은 무결성 토큰을 준다.
+  `guest-elevate.ps1` 은 이제 `[runas]` → `[baked]` → `[task]` 순으로 문을 고른다(첫 줄 `ELEVATE-CHANNEL runas`). 아래 T23e 절의
+  "손님 제어는 승격을 할 수 없다"는 **굽기 전** 이미지의 사실이다.
+- 시험대 운용 실측(09-16~17): 한 시나리오 ≈ 60분(세팅 45분). `guest-run.ps1` 은 `-Wait`/리다이렉트 핸들 상속 함정을 피해야
+  한다(파일 머리말). `run.mjs` 는 복사 단계 3회 재시도, install 한도 180분. 호스트 RAM 여유가 4 GB 아래로 내려가면 손님이 기어간다.
+
+## 옛 상태 (2026-09-16 T23e — 권한을 **구운** 두 번째 기준 이미지)
 
 기준 VM은 이제 **`IRIS-Win11-v2`**다(`run.mjs`의 `BASE_VM`). 옛 `IRIS-Win11`도 그대로 남아 있고
 `--vm IRIS-Win11`로 고를 수 있지만, 거기서는 S03·S04·S05·S07 준비가 UAC 앞에서 선다.

@@ -27,8 +27,15 @@ const path = nodePath;
 
 export const id = 'checks';
 
-export const MCP_TIMEOUT_MS = 10000;
-export const EXE_TIMEOUT_MS = 30000;
+// 2026-09-16 VM S01 실측(4 GB/2 vCPU 손님, 세팅 직후 Defender 가 새 파일을 훑는 중):
+// MCP initialize 10초 → playwright·pdf-automation 이 "10초 안에 답하지 않았습니다" 로 fail,
+// exe 30초 → codex 첫 실행이 종료 코드 null(시간 초과)로 fail, 훅 문법 검사 20초 → 파워셸
+// 기동조차 못 끝내 "문법 오류()" 로 fail. 셋 다 프로그램 잘못이 아니라 느린 PC 의 첫 실행이다.
+// 검사는 "말이 통하는가"를 묻는 것이지 "빠른가"를 묻는 것이 아니므로 한도를 넉넉히 잡고,
+// 시간 초과일 때만 한 번 더 시도한다(두 번째는 캐시가 따뜻해 빠르다).
+export const MCP_TIMEOUT_MS = 60000;
+export const EXE_TIMEOUT_MS = 120000;
+export const SYNTAX_TIMEOUT_MS = 90000;
 
 // 클로드 `.claude.json` 에 우리가 명시로 적는 MCP 서버 수(T16 확정).
 // self-improve 는 플러그인이 자기 `.mcp.json` 으로 띄우므로 여기 세지 않고,
@@ -155,7 +162,11 @@ export async function checkExe(ctx) {
   const results = [];
   for (const name of names) {
     const { path: exe, via } = resolveExe(ctx, name);
-    const res = await runExe(ctx, exe, ['--version']);
+    let res = await runExe(ctx, exe, ['--version']);
+    if (res.timedOut === true || res.code === null) {
+      // 시간 초과(느린 PC 의 첫 실행) — 한 번 더. 두 번째도 넘기면 정말 못 도는 것이다.
+      res = await runExe(ctx, exe, ['--version']);
+    }
     const out = `${res.out ?? ''}${res.err ?? ''}`.trim().split(/\r?\n/)[0] ?? '';
     results.push({ name, via, ok: res.code === 0 && out.length > 0, version: out.slice(0, 80), code: res.code });
   }
@@ -329,10 +340,18 @@ export async function checkMcp(ctx, { spawn = ctx?.spawn ?? nodeSpawn, timeoutMs
   const results = [];
   for (const spec of servers) {
     const bare = spec.name.replace(/^plugin:[^:]+:/, '');
-    const res = await mcpInitialize(spec, { spawn, env: ctx.env, timeoutMs, run: ctx.run });
+    let res = await mcpInitialize(spec, { spawn, env: ctx.env, timeoutMs, run: ctx.run });
+    if (!res.ok && res.reason === 'timeout') {
+      // 느린 PC 의 첫 기동(파이썬 venv·node 첫 로드, Defender 검사)은 두 번째가 훨씬 빠르다.
+      res = await mcpInitialize(spec, { spawn, env: ctx.env, timeoutMs, run: ctx.run });
+    }
     let status = res.ok ? 'pass' : 'fail';
     let why = res.ok ? '응답함' : (res.detail ?? res.reason);
-    if (!res.ok && bare in DOCUMENT_MCP_APPS) {
+    // 2026-09-17 VM S01 6차 실측: 한도를 60초로 늘리자 한컴·오피스가 **없는** 손님에서도
+    // hwp/ppt/word 서버가 initialize 에 답해 `pass` 가 됐다. 서버가 뜨는 것과 그 프로그램이
+    // 있는 것은 다른 일이다 — 이 PC 에 그 프로그램이 없으면 답을 했든 못 했든 `pending`
+    // (사람에게 "한컴을 깔면 바로 쓴다"를 알리는 것이 이 항목의 뜻, 머리말 참조).
+    if (bare in DOCUMENT_MCP_APPS) {
       const app = DOCUMENT_MCP_APPS[bare];
       if (app && apps[app] === false) {
         status = 'pending';
@@ -431,11 +450,11 @@ export async function checkHooks(ctx) {
       continue;
     }
     if (spec.kind === 'ps1') {
-      const res = await runExe(ctx, 'powershell', ['-NoProfile', '-Command', psSyntaxCommand(file)], { timeoutMs: 20000 });
-      results.push({ name, ok: res.code === 0, why: res.code === 0 ? '문법 정상' : `문법 오류(${String(res.out || res.err).slice(0, 120)})` });
+      const res = await runExe(ctx, 'powershell', ['-NoProfile', '-Command', psSyntaxCommand(file)], { timeoutMs: SYNTAX_TIMEOUT_MS });
+      results.push({ name, ok: res.code === 0, why: res.code === 0 ? '문법 정상' : (res.code === null ? `검사 시간 초과(${SYNTAX_TIMEOUT_MS / 1000}초, 파워셸이 답하지 않음)` : `문법 오류(${String(res.out || res.err).slice(0, 120)})`) });
     } else {
-      const res = await runExe(ctx, python, ['-m', 'py_compile', file], { timeoutMs: 20000 });
-      results.push({ name, ok: res.code === 0, why: res.code === 0 ? '문법 정상' : `문법 오류(${String(res.err || res.out).slice(0, 120)})` });
+      const res = await runExe(ctx, python, ['-m', 'py_compile', file], { timeoutMs: SYNTAX_TIMEOUT_MS });
+      results.push({ name, ok: res.code === 0, why: res.code === 0 ? '문법 정상' : (res.code === null ? `검사 시간 초과(${SYNTAX_TIMEOUT_MS / 1000}초)` : `문법 오류(${String(res.err || res.out).slice(0, 120)})`) });
     }
   }
   const bad = results.filter((r) => !r.ok);
@@ -516,7 +535,8 @@ export function checkConfig(ctx) {
 export async function resolveDesktopDir(ctx, { desktopDir = null } = {}) {
   if (desktopDir) return desktopDir;
   if (ctx.desktopDir) return ctx.desktopDir;
-  const res = await runExe(ctx, 'powershell', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"], { timeoutMs: 15000 });
+  // 15초는 느린 PC 의 파워셸 기동에 모자랐다(2026-09-16 VM S01: "바탕화면 경로를 찾지 못해 목록 검사만 함").
+  const res = await runExe(ctx, 'powershell', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"], { timeoutMs: SYNTAX_TIMEOUT_MS });
   const line = String(res.out ?? '').trim().split(/\r?\n/)[0] ?? '';
   return line || null;
 }
@@ -568,10 +588,30 @@ export async function checkDesktop(ctx, opts = {}) {
     .filter(Boolean)
     .map((p) => path.resolve(p).toLowerCase());
   const fromPackage = (abs) => zipRoots.some((z) => abs.toLowerCase().startsWith(z));
+  // 2026-09-17 VM S06 실측: relay 단계가 기록한 바탕화면 바로가기(`..\Users\<계정>\Desktop\IRIS.lnk`)가
+  // "IRIS 폴더 밖 쓰기 2건"으로 잡혀 검사 6이 실패했다. 바탕화면의 IRIS 바로가기는 이 검사가
+  // 위에서 이미 **허용한** 바로 그 파일이다 — 단, **이 사용자의** 바탕화면(찾아낸 바탕화면 폴더,
+  // 또는 이 사용자 프로필 아래)에 놓인 것만이다. 다른 사용자 프로필에 쓴 것은 여전히 잘못이다.
+  // 같은 경로가 두 번 기록돼도 한 건이다.
+  const homeLower = (() => {
+    const h = ctx.env?.USERPROFILE ?? process.env.USERPROFILE ?? '';
+    return h ? path.resolve(h).toLowerCase() : null;
+  })();
+  const dirLower = dir ? path.resolve(dir).toLowerCase() : null;
+  const isAllowedShortcut = (abs) => {
+    const lower = abs.toLowerCase();
+    if (!allowed.some((a) => a.toLowerCase() === path.basename(abs).toLowerCase())) return false;
+    if (dirLower && lower.startsWith(dirLower)) return true;
+    return Boolean(homeLower && lower.startsWith(homeLower) && /[\\/]desktop[\\/]/i.test(abs));
+  };
+  const seenOutside = new Set();
   for (const stageId of SETUP_STAGE_IDS) {
     for (const p of recordedPaths(ctx.receipt?.setup?.[stageId]?.recorded)) {
       const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(root, p);
-      if (abs.toLowerCase().startsWith(rootLower) || fromPackage(abs)) continue;
+      if (abs.toLowerCase().startsWith(rootLower) || fromPackage(abs) || isAllowedShortcut(abs)) continue;
+      const key = `${stageId}:${abs.toLowerCase()}`;
+      if (seenOutside.has(key)) continue;
+      seenOutside.add(key);
       outside.push({ stage: stageId, path: relOf(root, p) });
     }
   }

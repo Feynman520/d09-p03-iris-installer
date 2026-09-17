@@ -292,8 +292,37 @@ test('venv: 설치 후에도 개수가 모자라면 E-VENV', async () => {
 
 test('venv: 핵심 모듈 임포트가 하나라도 실패하면 E-VENV', async () => {
   const base = fakeCtx('import-fail', { wheelCount: 3 });
-  const { ctx } = withRun(base, { list: [okList(0), okList(3)], venvCheck: failImportCheck('pyhwpx') });
+  const { ctx } = withRun(base, { list: [okList(0), okList(3)], venvCheck: failImportCheck('mcp') });
   await assert.rejects(() => venv.run(ctx), (e) => e.code === 'E-VENV');
+});
+
+// 2026-09-16 VM S01 실측(2.0.0): 한컴 없는 PC 에서 `import pyhwpx` 가 COM 형식
+// 라이브러리 미등록(com_error -2147319779)으로 실패해 세팅 전체가 E-VENV 로 멈췄다.
+// 한컴 없음은 checks 단계의 pending 이지 설치 실패가 아니므로 pyhwpx 는 SOFT 다.
+test('appControlBlocked: 스마트 앱 컨트롤이 .pyd 를 막은 흔적(한국어·영어)만 참', () => {
+  assert.equal(venv.appControlBlocked({ failed: [['mcp', { ok: false, error: 'DLL load failed while importing unicodedata: 애플리케이션 제어 정책에서 이 파일을 차단했습니다.' }]] }), true);
+  assert.equal(venv.appControlBlocked({ failed: [['mcp', { ok: false, error: 'DLL load failed while importing _decimal: Your organization used Windows Defender Application Control policy to block this file.' }]] }), true);
+  assert.equal(venv.appControlBlocked({ failed: [['pypdf', { ok: false, error: "No module named 'pypdf'" }]] }), false);
+  assert.equal(venv.appControlBlocked(null), false);
+});
+
+test('venv: 앱 제어 정책 차단이면 E-VENV 문구가 SAC 끄는 길을 안내한다', async () => {
+  const base = fakeCtx('import-sac', { wheelCount: 3 });
+  const blocked = { code: 0, out: `${JSON.stringify({ imports: Object.fromEntries(venv.KEY_MODULES.map((m) => [m, { ok: false, error: 'DLL load failed while importing unicodedata: 애플리케이션 제어 정책에서 이 파일을 차단했습니다.' }])), leaks: [] })}\n`, err: '' };
+  const { ctx } = withRun(base, { list: [okList(0), okList(3)], venvCheck: blocked });
+  await assert.rejects(() => venv.run(ctx), (e) => e.code === 'E-VENV' && /스마트 앱 컨트롤/.test(e.message));
+});
+
+test('venv: pyhwpx(SOFT) 임포트 실패는 E-VENV 가 아니라 기록으로 남고 세팅은 계속된다', async () => {
+  assert.deepEqual(venv.SOFT_MODULES, ['pyhwpx']);
+  const base = fakeCtx('import-soft', { wheelCount: 3 });
+  const logs = [];
+  base.log = (m) => logs.push(m);
+  const { ctx } = withRun(base, { list: [okList(0), okList(3)], venvCheck: failImportCheck('pyhwpx') });
+  const { recorded } = await venv.run(ctx);
+  assert.equal(recorded.keyModules.ok, true);
+  assert.equal(recorded.keyModules.soft.pyhwpx.ok, false);
+  assert.ok(logs.some((l) => l.includes('pyhwpx') && l.includes('pending')), 'pyhwpx 를 건너뛴 사실을 로그에 남긴다');
 });
 
 // ---------------------------------------------------------------------------

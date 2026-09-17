@@ -848,7 +848,10 @@ export function startServer({
         state.online.stage = 'claude';
         state.online.claude = { state: 'downloading', source: null, code: null };
         save();
-        const got = await onlineRunner.installClaude({ root, nodeDir: state.nodeDir });
+        // `log` 를 넘긴다 — 2026-09-16 VM S01 에서 출처 1·2 가 왜 실패했는지 어디에도
+        // 남지 않아(기본 log 는 빈 함수) 원인을 되짚을 수 없었다.
+        const got = await onlineRunner.installClaude({ root, nodeDir: state.nodeDir, log });
+        if (!got?.ok) log(`online claude failed: ${JSON.stringify(got?.detail ?? got?.message ?? null)}`);
         state.online.claude = {
           state: got?.ok ? 'done' : 'failed',
           source: got?.source ?? null,

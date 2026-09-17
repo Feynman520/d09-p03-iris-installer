@@ -393,13 +393,38 @@ export async function installClaude({
   // CVE-2024-27980 fix), so a .cmd is run through cmd.exe the way the rest of
   // the installer does it.
   const comspec = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
+  // 2026-09-16 VM S01 실측(2 vCPU, 깨끗한 Windows 11): 갓 내려받은 230MB claude.exe 의
+  // **첫** 실행은 Defender 실시간 검사 때문에 몇 분이 걸릴 수 있다(같은 손님에서 두 번째
+  // 실행은 35초). 첫 실행이 제한 시간에 걸리면 출처 1 전체가 "실패"로 적히고 npm 폴백까지
+  // 같은 이유로 넘어져 E-ONLINE-CLAUDE 가 났다. 그래서 제한을 5분으로 늘리고, 시간 초과일
+  // 때만 한 번 더 시도한다(두 번째는 검사가 끝난 뒤라 빠르다).
+  // 같은 날 두 번째 실측(log 를 연결한 뒤): 실제 사유는 시간 초과가 아니라 **`spawn EBUSY`** —
+  // 방금 받아 이름을 바꾼 230MB claude.exe 를 Defender 가 아직 훑고 있어 잠시 실행이 막힌다.
+  // 그래서 EBUSY/EACCES/EPERM 이면 15초 쉬고 다시(최대 3분), 시간 초과면 한 번만 더 시도한다.
+  const PROBE_TIMEOUT_MS = 300000;
+  const PROBE_BUSY_WAIT_MS = 15000;
+  const PROBE_MAX_ATTEMPTS = 12;
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
   const probeVersion = async (exe, wanted = version) => {
-    const isCmd = /\.(cmd|bat)$/i.test(exe);
-    const r = isCmd
-      ? await runFn(comspec, ['/d', '/s', '/c', `"${exe}" --version`], { timeoutMs: 120000 })
-      : await runFn(exe, ['--version'], { timeoutMs: 120000 });
-    const out = `${r.out ?? ''}${r.err ?? ''}`;
-    return { ok: r.code === 0 && out.includes(wanted), out: out.slice(0, 200), code: r.code };
+    // 2026-09-17 VM S01 5차 실측: .cmd 를 여기서 한 번 더 cmd.exe 로 감싸면 Node 가 인자를
+    // 다시 따옴표로 싸서 cmd 가 `'"C:\...\claude.cmd"'은(는) … 명령이 아닙니다` 로 거절한다
+    // (npm 폴백이 설치까지 성공하고 확인에서 넘어졌다). `lib/run.mjs` 가 .cmd/.bat 을
+    // 스스로 `cmd /d /s /c` + windowsVerbatimArguments 로 돌리므로 그대로 넘긴다.
+    let last = null;
+    let timeoutRetried = false;
+    for (let attempt = 1; attempt <= PROBE_MAX_ATTEMPTS; attempt += 1) {
+      const r = await runFn(exe, ['--version'], { timeoutMs: PROBE_TIMEOUT_MS });
+      const out = `${r.out ?? ''}${r.err ?? ''}`;
+      last = { ok: r.code === 0 && out.includes(wanted), out: out.slice(0, 200), code: r.code, attempts: attempt };
+      if (last.ok || r.code === 0) break;
+      const busy = /\b(EBUSY|EACCES|EPERM)\b/.test(out);
+      const timedOut = r.timedOut === true || r.code === null;
+      log(`claude --version probe attempt ${attempt} failed (code=${r.code}${timedOut ? ', timed out' : ''}): ${out.slice(0, 120).replace(/\s+/g, ' ')}`);
+      if (busy) { await sleep(PROBE_BUSY_WAIT_MS); continue; }
+      if (timedOut && !timeoutRetried) { timeoutRetried = true; continue; }
+      break;
+    }
+    return last;
   };
 
   // --- already there and already the locked version -> nothing to download ---

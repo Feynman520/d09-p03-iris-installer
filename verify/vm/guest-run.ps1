@@ -58,12 +58,31 @@ Say ("entry point: " + $entry.Name)
 # --wait-stdout pipes, VBoxManage keeps waiting for a pipe that never closes --
 # the whole scenario hangs with no output (measured 2026-09-15: nine minutes
 # with the installer screen already sitting there).
+#
+# Do NOT use Start-Process -Wait here. In Windows PowerShell 5.1, -Wait waits
+# for the process AND ALL ITS DESCENDANTS. The entry point leaves the installer
+# server (node.exe) and a browser running as descendants, so -Wait never
+# returns and the driver below never starts (measured 2026-09-16: every VM
+# scenario sat 30+ minutes at "[install]" with the wizard parked on the
+# subscription screen and no driver process alive). WaitForExit() on the
+# process object waits for that one process only.
+#
+# And do NOT use -RedirectStandardOutput/-RedirectStandardError for the entry
+# point either. Those switch Start-Process to CreateProcess with handle
+# inheritance ON, so the detached server (and the browser) inherit a copy of
+# VBoxManage's own --wait-stdout pipe even though their stdout points at a
+# file; VBoxManage then waits for a pipe that never closes, long after the
+# driver has written its result (measured 2026-09-16 19:51-20:00: driver done,
+# guest-run.ps1 gone, VBoxManage still "waiting"). Without those switches
+# PowerShell uses ShellExecute, which inherits nothing; the redirection to
+# files is done by cmd.exe itself.
 $entryOut = Join-Path $env:TEMP 'iris-entry-out.log'
 $entryErr = Join-Path $env:TEMP 'iris-entry-err.log'
-$proc = Start-Process -FilePath $env:ComSpec `
-  -ArgumentList @('/c', ('"' + $entry.FullName + '"')) `
-  -WorkingDirectory $Dir -PassThru -Wait -WindowStyle Hidden `
-  -RedirectStandardOutput $entryOut -RedirectStandardError $entryErr
+$entryArgs = '/d /s /c ""' + $entry.FullName + '" > "' + $entryOut + '" 2> "' + $entryErr + '""'
+$proc = Start-Process -FilePath $env:ComSpec -ArgumentList $entryArgs `
+  -WorkingDirectory $Dir -PassThru -WindowStyle Hidden
+$entryDeadlineMs = 15 * 60 * 1000
+if (-not $proc.WaitForExit($entryDeadlineMs)) { throw "entry point did not return within 15 min" }
 Say ("entry exit code: " + $proc.ExitCode)
 
 $base = "http://127.0.0.1:$Port"
@@ -85,7 +104,24 @@ if (-not (Test-Path -LiteralPath $nodeExe)) { throw "bundled node.exe not found 
 $driveArgs = @($Driver, '--url', $base, '--out', $Out, '--subscriptions', $Subscriptions)
 if ($SkipOnline) { $driveArgs += '--skip-online' }
 if ($Legacy) { $driveArgs += '--legacy' }
-& $nodeExe $driveArgs
-$code = $LASTEXITCODE
+# The driver's own stdout/stderr go to files first and are echoed afterwards,
+# so a crash that never reaches its result file still leaves a trace next to
+# the result (2026-09-16: the first S01 attempts left nothing to read at all).
+$driveOut = Join-Path $env:TEMP 'iris-drive-out.log'
+$driveErr = Join-Path $env:TEMP 'iris-drive-err.log'
+$dp = Start-Process -FilePath $nodeExe -ArgumentList $driveArgs `
+  -WorkingDirectory $Dir -PassThru -NoNewWindow `
+  -RedirectStandardOutput $driveOut -RedirectStandardError $driveErr
+# PS 5.1 quirk: ExitCode is $null after WaitForExit() unless the process handle
+# was touched while the process was still alive (measured 2026-09-16 21:35:
+# "guest-drive exit code:" came out empty and `exit` turned that into 0).
+$null = $dp.Handle
+$dp.WaitForExit()
+$code = $dp.ExitCode
+if ($null -eq $code) { $code = 99 }
+Say "--- guest-drive stdout ---"
+if (Test-Path -LiteralPath $driveOut) { Get-Content -LiteralPath $driveOut | ForEach-Object { Write-Host $_ } }
+Say "--- guest-drive stderr ---"
+if (Test-Path -LiteralPath $driveErr) { Get-Content -LiteralPath $driveErr | ForEach-Object { Write-Host $_ } }
 Say ("guest-drive exit code: " + $code)
 exit $code

@@ -64,9 +64,11 @@ const KINDS = new Set(['url', 'npm-prefix', 'claude-release', 'git', 'wheelhouse
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX40 = /^[0-9a-f]{40}$/;
 
-test('lock v2: schema 2, package.version 2.0.0, no guideVersion, no guides part', () => {
+test('lock v2: schema 2, package.version 2.x, no guideVersion, no guides part', () => {
   assert.equal(lock.schema, 2);
-  assert.equal(lock.package.version, '2.0.0');
+  // 2.0.1(2026-09-16, VM S01 결함 수정)부터는 정확한 값 대신 2.x 만 고정한다 -- 패치 판마다
+  // 이 줄을 고치는 것은 시험이 아니라 잡음이었다.
+  assert.match(lock.package.version, /^2\.\d+\.\d+$/);
   assert.ok(!('guideVersion' in lock.package), 'package.guideVersion is a v1 field -- the setup guides left the zip (D2-03)');
   assert.ok(!('guides' in lock.parts), 'the guides part is a v1 part -- removed in v2');
   assert.ok(parts.length >= 30, `expected the v1 13 parts plus the bundled tools, got ${parts.length}`);

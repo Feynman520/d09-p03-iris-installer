@@ -74,6 +74,15 @@ export function underRoot(root, rel) {
 
 export const KEY_MODULES = ['mcp', 'pyhwpx', 'pypdf', 'pypdfium2', 'PIL'];
 
+// 2026-09-16 VM S01 실측(2.0.0, 한컴 없는 깨끗한 Windows 11): `import pyhwpx` 는
+// 불러오는 순간 한/글의 COM 형식 라이브러리를 찾는다(win32com gencache). 한컴이 없는
+// PC — 곧 새 PC 대부분 — 에서는 `pywintypes.com_error(-2147319779, '라이브러리가
+// 등록되지 않았습니다')` 로 import 자체가 실패했고, 그 하나 때문에 세팅 전체가 44% 에서
+// E-VENV 로 멈췄다. 한컴 없음은 설계상 checks 단계가 `pending`(대기)으로 판정할 일이지
+// 설치 실패가 아니다(setup/checks.mjs 머리말). 그래서 이 모듈의 import 실패는 **기록만**
+// 하고 넘어간다. 이 개발 PC 는 한컴이 있어 S08 이 통과했고, 그래서 배포 전에 못 잡았다.
+export const SOFT_MODULES = ['pyhwpx'];
+
 export function isLeakAuditExempt(name) {
   return name === '__main__' || name === '__mp_main__' || name.startsWith('win32com.gen_py');
 }
@@ -213,6 +222,13 @@ export function buildImportCheckScript(root, modules) {
   ].join('\n');
 }
 
+// import 실패 상세에 "앱 제어 정책이 차단" 흔적이 있는가 (한국어·영어 윈도 둘 다).
+export function appControlBlocked(detail) {
+  const text = JSON.stringify(detail ?? '');
+  return /DLL load failed/i.test(text)
+    && /(애플리케이션 제어 정책|application control policy|앱 제어 정책|Smart App Control)/i.test(text);
+}
+
 async function runImportAndLeakCheck(ctx, venvPython, root) {
   const script = buildImportCheckScript(root, KEY_MODULES);
   const r = await runLogged(ctx, venvPython, ['-c', script]);
@@ -223,9 +239,11 @@ async function runImportAndLeakCheck(ctx, venvPython, root) {
   } catch (e) {
     return { ok: false, leaks: [], detail: { parseError: e.message, out: r.out } };
   }
-  const failed = Object.entries(parsed.imports ?? {}).filter(([, v]) => !v?.ok);
-  if (failed.length > 0) return { ok: false, leaks: parsed.leaks ?? [], detail: { failed } };
-  return { ok: true, leaks: parsed.leaks ?? [], imports: parsed.imports };
+  const entries = Object.entries(parsed.imports ?? {});
+  const failed = entries.filter(([m, v]) => !v?.ok && !SOFT_MODULES.includes(m));
+  const soft = Object.fromEntries(entries.filter(([m, v]) => !v?.ok && SOFT_MODULES.includes(m)));
+  if (failed.length > 0) return { ok: false, leaks: parsed.leaks ?? [], detail: { failed, soft } };
+  return { ok: true, leaks: parsed.leaks ?? [], imports: parsed.imports, soft };
 }
 
 // PyYAML 은 순수 파이썬 `yaml` 뒤에 컴파일된 `_yaml` 확장을 함께 물어올 수
@@ -370,14 +388,34 @@ export async function run(ctx) {
 
   // 2) venv 안 5개 핵심 모듈 임포트 + 격리 감사(한 번의 -c 로 함께)
   const importT0 = Date.now();
-  const importCheck = await runImportAndLeakCheck(ctx, parts.venvPython, root);
+  // 2026-09-17 VM S01 5차 실측: 같은 손님·같은 부품인데 4차에서는 통과한 import 검사가
+  // 5차에서는 실패했다(상세가 로그에 없어 무엇이 넘어졌는지도 몰랐다). 갓 풀어 놓은
+  // .pyd/.dll 을 Defender 가 훑는 동안 잠깐 못 여는 일이 있다(`mcp` import 만 29초).
+  // 그래서 ⓐ 실패 상세를 반드시 로그에 남기고 ⓑ 앱 제어 정책 차단이 아니면 30초 뒤
+  // 두 번까지 다시 검사한다(세 번째도 실패면 진짜 실패).
+  let importCheck = await runImportAndLeakCheck(ctx, parts.venvPython, root);
+  for (let attempt = 1; !importCheck.ok && attempt <= 2 && !appControlBlocked(importCheck.detail); attempt += 1) {
+    ctx.log(`[venv] import 검사 실패(${attempt}/3) — 30초 뒤 다시: ${JSON.stringify(importCheck.detail).slice(0, 600)}`);
+    await new Promise((res) => setTimeout(res, 30000));
+    importCheck = await runImportAndLeakCheck(ctx, parts.venvPython, root);
+  }
   if (!importCheck.ok) {
-    fail('문서 자동화 venv 에서 핵심 모듈을 불러오지 못했습니다.', importCheck.detail);
+    ctx.log(`[venv] import 검사 최종 실패: ${JSON.stringify(importCheck.detail).slice(0, 1500)}`);
+    // 2026-09-16 실측: 스마트 앱 컨트롤(코드 무결성)이 동봉 파이썬의 .pyd 를 막으면 모든 모듈이
+    // `DLL load failed … 애플리케이션 제어 정책에서 이 파일을 차단했습니다` 로 함께 넘어진다.
+    // 그때 "핵심 모듈을 불러오지 못했습니다" 만으로는 사람이 무엇을 해야 하는지 알 수 없다.
+    fail(appControlBlocked(importCheck.detail)
+      ? '스마트 앱 컨트롤(앱 제어 정책)이 동봉 파이썬 부품을 차단해 문서 자동화 venv 를 만들지 못했습니다. 설정 › 개인 정보 및 보안 › Windows 보안 › 앱 및 브라우저 컨트롤 › 스마트 앱 컨트롤 설정을 「끄기」로 바꾼 뒤 「다시 시도」를 눌러 주세요.'
+      : '문서 자동화 venv 에서 핵심 모듈을 불러오지 못했습니다.', importCheck.detail);
   }
   if (importCheck.leaks.length > 0) {
     fail('문서 자동화 venv 가 영혼 밖 다른 파이썬을 물어와 격리가 깨졌습니다.', { leaks: importCheck.leaks });
   }
-  recorded.keyModules = { modules: KEY_MODULES, ok: true };
+  const soft = importCheck.soft ?? {};
+  for (const [m, v] of Object.entries(soft)) {
+    ctx.log(`[venv] ${m} 은(는) 불러오지 못했지만 설치는 계속합니다(이 PC 에 그 모듈이 기다리는 프로그램이 없을 때 정상 — checks 단계가 pending 으로 판정): ${String(v?.error ?? '').slice(0, 200)}`);
+  }
+  recorded.keyModules = { modules: KEY_MODULES, ok: true, soft };
   recorded.isolationCheck.venvLeaks = importCheck.leaks;
   recorded.durations.venvImportCheckMs = Date.now() - importT0;
 

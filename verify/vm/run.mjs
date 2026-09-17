@@ -525,7 +525,8 @@ export function parseArgs(argv) {
     // 2026-09-15 실측: 2 vCPU VM 에서 설치 한 판이 60분을 넘겼다(그 판은 여기서
     // 잘려 증거를 못 남겼다). 손님 쪽 운전기의 최대 대기(서버 5 + 세팅 45 + 온라인 20
     // = 70분)보다 **길어야** 시험대가 설치기보다 먼저 포기하지 않는다.
-    bootWaitMs: 15 * 60 * 1000, installTimeoutMs: 100 * 60 * 1000,
+    // 2026-09-16 실측: 4 GB/2 vCPU 손님에서 세팅 45분 + 온라인 10분+ → 한 시나리오의 install 이 60분을 넘는다.
+    bootWaitMs: 15 * 60 * 1000, installTimeoutMs: 180 * 60 * 1000,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -667,7 +668,26 @@ export async function main(argv = process.argv.slice(2), { vbox = null, env = pr
     // 안의 설치는 계속 돌아 시나리오가 통째로 넘어졌다. 단계 이름을 여기 적는 것을
     // 잊으면 같은 일이 또 난다 -- 그래서 목록을 한곳에 둔다.
     const timeout = LONG_PHASES.has(step.phase) ? opts.installTimeoutMs : 10 * 60 * 1000;
-    const r = V(step.args, { allowFail, timeout });
+    let r;
+    if (step.phase.startsWith('copy')) {
+      // 손님이 부팅 직후 디스크로 바쁘면(첫 부팅 작업·Defender) 383MB zip 의 copyto 가
+      // 64KB 쓰기에서 VERR_TIMEOUT 으로 넘어진다(2026-09-16 실측, 손님 제어 응답 2분 뒤).
+      // 복사 단계는 세 번까지 다시 시도한다. 오류 문구에 비밀번호가 든 전체 인자를
+      // 싣지 않는다(makeVbox 의 기본 오류는 인자를 통째로 붙인다).
+      for (let attempt = 1; ; attempt++) {
+        r = V(step.args, { allowFail: true, timeout });
+        if (r.code === 0) break;
+        const first = String(r.err ?? '').split('\n')[0];
+        if (attempt >= 3) {
+          if (!allowFail) throw new Error(`[${step.phase}] ${attempt}번 실패: ${first}`);
+          break;
+        }
+        log(`[${step.phase}] 실패(${attempt}/3) — 45초 뒤 다시: ${first}`);
+        await new Promise((res) => setTimeout(res, 45 * 1000));
+      }
+    } else {
+      r = V(step.args, { allowFail, timeout });
+    }
     if (step.phase === 'pre-stop' || step.phase === 'restore' || step.phase === 'snapshot-stop') {
       const st = await settleStopped();
       log(`[${step.phase}] VM 상태 ${st}`);

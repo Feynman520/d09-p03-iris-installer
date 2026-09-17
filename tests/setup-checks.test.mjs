@@ -137,6 +137,22 @@ test('검사2: 서버 하나가 답하지 않으면 실패', async () => {
   assert.match(c.detail, /playwright/);
 });
 
+// 2026-09-17 VM S01 6차 실측: 한컴 없는 손님에서 hwp 서버가 initialize 에 **답했는데도** 사람에게는
+// "한컴을 깔면 쓴다"가 맞는 말이다. 답을 했든 못 했든 프로그램이 없으면 pending.
+test('검사2: 문서 MCP 가 initialize 에 답해도 그 프로그램이 없으면 pass 가 아니라 pending', async () => {
+  const root = withServers(newRoot('mcp-doc-answers'), {
+    'hwp-automation': { command: 'C:\\t\\python.exe', args: ['server.py'] },
+    'pdf-automation': { command: 'C:\\t\\python.exe', args: ['server.py'] },
+  });
+  const ctx = ctxFor(root, { precheck: { recorded: { edge: { present: true }, office: false, hancom: false } } });
+  const c = await checkMcp(ctx, { spawn: fakeSpawn({}) });
+  assert.equal(c.status, 'pending');
+  const hwp = c.results.find((r) => r.name.endsWith('hwp-automation'));
+  assert.equal(hwp.status, 'pending');
+  const pdf = c.results.find((r) => r.name.endsWith('pdf-automation'));
+  assert.equal(pdf.status, 'pass', 'pdf 는 프로그램이 필요 없으니 답하면 pass');
+});
+
 test('검사2: 문서 MCP 는 오피스·한컴이 없으면 실패가 아니라 대기', async () => {
   const root = withServers(newRoot('mcp-doc'), {
     'hwp-automation': { command: 'C:\\t\\python.exe', args: ['server.py'] },
@@ -327,6 +343,27 @@ test('검사6: 단계 기록에 루트 밖 경로가 있으면 실패', async ()
   assert.equal(c.status, 'fail');
   assert.equal(c.outside.length, 1);
   assert.equal(c.outside[0].stage, 'relay');
+});
+
+// 2026-09-17 VM S06 실측: relay 가 기록한 이 사용자 바탕화면의 IRIS.lnk(허용 파일)가
+// "IRIS 폴더 밖 쓰기 2건"으로 잡혀 검사 6이 실패했다. 이 사용자 바탕화면의 허용 파일은 정상.
+test('검사6: 이 사용자 바탕화면의 허용 바로가기(IRIS.lnk)는 루트 밖 쓰기가 아니고, 두 번 기록돼도 한 건', async () => {
+  const root = newRoot('own-desktop-lnk');
+  const desktop = path.join(tmp, `desk-${seq}`);
+  fs.mkdirSync(desktop, { recursive: true });
+  const lnk = path.join(desktop, 'IRIS.lnk');
+  const ctx = ctxFor(root, {
+    desktopDir: desktop,
+    receipt: {
+      schema: 2,
+      setup: {
+        relay: { startedAt: new Date().toISOString(), recorded: { files: { created: [lnk, lnk] } } },
+      },
+    },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'pass', `허용 바로가기는 정상이어야 한다: ${c.detail}`);
+  assert.equal(c.outside.length, 0);
 });
 
 test('검사6: 꾸러미(zip) 안 원본 경로는 "루트 밖 쓰기"로 세지 않는다', async () => {

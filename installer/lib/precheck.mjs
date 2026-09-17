@@ -559,6 +559,13 @@ export async function precheck({ timeoutMs = 15000, deps = {} } = {}) {
   if (!browser.ok) {
     pushWarning(warnings, 'browser', '기본 브라우저 설정을 확인하지 못했습니다. 없으면 Edge로 엽니다.');
   }
+  // 2026-09-16 실측(개발 PC, SAC 상태 1=켜짐): 전날까지 멀쩡히 돌던 동봉 파이썬의 확장 파일
+  // (_decimal·_elementtree·_wmi·unicodedata .pyd)을 코드 무결성이 "Enterprise 서명 수준 미달"로
+  // 막아(이벤트 3077) venv 단계가 E-VENV 로 멈췄다. 평판 기반이라 같은 파일이 어제는 되고 오늘은
+  // 안 될 수 있다. 막지는 않되(설치 자체는 대개 됨), 무슨 일이 생기면 무엇을 끌지 미리 알려 둔다.
+  if (sac && sac.state === 1) {
+    pushWarning(warnings, 'sac-on', '스마트 앱 컨트롤(SAC)이 켜져 있습니다. 서명이 없는 동봉 부품(파이썬 문서 도구 등)이 차단돼 세팅이 「venv」 단계에서 멈출 수 있습니다. 그러면 설정 › 개인 정보 및 보안 › Windows 보안 › 앱 및 브라우저 컨트롤 › 스마트 앱 컨트롤 설정을 「끄기」로 바꾼 뒤 다시 실행하세요(한 번 끄면 다시 켤 수 없습니다).');
+  }
   if (!edge.present) {
     pushWarning(warnings, 'edge', 'Edge 브라우저를 찾지 못했습니다. 브라우저 조작 기능은 설치 후 대기 상태로 남습니다.');
   }

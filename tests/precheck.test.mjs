@@ -573,6 +573,21 @@ test('checkSac: REG_DWORD parsed -> state 1 (on)', async () => {
   assert.equal(r.state, 1);
 });
 
+// 2026-09-16 실측: SAC 켜짐(1)인 개발 PC 에서 코드 무결성이 동봉 파이썬 .pyd 를 막아 venv 가
+// E-VENV 로 멈췄다. 켜짐이면 막지는 않되 미리 알린다(warning `sac-on`). 평가(2)·꺼짐(0)은 조용.
+test('precheck: SAC 켜짐(1) -> warning sac-on 하나, blocker 없음; 평가(2)면 아무 말 없음', async () => {
+  const sacRun = (state) => async (exe, args) => (args.includes('VerifiedAndReputablePolicyState')
+    ? { code: 0, out: `HKEY_LOCAL_MACHINE\\...\\Policy\n    VerifiedAndReputablePolicyState    REG_DWORD    0x${state}` }
+    : { code: 0, out: '' });
+  const on = await precheck({ timeoutMs: 1000, deps: { runFn: sacRun(1) } });
+  assert.ok(!on.blockers.find((b) => b.id.startsWith('sac')), 'SAC 는 막지 않는다');
+  const w = on.warnings.find((x) => x.id === 'sac-on');
+  assert.ok(w, 'sac-on warning 이 있어야 한다');
+  assert.ok(/스마트 앱 컨트롤/.test(w.message) && /끄기/.test(w.message), '끄는 길을 안내한다');
+  const evalMode = await precheck({ timeoutMs: 1000, deps: { runFn: sacRun(2) } });
+  assert.ok(!evalMode.warnings.find((x) => x.id === 'sac-on'));
+});
+
 test('checkSac: key not found -> state 0, never a blocker/warning', async () => {
   const r = await checkSac(1000, { runFn: async () => ({ code: 1, out: '' }) });
   assert.equal(r.state, 0);
