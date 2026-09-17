@@ -127,7 +127,18 @@ function judgeBaseline(ev) {
   }
   const fail = ev.diagnostics.checks?.summary?.fail ?? -1;
   if (fail !== 0) return { ok: false, reason: `검사 실패 ${fail}건` };
-  return { ok: true, reason: `9단계 완료 · 검사 실패 0건 · 대기 ${ev.diagnostics.checks?.summary?.pending ?? 0}건` };
+  // 2026-09-17(S13 몫): 운전기가 로그인 없이 중계기 시작을 밟은 결과. 있으면 반드시 통과해야 한다 —
+  // 2.0.4~2.0.8 이 실제 PC 의 ⑦에서만 터진 결함(proxy.port 누락·시작 스크립트 파이프 대기)을 잡는 자리.
+  const relay = judgeRelayProbe(ev);
+  if (!relay.ok) return relay;
+  return { ok: true, reason: `9단계 완료 · 검사 실패 0건 · 대기 ${ev.diagnostics.checks?.summary?.pending ?? 0}건${relay.reason ? ` · ${relay.reason}` : ''}` };
+}
+
+export function judgeRelayProbe(ev) {
+  const p = ev?.drive?.relayProbe;
+  if (!p) return { ok: true, reason: '' }; // 운전기가 그 단계까지 못 갔거나 옛 운전기 — 다른 판정이 이유를 말한다
+  if (p.ok === true) return { ok: true, reason: `중계기 시작 OK(계정 ${p.accounts ?? 0})` };
+  return { ok: false, reason: `중계기 시작 실패: ${p.message ?? p.code ?? '까닭 없음'}` };
 }
 
 // S05 -- SAC 켜짐. 잡는 것은 "설치가 되는가"가 아니라 "막혔을 때 안내가 실효성이

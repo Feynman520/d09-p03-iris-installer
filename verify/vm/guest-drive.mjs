@@ -270,7 +270,28 @@ async function main() {
     note('online-start', { status: onlineStarted.status });
     result.online = await waitForOnlineStop();
     note('online-stop', { stage: result.online?.stage, net: result.online?.net ?? null, claude: result.online?.claude ?? null });
-    // 🔴 여기서 끝. `/api/online/login` 은 절대 부르지 않는다.
+    // 🔴 `/api/online/login` 은 절대 부르지 않는다(사람만 할 수 있는 구독 로그인).
+    // 2026-09-17 추가(S13 몫): 로그인 없이도 **중계기 시작**은 밟는다 — 2.0.4~2.0.8 이 실제 PC 의
+    // ⑦에서만 세 번 연속 터진 까닭이 바로 이 단계를 시험이 한 번도 밟지 않아서였다(중계기 설정
+    // proxy.port 누락, 시작 스크립트 파이프 대기). `/api/online/relay` 는 로그인 상태를 묻지 않고
+    // 중계기를 띄워 건강 확인까지 한다. 오프라인(net 차단)에서도 로컬 중계기는 뜰 수 있어 시도한다.
+    try {
+      const relay = await post('/api/online/relay');
+      const body = await relay.json().catch(() => ({}));
+      const status = await getJson('/api/online/status').catch(() => null);
+      result.relayProbe = {
+        status: relay.status,
+        ok: body?.ok === true,
+        code: body?.code ?? null,
+        message: body?.message ?? status?.relay?.message ?? null,
+        detail: status?.relay?.detail ?? null,
+        accounts: status?.relay?.accounts ?? null,
+      };
+      note('relay-probe', { ok: result.relayProbe.ok, code: result.relayProbe.code, message: result.relayProbe.message });
+    } catch (e) {
+      result.relayProbe = { status: null, ok: false, code: 'E-PROBE', message: String(e?.message ?? e), detail: null };
+      note('relay-probe', { ok: false, error: String(e?.message ?? e) });
+    }
   }
 
   try { result.report = await getJson('/api/report'); } catch (e) { result.errors.push(`report: ${String(e?.message ?? e)}`); }

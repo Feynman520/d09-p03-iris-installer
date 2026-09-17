@@ -371,6 +371,15 @@ test('the scenario table covers S01..S11 and matches 설계-v2 10절 placement',
   }
 });
 
+test('judgeRelayProbe: 운전기의 중계기 시작 결과가 있으면 실패는 곧 시나리오 실패다 (S13 몫, 2026-09-17)', async () => {
+  const { judgeRelayProbe } = await import('../verify/vm/run.mjs');
+  assert.deepEqual(judgeRelayProbe({}), { ok: true, reason: '' }, '옛 운전기·못 간 경우는 다른 판정이 말한다');
+  assert.deepEqual(judgeRelayProbe({ drive: { relayProbe: { ok: true, accounts: 0 } } }), { ok: true, reason: '중계기 시작 OK(계정 0)' });
+  const bad = judgeRelayProbe({ drive: { relayProbe: { ok: false, code: 'E-ONLINE-RELAY', message: '중계기를 시작하지 못했습니다 — 포트 3456 에서 답하지 않습니다.' } } });
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /중계기 시작 실패: 중계기를 시작하지 못했습니다/);
+});
+
 test('S03 runs the installer as a standard user out of the shared public folder', () => {
   const plan = scenarioPlan('S03', PLAN_OPTS);
   const account = ACCOUNT_NAMES.s03;
