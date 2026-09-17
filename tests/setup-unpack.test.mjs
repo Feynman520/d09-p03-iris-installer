@@ -263,13 +263,20 @@ test('unpack: 옛 사본을 .prev 로 옮기지 못하면(다른 프로그램이
   const ctx2 = makeCtx('aside', { built: v2, root: ctx.root });
   ctx2.verifiers = passAll(v2.lock);
   ctx2.preserveAside = () => { const e = new Error('EPERM: operation not permitted, rename'); e.code = 'EPERM'; throw e; };
+  // 2026-09-17: 누가 붙잡았는지 — 우리 프로그램(list)은 없고 탐색기(files, Restart Manager)가 열어 둔 경우.
+  ctx2.processes = {
+    list: async () => [],
+    files: async () => [{ pid: 9001, name: 'explorer.exe', app: 'Windows Explorer', exe: 'C:\\Windows\\explorer.exe', what: null }],
+  };
   await assert.rejects(unpack.run(ctx2), (err) => {
     assert.ok(isStageError(err));
     assert.equal(err.code, 'E-UNPACK');
     assert.match(err.message, /옆으로 옮기지 못했습니다\(EPERM\)/);
-    assert.match(err.message, /다시 시작한 뒤/);
+    assert.match(err.message, /다른 프로그램 explorer\.exe\(PID 9001, Windows Explorer\) 이\(가\) 그 폴더의 파일을 열어 놓았습니다/);
     assert.equal(err.detail.part, 'node');
     assert.equal(err.detail.code, 'EPERM');
+    assert.deepEqual(err.detail.holders, [], '남의 것은 닫아 줄 목록에 넣지 않는다');
+    assert.equal(err.detail.blockers.length, 1);
     return true;
   });
   // 아무것도 지우지 않았다: 옛 node 는 제자리.

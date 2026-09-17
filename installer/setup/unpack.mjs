@@ -46,7 +46,7 @@ import {
 import { writeShims, shimsDir } from '../lib/shims.mjs';
 import { portableTeamclaudeConfigPath } from '../lib/login.mjs';
 import { readReceipt, writeReceipt } from '../lib/receipt.mjs';
-import { listHolders, holdersText } from '../lib/holders.mjs';
+import { listHolders, listFileHolders, splitHolders, holdersText } from '../lib/holders.mjs';
 import * as userpathDefault from '../lib/userpath.mjs';
 
 export const id = 'unpack';
@@ -484,7 +484,10 @@ export async function run(ctx) {
     const prior = state.parts[partId];
     return !(prior?.verified && sameIdentity(prior.identity, partIdentity(ctx, partId)) && fs.existsSync(slot));
   });
-  const procs = ctx.processes ?? { list: (r) => listHolders(r, { run: ctx.run }) };
+  const procs = ctx.processes ?? {
+    list: (r) => listHolders(r, { run: ctx.run }),
+    files: (dir) => listFileHolders(dir, { run: ctx.run }),
+  };
   const holders = willPlace.length > 0 ? await procs.list(root) : [];
   if (holders.length > 0) {
     log(`[unpack] 설치 폴더에서 도는 우리 프로그램 ${holders.length}개: ${holdersText(holders)}`);
@@ -538,14 +541,28 @@ export async function run(ctx) {
         return aside(target);
       } catch (err) {
         const codeText = err?.code ? `(${err.code})` : '';
-        // 누가 붙잡고 있는지 한 번 더 찾아 문장에 넣는다(위 사전 검사 뒤에 새로 뜬 것일 수 있다).
-        let late = [];
-        try { late = await procs.list(root); } catch { late = []; }
-        const who = late.length ? ` 붙잡은 프로그램: ${holdersText(late)}.` : '';
+        // 누가 붙잡고 있는지 찾아 문장에 넣는다: ① 우리 폴더에서 도는 프로그램(닫아 줄 수 있음)
+        // ② 그 폴더의 파일을 연 **어떤** 프로그램이든(Restart Manager; 탐색기·백신·동기화 도구 —
+        //    사람이 닫아야 함). 2026-09-17 실측: 재부팅 뒤에도 EBUSY 인데 ①은 비어 있던 사례.
+        let ours = [];
+        let theirs = [];
+        try { ours = await procs.list(root); } catch { ours = []; }
+        try {
+          const fileHolders = typeof procs.files === 'function' ? await procs.files(target) : [];
+          const split = splitHolders(root, fileHolders);
+          const seen = new Set(ours.map((h) => h.pid));
+          for (const h of split.ours) if (!seen.has(h.pid)) ours.push(h);
+          theirs = split.theirs;
+        } catch { theirs = []; }
+        const who = [
+          ours.length ? `IRIS 프로그램 ${holdersText(ours)} 이(가) 돌고 있습니다(「IRIS 프로그램 닫고 다시 시도」).` : '',
+          theirs.length ? `다른 프로그램 ${holdersText(theirs)} 이(가) 그 폴더의 파일을 열어 놓았습니다 — 그 프로그램을 닫은 뒤 「다시 시도」를 눌러 주세요.` : '',
+          !ours.length && !theirs.length ? '그 폴더를 탐색기 창으로 열어 두었다면 닫고, 백신이 검사 중이면 잠시 뒤 「다시 시도」를 눌러 주세요. 그래도 같으면 PC 를 다시 시작한 뒤 다시 시도해 주세요.' : '',
+        ].filter(Boolean).join(' ');
         throw new StageError(
           'E-UNPACK',
-          `옛 부품 폴더 "${rel(target)}" 을(를) 옆으로 옮기지 못했습니다${codeText}.${who} 그 폴더를 쓰는 프로그램(IRIS 창·터미널·백신)을 닫거나 PC 를 다시 시작한 뒤 「다시 시도」를 눌러 주세요.`,
-          { part: partId, slot: rel(target), error: String(err?.message ?? err), code: err?.code ?? null, holders: late },
+          `옛 부품 폴더 "${rel(target)}" 을(를) 옆으로 옮기지 못했습니다${codeText}. ${who}`,
+          { part: partId, slot: rel(target), error: String(err?.message ?? err), code: err?.code ?? null, holders: ours, blockers: theirs },
         );
       }
     };

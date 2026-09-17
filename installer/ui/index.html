@@ -1007,10 +1007,14 @@ function renderSetup(s) {
     // 설치 폴더에서 도는 IRIS 프로그램이 부품을 붙잡고 있을 때(2026-09-17 실제 사용자 실측: 한도 화면
     // 서버가 teamclaude-dash 를 잡아 EBUSY) — 무엇인지 보여 주고 「닫고 다시 시도」를 내민다.
     const holders = Array.isArray(st.error.holders) ? st.error.holders : [];
-    const holderHtml = holders.length
+    const blockers = Array.isArray(st.error.blockers) ? st.error.blockers : [];
+    const holderHtml = (holders.length
       ? '<br><b>실행 중인 IRIS 프로그램</b>: ' + esc(holders.map((h) => (h.name || '?') + ' (PID ' + h.pid + (h.what ? ', ' + h.what : '') + ')').join(' · ')) +
         '<br>「IRIS 프로그램 닫고 다시 시도」를 누르면 <b>이 목록만</b> 닫고 이어서 합니다(다른 프로그램은 건드리지 않습니다).'
-      : '';
+      : '') + (blockers.length
+      ? '<br><b>그 폴더의 파일을 열어 둔 다른 프로그램</b>: ' + esc(blockers.map((h) => (h.name || h.app || '?') + ' (PID ' + h.pid + (h.app && h.name ? ', ' + h.app : '') + ')').join(' · ')) +
+        '<br>설치기는 남의 프로그램을 닫지 않습니다 — 그 프로그램(창)을 직접 닫은 뒤 「다시 시도」를 눌러 주세요.'
+      : '');
     note('setup-note', '<b>' + esc(SETUP_STAGES.find((p) => p[0] === st.stage) ? SETUP_STAGES.find((p) => p[0] === st.stage)[1] : st.stage) + '</b>에서 멈췄습니다' +
       (code ? ' (' + esc(code) + ')' : '') + '.<br>' + esc(help || msg || '자세한 까닭은 기록 파일에 있습니다.') +
       (help && msg && msg !== help ? '<br><span class="dt">무슨 일: ' + esc(msg) + '</span>' : '') +

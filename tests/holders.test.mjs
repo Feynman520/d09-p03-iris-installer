@@ -37,6 +37,27 @@ test('listHolders: 목록을 못 얻으면(파워셸 실패·깨진 JSON) 빈 �
   assert.deepEqual(await listHolders(null, { run: fakeRun(ROWS) }), []);
 });
 
+test('listFileHolders: Restart Manager 스크립트의 JSON 을 읽고, splitHolders 가 우리 것/남의 것을 가른다', async () => {
+  const { listFileHolders, splitHolders } = await import('../installer/lib/holders.mjs');
+  const rows = [
+    { pid: 9001, app: 'Windows Explorer', exe: 'C:\\Windows\\explorer.exe', name: 'explorer.exe' },
+    { pid: 9002, app: 'Node.js', exe: `${TOOLS}node\\node.exe`, name: 'node.exe' },
+    { pid: process.pid, app: 'self', exe: 'x', name: 'node.exe' },
+  ];
+  const calls = [];
+  const run = async (exe, args) => { calls.push([exe, ...args]); return { code: 0, out: JSON.stringify(rows), err: '' }; };
+  const found = await listFileHolders(`${TOOLS}teamclaude-dash`, { run, script: 'X:\\file-holders.ps1' });
+  assert.deepEqual(found.map((h) => h.pid), [9001, 9002], '자기 자신은 뺀다');
+  assert.ok(calls[0].includes('-File') && calls[0].includes('X:\\file-holders.ps1') && calls[0].includes('-Path'));
+  const { ours, theirs } = splitHolders(ROOT, found);
+  assert.deepEqual(ours.map((h) => h.pid), [9002], 'tools 아래 실행 파일만 우리 것');
+  assert.deepEqual(theirs.map((h) => h.pid), [9001], '탐색기는 남의 것 — 닫지 않고 알려만 준다');
+  assert.match(holdersText(theirs), /explorer\.exe\(PID 9001, Windows Explorer\)/);
+  // 스크립트 실패·깨진 출력은 빈 목록.
+  assert.deepEqual(await listFileHolders('X:\\dir', { run: async () => ({ code: 0, out: 'oops', err: '' }), script: 'X:\\s.ps1' }), []);
+  assert.deepEqual(await listFileHolders('X:\\dir', { run: async () => ({ code: 1, out: '', err: 'no' }), script: 'X:\\s.ps1' }), []);
+});
+
 test('stopHolders: PID 하나씩 taskkill 하되, 지금도 tools 아래에서 도는 것만(다시 확인) 멈춘다', async () => {
   const calls = [];
   const run = fakeRun(ROWS, calls);

@@ -827,6 +827,8 @@ export function startServer({
           detail,
           // 설치 폴더에서 도는 우리 프로그램이 부품을 붙잡고 있으면 화면이 「닫고 다시 시도」를 내민다.
           holders: Array.isArray(failed.detail?.holders) && failed.detail.holders.length ? failed.detail.holders : null,
+          // 우리 것이 아닌 프로그램(탐색기·백신·동기화)이 파일을 열어 둔 경우 — 사람이 닫아야 한다.
+          blockers: Array.isArray(failed.detail?.blockers) && failed.detail.blockers.length ? failed.detail.blockers : null,
         };
         state.setup.percent = setupPercent(state.setup);
         log(`setup failed at ${state.setup.error.id} (${state.setup.error.code})${detail ? `: ${detail}` : ''}`);
