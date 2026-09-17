@@ -113,7 +113,8 @@ async function main() {
   }
   const files = [...o.files];
   if (o.out) {
-    for (const f of fs.readdirSync(o.out)) if (/\.zip(\.sha256)?$/.test(f)) files.push(path.join(o.out, f));
+    // zip · .sha256 · .sha256.sig(Face 업데이트기가 요구하는 공식 서명) 셋 다 — 서명이 빠지면 업데이트가 거절된다(2026-09-18 실측).
+    for (const f of fs.readdirSync(o.out)) if (/\.zip(\.sha256(\.sig)?)?$/.test(f)) files.push(path.join(o.out, f));
   }
   if (files.length === 0) throw new Error('nothing to upload (--out <dir> or --file <path>)');
   const results = [];
