@@ -1401,6 +1401,15 @@ async function restore() {
   if (target === 'locate') { runLocate(); return; }
   if (target === 'setup') {
     if (st.setup) renderSetup(st.setup);
+    // 2026-09-17: 재실행 판정으로 여기 왔는데 아직 아무것도 돌고 있지 않으면(이전 판이 멈춘 자리)
+    // 사람이 누를 단추가 있어야 한다 — 없으면 「진행중」 배지만 단 채 영원히 선다(실제 사용자 실측).
+    const idle = !st.setup || (!st.setup.error && Number(st.setup.percent || 0) < 100 && !st.setup.stage);
+    if (idle) {
+      badge('setup', '대기', '');
+      note('setup-note', '이전 실행이 여기서 멈춰 있었습니다. 「다시 시도」를 누르면 끝난 단계는 건너뛰고 멈춘 곳부터 이어서 합니다.');
+      $('btn-setup-retry').hidden = false;
+      $('btn-setup-retry').disabled = false;
+    }
     watchSetup();
     return;
   }

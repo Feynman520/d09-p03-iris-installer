@@ -526,7 +526,8 @@ export function parseArgs(argv) {
     // 잘려 증거를 못 남겼다). 손님 쪽 운전기의 최대 대기(서버 5 + 세팅 45 + 온라인 20
     // = 70분)보다 **길어야** 시험대가 설치기보다 먼저 포기하지 않는다.
     // 2026-09-16 실측: 4 GB/2 vCPU 손님에서 세팅 45분 + 온라인 10분+ → 한 시나리오의 install 이 60분을 넘는다.
-    bootWaitMs: 15 * 60 * 1000, installTimeoutMs: 180 * 60 * 1000,
+    // 2026-09-17: 연결 복제본을 다른 VM 과 **동시에** 부팅하면(디스크 경합) 손님 제어가 15분을 넘긴다 → 30분.
+    bootWaitMs: 30 * 60 * 1000, installTimeoutMs: 180 * 60 * 1000,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];

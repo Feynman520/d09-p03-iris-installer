@@ -103,14 +103,20 @@ if ($cpba -eq 0) {
   $rOut = Join-Path $env:PUBLIC ($rid + '.out')
   $rCmd = "& '" + $ps + "' " + $argLine + " *> '" + $rOut + "'; exit `$LASTEXITCODE"
   $rExit = 99
-  try {
-    $rp = Start-Process -FilePath $ps -Verb RunAs -PassThru -WindowStyle Hidden `
-      -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $rCmd)
-    $null = $rp.Handle
-    if (-not $rp.WaitForExit($TimeoutSeconds * 1000)) { try { $rp.Kill() } catch {}; Write-Output ('ELEVATE-TIMEOUT after ' + $TimeoutSeconds + ' s (runas)') }
-    else { $rExit = $rp.ExitCode; if ($null -eq $rExit) { $rExit = 0 } }
-  } catch {
-    Write-Output ('RUNAS-FAILED ' + $_.Exception.Message)
+  # 2026-09-17 S04 실측: 부팅 직후(자동 로그온 데스크톱이 아직 없을 때) RunAs 가
+  # "이 작업에는 대화형 윈도우 스테이션이 필요합니다" 로 거절된다. 20초 간격으로 여섯 번까지 기다린다.
+  for ($try = 1; $try -le 6; $try++) {
+    try {
+      $rp = Start-Process -FilePath $ps -Verb RunAs -PassThru -WindowStyle Hidden `
+        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $rCmd)
+      $null = $rp.Handle
+      if (-not $rp.WaitForExit($TimeoutSeconds * 1000)) { try { $rp.Kill() } catch {}; Write-Output ('ELEVATE-TIMEOUT after ' + $TimeoutSeconds + ' s (runas)') }
+      else { $rExit = $rp.ExitCode; if ($null -eq $rExit) { $rExit = 0 } }
+      break
+    } catch {
+      Write-Output ('RUNAS-FAILED (try ' + $try + ') ' + $_.Exception.Message)
+      if ($try -lt 6) { Start-Sleep -Seconds 20 }
+    }
   }
   Write-Output ('ELEVATE-EXIT ' + $rExit)
   Show-Result -AgentOut $rOut

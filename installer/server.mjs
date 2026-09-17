@@ -262,6 +262,24 @@ export function resumeVerdict(root, { readReceiptFn = readReceipt, fsFn = fs } =
   return null;
 }
 
+// 2026-09-17 실제 사용자 실측: 2.0.0 이 venv 에서 멈춘 PC 에 2.0.1 을 돌리자 재실행 판정이
+// 'setup' 으로 곧장 갔는데, 새 판의 상태는 비어 있어(error 없음·running 아님) 화면이
+// 「진행중」 배지만 단 채 아무 단추도 없이 서 버렸다. 영수증이 기억하는 **실패한 단계**를
+// 새 상태의 error 로 옮겨 적으면 화면이 "…에서 멈췄습니다 / 다시 시도"를 보여 준다.
+export function resumeSetupError(receipt) {
+  if (!receipt || isLegacyReceipt(receipt)) return null;
+  for (const id of SETUP_STAGE_IDS) {
+    const s = receipt.setup?.[id];
+    if (s && s.status === 'failed') {
+      return {
+        stage: id,
+        error: { id, code: s.code ?? 'E-RESUME', message: s.message ?? s.detail ?? '이전 실행이 이 단계에서 멈췄습니다. 「다시 시도」를 누르면 여기서부터 이어서 합니다.' },
+      };
+    }
+  }
+  return null;
+}
+
 // --no-user-env / IRIS_INSTALLER_NO_USER_ENV=1: a userpath implementation that
 // records what the install *would* have written to HKCU\Environment and writes
 // nothing. Exists for rehearsals on a machine that is already a working IRIS
@@ -530,6 +548,14 @@ export function startServer({
       if (prior && !isLegacyReceipt(prior)) {
         state.choice = state.choice ?? prior.choice ?? null;
         state.decisions = state.decisions ?? readDecisions(soulRoot);
+        if (verdict.step === 'setup' && !state.setup?.error) {
+          const seeded = resumeSetupError(prior);
+          if (seeded) {
+            state.setup.stage = seeded.stage;
+            state.setup.error = seeded.error;
+            log(`resume: prior run (package ${prior.package?.version ?? '?'}) stopped at ${seeded.stage} (${seeded.error.code}) -- shown as retryable`);
+          }
+        }
       }
       log(`resume verdict: step=${verdict.step} (${verdict.reason}) forced=${resume}`);
     } else if (resume) {

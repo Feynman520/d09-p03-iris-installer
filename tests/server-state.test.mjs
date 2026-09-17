@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { startServer, detectSoulMode, resumeVerdict } from '../installer/server.mjs';
+import { startServer, detectSoulMode, resumeVerdict, resumeSetupError } from '../installer/server.mjs';
 import { saveState, initialState } from '../installer/lib/state.mjs';
 import { SETUP_STAGE_IDS } from '../installer/lib/receipt.mjs';
 
@@ -167,6 +167,18 @@ test('resumeVerdict: 3경우 (setup 완료+online 미완 → online / 전부 don
 
   // 아무것도 없으면 판정 없음
   assert.equal(resumeVerdict(path.join(tmp, 'verdict-empty'), { readReceiptFn: () => null }), null);
+});
+
+// 2026-09-17 실제 사용자: 2.0.0 이 venv 에서 멈춘 PC 에 2.0.1 → 'setup' 으로 재개했지만 새 상태에
+// error 가 없어 화면이 단추 없이 「진행중」으로 섰다. 영수증의 실패 단계를 error 로 옮겨 적는다.
+test('resumeSetupError: 영수증의 실패 단계를 새 상태의 error 로 옮긴다 (없으면 null, 1.x 는 null)', () => {
+  const r = resumeSetupError(v2Receipt({ setup: { unpack: { status: 'done' }, env: { status: 'done' }, venv: { status: 'failed', code: 'E-VENV', message: '문서 자동화 venv …' } } }));
+  assert.deepEqual(r.stage, 'venv');
+  assert.equal(r.error.id, 'venv');
+  assert.equal(r.error.code, 'E-VENV');
+  assert.equal(resumeSetupError(v2Receipt({ setup: { unpack: { status: 'done' } } })), null);
+  assert.equal(resumeSetupError({ schema: 1 }), null);
+  assert.equal(resumeSetupError(null), null);
 });
 
 // ---------------------------------------------------------------------------
