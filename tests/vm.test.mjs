@@ -382,6 +382,9 @@ test('judgeRelayProbe: 운전기의 중계기 시작 결과가 있으면 실패�
   const zero = judgeRelayProbe({ drive: { relayProbe: { ok: false, code: 'E-ONLINE-RELAY', message: '중계기를 시작하지 못했습니다 — 시작 스크립트가 오류로 끝났습니다(코드 1: TeamClaude did not become ready (process exited). Check x.stderr.log -- No accounts configured. | Add an account first:)' } } });
   assert.equal(zero.ok, true);
   assert.match(zero.reason, /계정 0이라 시작 보류/);
+  // 관리 스크립트가 stderr 마지막 5줄만 실어 첫 줄("No accounts configured.")이 잘린 실제 문장(09-18 01:27).
+  const cut = judgeRelayProbe({ drive: { relayProbe: { ok: false, code: 'E-ONLINE-RELAY', message: '중계기를 시작하지 못했습니다 — 시작 스크립트가 오류로 끝났습니다(코드 1: TeamClaude did not become ready (process exited). Check x.stderr.log --  | Add an account first: |   teamclaude import           Import from Clau)' } } });
+  assert.equal(cut.ok, true, '"Add an account first" 만 남아도 같은 뜻');
 });
 
 test('S03 runs the installer as a standard user out of the shared public folder', () => {

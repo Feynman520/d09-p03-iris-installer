@@ -328,8 +328,11 @@ export async function relayImport({
     // failed reload below, so fall back to a detached interactive login.
     return startDetachedLogin('chatgpt');
   }
+  // 2026-09-18 실사용 진단 TC-02: reload 는 실패를 `{ok:false}` 로 돌려주는데 반환값을 보지 않고 성공으로
+  // 적었다 — 실행 중계기가 새 계정을 못 읽었는데 화면은 "연결됨". 이제 결과를 보고, 실패면 대화형 로그인으로.
   try {
-    await doReload(port);
+    const reloaded = await doReload(port);
+    if (reloaded && reloaded.ok === false) return startDetachedLogin('chatgpt');
     return { ok: true, method: 'import' };
   } catch {
     return startDetachedLogin('chatgpt');

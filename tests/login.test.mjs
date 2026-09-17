@@ -395,6 +395,29 @@ test('relayImport: codex reports config-unreadable and leaves the file byte-for-
   }
 });
 
+test('relayImport: codex reload 이 {ok:false} 면 성공으로 적지 않고 대화형 로그인으로 넘어간다 (TC-02, 2.0.13)', async () => {
+  // 2026-09-18 실사용 진단: reload 실패를 무시하고 "import 성공"으로 돌려 화면이 "연결됨"이 됐다.
+  const root = 'C:\\NOVA';
+  const configPath = path.join(tmpRoot('relay-codex-noreload'), 'teamclaude.json');
+  fs.writeFileSync(configPath, JSON.stringify({ proxy: { port: 3456 }, accounts: [] }, null, 2), 'utf8');
+  const spawned = [];
+  try {
+    const result = await relayImport({
+      provider: 'chatgpt',
+      root,
+      nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
+      teamclaudeConfigPath: configPath,
+      reloadFn: async () => ({ ok: false }),
+      spawnFn: (exe, args) => { spawned.push([exe, ...args]); return { unref() {} }; },
+    });
+    assert.deepEqual(result, { ok: true, method: 'login' }, '자동 다시읽기 실패 → 사람이 보는 로그인 창으로');
+    assert.equal(spawned.length, 1);
+    assert.ok(spawned[0].join(' ').includes('login --codex'));
+  } finally {
+    fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+  }
+});
+
 test('relayImport: codex writes an importFrom config entry and triggers reload (no secrets written)', async () => {
   const root = 'C:\\NOVA';
   const configPath = path.join(tmpRoot('relay-codex'), 'teamclaude.json');

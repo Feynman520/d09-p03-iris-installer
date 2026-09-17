@@ -968,7 +968,9 @@ export function relayHealth(port = RELAY_PORT, { timeoutMs = 3000, httpGet = htt
           // can name a signed-in account, which never reaches a log or receipt.
           try {
             const j = JSON.parse(body);
-            finish({ ok: res.statusCode === 200 && j && typeof j === 'object' && ('activity' in j || 'accounts' in j), status: res.statusCode });
+            // 2026-09-18 TC-02: 실행 중계기가 실제로 실은 계정 수도 돌려준다(파일 계정 수와 대조하기 위해). 이름·토큰은 안 남긴다.
+            const liveAccounts = j && Array.isArray(j.accounts) ? j.accounts.length : null;
+            finish({ ok: res.statusCode === 200 && j && typeof j === 'object' && ('activity' in j || 'accounts' in j), status: res.statusCode, liveAccounts });
           } catch {
             finish({ ok: false, status: res.statusCode });
           }
@@ -1041,11 +1043,28 @@ export async function startRelay({
     };
   }
 
-  let accounts = 0;
+  let fileAccounts = 0;
   for (const provider of ['claude', 'chatgpt']) {
-    accounts += await countAccountsFn({ teamclaudeConfigPath: configPath, provider });
+    fileAccounts += await countAccountsFn({ teamclaudeConfigPath: configPath, provider });
   }
-  log(`relay ok started=${proxy.started === true} accounts=${accounts}`);
+  // 2026-09-18 실사용 진단 TC-02: 완료 판정을 **파일** 계정 수로 했더니, 다른 TeamClaude 실행본(전역 1.2.1, 기존 계정 5개)이
+  // 3456 을 쓰는 PC 에서 "IRIS 설정 파일의 1개 = 연결됨"으로 잘못 기록됐다. 판정은 실행 중계기가 실제로 실은 수(`liveAccounts`)
+  // 로 하고, 파일 수와 어긋나면 실패로 돌려준다(그 중계기는 우리 설정을 읽고 있지 않다는 뜻).
+  const liveAccounts = Number.isInteger(health?.liveAccounts) ? health.liveAccounts : null;
+  const accounts = liveAccounts ?? fileAccounts;
+  if (liveAccounts != null && liveAccounts !== fileAccounts) {
+    log(`relay mismatch: live=${liveAccounts} file=${fileAccounts} (the relay on port ${port} is not reading our config)`);
+    patchReceipt(root, (r) => {
+      r.online = r.online ?? {};
+      r.online.relay = { state: 'failed', accounts: liveAccounts, code: CODES.relay };
+    }, deps);
+    return {
+      ok: false, state: 'failed', accounts: liveAccounts, code: CODES.relay,
+      message: `포트 ${port} 의 중계기가 우리 설정 파일을 읽고 있지 않습니다(중계기 계정 ${liveAccounts}개, 설정 파일 ${fileAccounts}개). 다른 TeamClaude 가 먼저 떠 있는 PC 일 수 있습니다 — 그 프로그램을 끄고 「계정 연결 다시 시도」를 눌러 주세요.`,
+      detail: { alive: true, started: proxy.started === true, status: health?.status ?? null, liveAccounts, fileAccounts, port },
+    };
+  }
+  log(`relay ok started=${proxy.started === true} accounts=${accounts}${liveAccounts == null ? ' (file count; relay gave no list)' : ''}`);
   patchReceipt(root, (r) => {
     r.online = r.online ?? {};
     r.online.relay = { state: 'done', accounts, code: null };

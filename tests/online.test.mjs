@@ -754,6 +754,34 @@ test('startRelay: 옛 설정(proxy.port 없음)은 계정을 건드리지 않고
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('startRelay: 실행 중계기의 계정 수가 설정 파일과 다르면 실패 — 다른 TeamClaude 가 3456 을 쓰는 PC (TC-02, 2.0.13)', async () => {
+  // 2026-09-18 실사용 진단: 전역 1.2.1(계정 5개)이 3456 을 쓰는데 IRIS 파일(1개) 수로 "연결됨"이라 기록됐다.
+  const root = tmpRoot('relaymismatch');
+  const r = await startRelay({
+    root,
+    resolveConfigPathFn: () => path.join(root, 'tc.json'),
+    ensureProxyFn: async () => ({ alive: true, started: false }),
+    healthFn: async () => ({ ok: true, status: 200, liveAccounts: 5 }),
+    countAccountsFn: async ({ provider }) => (provider === 'chatgpt' ? 1 : 0),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, CODES.relay);
+  assert.match(r.message, /우리 설정 파일을 읽고 있지 않습니다\(중계기 계정 5개, 설정 파일 1개\)/);
+  assert.equal(readReceipt(root).online.relay.state, 'failed');
+
+  // 실행 중계기가 목록을 안 주면(옛 실행본) 파일 수로 판정한다(이전 동작 유지).
+  const r2 = await startRelay({
+    root,
+    resolveConfigPathFn: () => path.join(root, 'tc.json'),
+    ensureProxyFn: async () => ({ alive: true, started: false }),
+    healthFn: async () => ({ ok: true, status: 200, liveAccounts: null }),
+    countAccountsFn: async ({ provider }) => (provider === 'chatgpt' ? 1 : 0),
+  });
+  assert.equal(r2.ok, true);
+  assert.equal(r2.accounts, 1);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('startRelay: will not start -> E-ONLINE-RELAY', async () => {
   const root = tmpRoot('relayfail');
   const r = await startRelay({
