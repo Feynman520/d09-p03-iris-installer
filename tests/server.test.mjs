@@ -969,6 +969,49 @@ test('GET /api/state 는 계약이 약속한 칸을 전부 들고 있다', async
 
 // 설계-v2 7절: 화면 문구에 중계기의 제품 이름을 쓰지 않는다. 서버가 message 로
 // 내보내는 한국어 문장은 화면에 그대로 나가므로 여기서 지킨다.
+test('online: 중계기 실패는 원인 문장·원문을 상태에 싣고, /api/online/relay 를 다시 부르면 이어간다', async () => {
+  // 2026-09-17 실제 사용자 실측(2.0.5): 로그인은 done 인데 계정 연결 확인이 ✗ "아직 연결되지 않았습니다"뿐이라
+  // 누를 단추도, 까닭도 없었다.
+  let relayCalls = 0;
+  const s = await atSetupStep({
+    onlineRunner: {
+      ...okOnline(),
+      startRelay: async () => {
+        relayCalls += 1;
+        if (relayCalls === 1) {
+          return { ok: false, state: 'failed', code: 'E-RELAY', message: '중계기를 시작하지 못했습니다 — 포트 3456 에서 중계기가 답하지 않습니다.', detail: { port: 3456, manageExit: 1 } };
+        }
+        return { ok: true, state: 'done', accounts: 1 };
+      },
+    },
+  });
+  try {
+    await post(s.url, '/api/setup/start');
+    await waitForProgress(s.url, (b) => b.percent === 100, '100%');
+    await post(s.url, '/api/online/start');
+    await waitForOnline(s.url, (b) => b.stage === 'login' || b.stage === 'relay', 'login phase');
+    await post(s.url, '/api/online/login', { provider: 'claude' });
+    await waitForOnline(s.url, (b) => b.logins.claude?.state === 'done', 'login done');
+
+    const first = await (await post(s.url, '/api/online/relay')).json();
+    assert.equal(first.ok, false);
+    const st = await getJson(s.url, '/api/online/status');
+    assert.equal(st.relay.state, 'failed');
+    assert.match(st.relay.message, /포트 3456/, '원인 문장이 화면으로 간다');
+    assert.match(String(st.relay.detail), /manageExit/, '원문도 간다');
+    assert.ok(Number.isFinite(st.now) && Number.isFinite(st.stageAt), '경과 시간용 시각이 있다');
+    assert.equal((await getJson(s.url, '/api/state')).step, 'online', '실패해도 online 카드에 머문다');
+
+    const second = await (await post(s.url, '/api/online/relay')).json();
+    assert.equal(second.ok, true);
+    assert.equal((await getJson(s.url, '/api/online/status')).relay.state, 'done');
+    assert.equal((await getJson(s.url, '/api/state')).step, 'done');
+    assert.equal(relayCalls, 2);
+  } finally {
+    await s.close();
+  }
+});
+
 test('사용자에게 나가는 message 어디에도 중계기 제품 이름이 없다', async () => {
   const s = await start({
     setupRunner: { runSetup: async () => ({ ok: false, failed: { id: 'relay', code: 'E-RELAY', message: '중계기 준비에 실패했습니다.' }, pending: [] }) },

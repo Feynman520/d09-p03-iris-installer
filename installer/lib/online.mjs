@@ -1009,15 +1009,25 @@ export async function startRelay({
 
   const health = proxy?.alive ? await healthFn(port) : { ok: false, status: null };
   if (!proxy?.alive || !health?.ok) {
-    log(`relay failed alive=${proxy?.alive === true} health=${health?.ok === true}`);
+    const why = proxy?.detail ?? null;
+    log(`relay failed alive=${proxy?.alive === true} health=${health?.ok === true}${why ? ` detail=${JSON.stringify(why)}` : ''}`);
     patchReceipt(root, (r) => {
       r.online = r.online ?? {};
       r.online.relay = { state: 'failed', accounts: 0, code: CODES.relay };
     }, deps);
+    // 사람이 읽을 한 문장: 무엇이 없거나 무엇이 거절했는지(2026-09-17 실제 사용자 실측 — 이전엔 "아직
+    // 연결되지 않았습니다"뿐이라 손쓸 방법이 없었다).
+    let reason = '';
+    if (why && why.manageScriptExists === false) reason = '중계기 시작 스크립트가 없습니다(부품 풀기가 끝나지 않았을 수 있습니다).';
+    else if (why && why.nodeExeExists === false) reason = '동봉 node 실행 파일이 없습니다.';
+    else if (why && why.entryExists === false) reason = '중계기 프로그램 파일이 없습니다.';
+    else if (why && why.manageExit != null && why.manageExit !== 0) reason = `시작 스크립트가 오류로 끝났습니다(코드 ${why.manageExit}${why.manageErr ? `: ${why.manageErr}` : ''}).`;
+    else if (proxy?.alive && !health?.ok) reason = `포트 ${port} 에서 답하는 프로그램이 IRIS 중계기가 아닙니다(다른 프로그램이 그 포트를 쓰고 있을 수 있습니다).`;
+    else reason = `포트 ${port} 에서 중계기가 답하지 않습니다(시작은 했지만 아직 안 떴거나 곧 죽었습니다).`;
     return {
       ok: false, state: 'failed', accounts: 0, code: CODES.relay,
-      message: '중계기를 시작하지 못했습니다.',
-      detail: { alive: proxy?.alive === true, started: proxy?.started === true, status: health?.status ?? null },
+      message: `중계기를 시작하지 못했습니다 — ${reason} 「계정 연결 다시 시도」를 눌러 주세요.`,
+      detail: { alive: proxy?.alive === true, started: proxy?.started === true, status: health?.status ?? null, ...(why ?? {}) },
     };
   }
 

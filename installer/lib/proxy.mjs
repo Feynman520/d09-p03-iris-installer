@@ -4,6 +4,7 @@
 // NEVER kill or restart an already-running proxy -- an already-alive proxy is
 // left completely untouched (task-13-brief.md, binding rehearsal rule).
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { resolveTeamclaudeConfigPath } from './login.mjs';
@@ -84,10 +85,29 @@ export async function ensureProxy({
   // otherwise the relay this starts would serve the wrong account file.
   const configPath = teamclaudeConfigPath ?? resolveTeamclaudeConfigPath({ root });
 
-  await runManage(managePs1, ['-Action', 'start', '-NodePath', nodeExe, '-EntryPath', entryPath], {
-    env: { ...process.env, TEAMCLAUDE_CONFIG: configPath },
-  });
+  let manage = null;
+  try {
+    manage = await runManage(managePs1, ['-Action', 'start', '-NodePath', nodeExe, '-EntryPath', entryPath], {
+      env: { ...process.env, TEAMCLAUDE_CONFIG: configPath },
+    });
+  } catch (err) {
+    manage = { code: -1, out: '', err: String(err?.message ?? err) };
+  }
 
   const alive = await probe(port);
-  return { alive, started: true };
+  // 2026-09-17 실제 사용자 실측(2.0.5): 「계정 연결 확인 — 아직 연결되지 않았습니다」만 보이고
+  // 왜 못 띄웠는지(스크립트 없음·node 없음·포트 점유·시작 스크립트 오류)가 어디에도 없었다.
+  // 살아 있지 않으면 근거를 함께 돌려준다 — 화면 문장과 로그가 이것을 쓴다.
+  const tail = (s) => String(s ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ').slice(0, 300);
+  const detail = alive ? null : {
+    port,
+    manageScript: managePs1,
+    manageScriptExists: fs.existsSync(managePs1),
+    nodeExeExists: fs.existsSync(nodeExe),
+    entryExists: fs.existsSync(entryPath),
+    manageExit: manage?.code ?? null,
+    manageOut: tail(manage?.out),
+    manageErr: tail(manage?.err),
+  };
+  return { alive, started: true, ...(detail ? { detail } : {}) };
 }

@@ -68,7 +68,13 @@ test('ensureProxy: dead, start fails, probe still false -> started:true, alive:f
     probe: async () => false,
     runManage: async () => ({ code: 1, out: '', err: 'boom' }),
   });
-  assert.deepEqual(result, { alive: false, started: true });
+  assert.equal(result.alive, false);
+  assert.equal(result.started, true);
+  // 2026-09-17(2.0.7): 못 띄운 까닭을 함께 돌려준다 — 화면 문장·로그가 쓴다.
+  assert.equal(result.detail.manageExit, 1);
+  assert.equal(result.detail.manageErr, 'boom');
+  assert.equal(result.detail.manageScriptExists, false, '가짜 루트라 스크립트가 없다');
+  assert.equal(result.detail.port, 3456);
 });
 
 // ---------------------------------------------------------------------------

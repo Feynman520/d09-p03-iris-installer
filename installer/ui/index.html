@@ -274,6 +274,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
       <div id="online-note"></div>
       <div class="acts">
         <button class="go" id="btn-online-retry" hidden>다시 확인</button>
+        <button class="go" id="btn-relay-retry" hidden>계정 연결 다시 시도</button>
         <span class="spacer"></span>
         <button class="ghost" id="btn-log-online">로그 경로 복사</button>
       </div>
@@ -963,6 +964,16 @@ const ERROR_HELP = {
   'E-CHECKS': '마지막 확인에서 하나가 어긋났습니다. 무엇인지 아래 기록에 적혀 있습니다.',
 };
 
+// 경과 시간을 "1분 23초" 꼴로. 아직 살아 있음을 보이는 작은 회전 표시도 같이 쓴다.
+function fmtElapsed(ms) {
+  const s = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  if (s < 60) return s + '초';
+  const m = Math.floor(s / 60);
+  return m < 60 ? m + '분 ' + (s % 60) + '초' : Math.floor(m / 60) + '시간 ' + (m % 60) + '분';
+}
+const SPIN = ['◐', '◓', '◑', '◒'];
+let spinTick = 0;
+
 function stageMark(status) {
   if (status === 'done') return '<span class="ok">✓</span>';
   if (status === 'failed') return '<span class="bad">✗</span>';
@@ -979,7 +990,15 @@ function renderSetup(s) {
   $('setup-rows').innerHTML = SETUP_STAGES.map(([id, label]) => {
     const x = byId.get(id) || {};
     const status = x.status || 'pending';
-    const detail = status === 'running' ? (x.detail || STAGE_WHAT[id] || '') : (x.detail || '');
+    let detail = status === 'running' ? (x.detail || STAGE_WHAT[id] || '') : (x.detail || '');
+    // 2026-09-17 사용자 요청: 긴 단계에서 멈춘 건지 진행 중인지 보이게 — 경과 시간과 마지막 기록 한 줄.
+    if (status === 'running') {
+      const now = Number(st.now) || Date.now();
+      if (x.startedAt) detail += ' · ' + fmtElapsed(now - Number(x.startedAt)) + '째';
+      const live = st.live && st.live.text ? st.live.text : '';
+      if (live) detail += ' · 마지막 기록: ' + live + (st.live.at ? ' (' + fmtElapsed(now - Number(st.live.at)) + ' 전)' : '');
+      detail += ' ' + SPIN[spinTick++ % SPIN.length];
+    }
     let html = '<div class="stage-row"><span>' + stageMark(status) + '</span><span>' + esc(label) + '</span><span class="dt">' + esc(detail) + '</span></div>';
     if (id === 'unpack' && x.sub && x.sub.total) {
       const pct = Math.floor((Number(x.sub.done) / Number(x.sub.total)) * 100);
@@ -1143,11 +1162,16 @@ function renderOnlineRows(on) {
   rows.push([
     relay.state === 'done' ? 'done' : relay.state === 'failed' ? 'failed' : relay.state === 'running' ? 'running' : 'pending',
     '계정 연결 확인',
-    relay.state === 'done' ? ('연결된 계정 ' + (Array.isArray(relay.accounts) ? relay.accounts.length : 0) + '개') :
-      relay.state === 'failed' ? '아직 연결되지 않았습니다' : '로그인이 끝나면 합니다',
+    relay.state === 'done' ? ('연결된 계정 ' + (Array.isArray(relay.accounts) ? relay.accounts.length : relay.accounts || 0) + '개') :
+      relay.state === 'failed' ? (relay.message || '아직 연결되지 않았습니다') :
+        relay.state === 'running' ? '중계기를 띄우는 중' : '로그인이 끝나면 합니다',
   ]);
+  // 진행 중인 줄에는 경과 시간과 회전 표시(2026-09-17 사용자 요청: 멈춘 건지 진행 중인지 보이게).
+  const now = Number(o.now) || Date.now();
+  const since = Number(o.stageAt) || 0;
   $('online-rows').innerHTML = rows.map(([status, label, detail]) =>
-    '<div class="stage-row"><span>' + stageMark(status) + '</span><span>' + esc(label) + '</span><span class="dt">' + esc(detail) + '</span></div>').join('');
+    '<div class="stage-row"><span>' + stageMark(status) + '</span><span>' + esc(label) + '</span><span class="dt">' + esc(detail) +
+    (status === 'running' ? esc((since ? ' · ' + fmtElapsed(now - since) + '째' : '') + ' ' + SPIN[spinTick++ % SPIN.length]) : '') + '</span></div>').join('');
 
   if (!net.ok && blocked.length) {
     note('online-note', '인터넷이 되는 곳에서 설치기를 다시 열면 여기서부터 이어집니다. 지금까지 설치한 것은 그대로 남아 있습니다.', 'bad');
@@ -1155,7 +1179,18 @@ function renderOnlineRows(on) {
   } else if (!o.error) {
     $('btn-online-retry').hidden = true;
   }
+  // 중계기 실패(2026-09-17 실제 사용자 실측: 로그인은 끝났는데 계정 연결이 안 되고 누를 단추가 없었다).
+  const relayFailed = relay.state === 'failed';
+  $('btn-relay-retry').hidden = !relayFailed;
+  if (relayFailed && !relayNoteShown) {
+    relayNoteShown = true;
+    note('online-note', '<b>계정 연결(중계기)</b>에서 멈췄습니다.<br>' + esc(relay.message || '중계기를 시작하지 못했습니다.') +
+      '<br>로그인은 그대로 살아 있습니다 — 「계정 연결 다시 시도」를 누르면 중계기만 다시 띄웁니다.' +
+      (relay.detail ? '<details><summary>자세한 원인 보기</summary><pre>' + esc(relay.detail) + '</pre></details>' : ''), 'bad');
+  }
+  if (!relayFailed) relayNoteShown = false;
 }
+let relayNoteShown = false;
 
 function renderLoginBoxes(on) {
   const logins = (on && on.logins) || {};
@@ -1268,6 +1303,14 @@ async function reopenLogin(provider) {
 }
 
 $('btn-online-retry').onclick = () => { note('online-note', ''); startOnline(); };
+$('btn-relay-retry').onclick = async () => {
+  $('btn-relay-retry').disabled = true;
+  relayNoteShown = false;
+  note('online-note', '중계기를 다시 띄웁니다…');
+  try { await api('/api/online/relay', {}); } catch { /* 폴링이 상태를 다시 본다 */ }
+  $('btn-relay-retry').disabled = false;
+  watchOnline();
+};
 
 // ---------------------------------------------------------------------------
 // ⑧ 완료 보고 — 다섯 순서로 읽는다.

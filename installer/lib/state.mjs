@@ -135,6 +135,7 @@ export function markSetupStage(setup, { id, status, code = null, message = null,
   const raw = message == null ? null : detail;
   const entry = setup.stages.find((s) => s.id === id);
   if (entry) {
+    if (status === 'running' && entry.status !== 'running') entry.startedAt = Date.now();
     if (status) entry.status = status === 'skipped-done' ? 'done' : status;
     if (code !== null) entry.code = code;
     if (text !== null) entry.detail = text;

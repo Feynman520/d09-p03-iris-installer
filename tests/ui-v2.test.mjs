@@ -85,6 +85,10 @@ test('ui/index.html: 설치 9단계와 오류 코드가 한국어 설명과 함�
   assert.ok(src.includes('자세한 원인 보기'), '실패 카드는 원문(detail)과 기록 파일 위치를 펼침 상자로 보여 준다');
   assert.ok(/st\.error\.detail/.test(src) && /logs\.soul/.test(src), '원문과 기록 파일 경로를 진행 상태에서 읽는다');
   assert.ok(src.includes('IRIS 프로그램 닫고 다시 시도') && /st\.error\.holders/.test(src), '붙잡은 IRIS 프로그램 목록과 「닫고 다시 시도」가 있다');
+  // 2026-09-17 사용자 요청: 긴 단계에서 멈춤/진행이 보여야 한다 — 경과 시간·마지막 기록·회전 표시.
+  assert.ok(/function fmtElapsed/.test(src) && /st\.live/.test(src) && /x\.startedAt/.test(src), '진행 중인 단계에 경과 시간과 마지막 기록을 붙인다');
+  // 2026-09-17 실제 사용자 실측: 로그인은 끝났는데 계정 연결(중계기)이 실패하면 누를 단추가 없었다.
+  assert.ok(src.includes('계정 연결 다시 시도') && /relay\.message/.test(src), '중계기 실패에 원인 문장과 「계정 연결 다시 시도」가 있다');
   assert.ok(/x\.sub && x\.sub\.total/.test(src), '풀기 단계에는 부품별 하위 막대가 있다');
 });
 

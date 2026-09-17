@@ -768,7 +768,12 @@ export function startServer({
       decisions: state.decisions ?? readDecisions(root),
       choice: state.choice,
       precheck: state.precheck?.recorded ?? null,
-      log,
+      // 엔진의 기록 한 줄을 진행 상태에도 남긴다 — 화면이 "마지막 기록: …"으로 멈춤/진행을 가르게
+      // (2026-09-17 사용자 요청: 긴 단계에서 멈춘 건지 진행 중인지 모르겠다).
+      log: (line) => {
+        log(line);
+        state.setup.live = { text: String(line ?? '').replace(/^\[[^\]]*\]\s*/, '').slice(0, 160), at: Date.now() };
+      },
       progress: (sub) => {
         const id = state.setup.stage;
         if (!id) return;
@@ -918,6 +923,7 @@ export function startServer({
       ok: true, ...state.setup, running: setupRunning,
       // 실패 화면이 기록 파일 위치를 바로 보여 주기 위해(2026-09-17).
       logs: { server: serverLog, soul: soulLogPath() },
+      now: Date.now(),
     });
   });
 
@@ -1022,8 +1028,13 @@ export function startServer({
     }
     const allLoggedIn = subs.length > 0 && subs.every((p) => state.online.logins[p]?.state === 'done');
     if (allLoggedIn && state.online.stage === 'login') state.online.stage = 'relay';
+    // 단계가 바뀐 시각 — 화면이 "n분째"를 그려 멈춤/진행을 가르게(2026-09-17 사용자 요청).
+    if (state.online.stage !== state.online.stageSeen) {
+      state.online.stageSeen = state.online.stage;
+      state.online.stageAt = Date.now();
+    }
     save();
-    sendJson(res, 200, { ok: true, step: state.step, ...state.online, running: onlineRunning });
+    sendJson(res, 200, { ok: true, step: state.step, ...state.online, running: onlineRunning, now: Date.now() });
   });
 
   async function doLogin(body, res, { retry }) {
@@ -1059,12 +1070,19 @@ export function startServer({
   routes.set('POST /api/online/relay', withBody(async (body, req, res) => {
     if (!requireLocated(res)) return;
     const root = state.soul.root;
-    const relay = await onlineRunner.startRelay({ root, nodeDir: state.nodeDir });
+    state.online.relay = { ...(state.online.relay ?? {}), state: 'running' };
+    state.online.stage = 'relay';
+    save();
+    const relay = await onlineRunner.startRelay({ root, nodeDir: state.nodeDir, log });
     state.online.relay = {
       state: relay?.ok ? (relay.state ?? 'done') : 'failed',
       accounts: relay?.accounts ?? 0,
       code: relay?.code ?? null,
+      // 실패 문장·원문을 화면으로(2026-09-17 실제 사용자 실측: "아직 연결되지 않았습니다"만 보임).
+      message: relay?.ok ? null : (relay?.message ?? '중계기를 시작하지 못했습니다.'),
+      detail: relay?.ok ? null : (relay?.detail == null ? null : JSON.stringify(relay.detail)),
     };
+    if (!relay?.ok) log(`online relay failed: ${state.online.relay.message}${state.online.relay.detail ? ` ${state.online.relay.detail}` : ''}`);
     state.online.stage = 'relay';
     if (relay?.ok) {
       state.online.completed = true;
