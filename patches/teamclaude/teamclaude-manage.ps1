@@ -60,9 +60,10 @@ try {
 @{pid=$started.Id;port=$port;startedAt=[DateTime]::UtcNow.ToString('o');managedBy='teamclaude-manage.ps1';stdout="$logBase.stdout.log";stderr="$logBase.stderr.log"} |
     ConvertTo-Json | Set-Content -LiteralPath $runtimePath -Encoding UTF8
 # 2026-09-17 (IRIS 2.0.11, VM S01 relay probe): 40 x 250 ms (~10 s) was too short on a cold PC where the
-# first node start of the package is still being scanned by Defender. Wait up to ~60 s; the loop still
-# stops early if the process dies.
-for ($attempt=0; $attempt -lt 240; $attempt++) {
+# first node start of the package is still being scanned by Defender. 2026-09-18 (2.0.12): even 60 s was
+# not enough on that VM (the relay was still loading after 75 s). Wait up to ~120 s; the loop still stops
+# early if the process dies. The installer's own budget for this script is 180 s (lib/proxy.mjs).
+for ($attempt=0; $attempt -lt 480; $attempt++) {
     Start-Sleep -Milliseconds 250
     try {
         $state = Invoke-RestMethod -Uri "http://127.0.0.1:$port/teamclaude/status" -TimeoutSec 2

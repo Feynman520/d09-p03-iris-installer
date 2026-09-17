@@ -97,8 +97,11 @@ export async function ensureProxy({
 
   let manage = null;
   try {
+    // 2026-09-18(2.0.12, VM S01 실측): 새 PC 의 첫 node 실행은 Defender 검사로 중계기가 뜨는 데 75초 넘게 걸렸고,
+    // 관리 스크립트의 준비 대기(최대 120초)보다 이 한도(90초)가 짧아 -2 timeout 으로 잘렸다. 스크립트 대기 + 여유 = 180초.
     manage = await runManage(managePs1, ['-Action', 'start', '-NodePath', nodeExe, '-EntryPath', entryPath], {
       env: { ...process.env, TEAMCLAUDE_CONFIG: configPath },
+      timeoutMs: 180000,
     });
   } catch (err) {
     manage = { code: -1, out: '', err: String(err?.message ?? err) };
