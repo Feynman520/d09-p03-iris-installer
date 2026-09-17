@@ -82,7 +82,19 @@ $entryArgs = '/d /s /c ""' + $entry.FullName + '" > "' + $entryOut + '" 2> "' + 
 $proc = Start-Process -FilePath $env:ComSpec -ArgumentList $entryArgs `
   -WorkingDirectory $Dir -PassThru -WindowStyle Hidden
 $entryDeadlineMs = 15 * 60 * 1000
-if (-not $proc.WaitForExit($entryDeadlineMs)) { throw "entry point did not return within 15 min" }
+if (-not $proc.WaitForExit($entryDeadlineMs)) {
+  # Show what the entry point left behind BEFORE failing. The .cmd `pause`s on
+  # "Setup could not start (code N)", so an early bootstrap error looks exactly
+  # like a hang from out here (S11 2026-09-18 06:22: verdict "no
+  # diagnostics.json" and nothing else to read, VM already restored).
+  foreach ($f in @((Join-Path $env:LOCALAPPDATA 'IRIS-Installer\bootstrap.log'), $entryOut, $entryErr)) {
+    if (Test-Path -LiteralPath $f) {
+      Say ("---- tail of " + $f)
+      try { Get-Content -LiteralPath $f -Tail 40 -ErrorAction Stop | ForEach-Object { Say ("  " + $_) } } catch { Say ("  (unreadable: " + $_.Exception.Message + ")") }
+    } else { Say ("(missing) " + $f) }
+  }
+  throw "entry point did not return within 15 min"
+}
 Say ("entry exit code: " + $proc.ExitCode)
 
 $base = "http://127.0.0.1:$Port"
