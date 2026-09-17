@@ -803,18 +803,22 @@ export function startServer({
         // markSetupStage first, THEN the summary error -- marking a stage
         // 'failed' rewrites setup.error from the stage's own detail, which
         // would otherwise clobber the (better) message the engine returned.
+        const detail = failed.detail == null ? null
+          : (typeof failed.detail === 'string' ? failed.detail : JSON.stringify(failed.detail));
         if (failed.id) {
           markSetupStage(state.setup, {
-            id: failed.id, status: 'failed', code: failed.code ?? 'E-SETUP', detail: failed.message ?? null,
+            id: failed.id, status: 'failed', code: failed.code ?? 'E-SETUP',
+            message: failed.message ?? null, detail: failed.detail ?? null,
           });
         }
         state.setup.error = {
           id: failed.id ?? state.setup.stage,
           code: failed.code ?? 'E-SETUP',
           message: failed.message ?? '설치 도중 멈췄습니다.',
+          detail,
         };
         state.setup.percent = setupPercent(state.setup);
-        log(`setup failed at ${state.setup.error.id} (${state.setup.error.code})`);
+        log(`setup failed at ${state.setup.error.id} (${state.setup.error.code})${detail ? `: ${detail}` : ''}`);
       }
     } catch (err) {
       state.setup.error = {
@@ -848,8 +852,43 @@ export function startServer({
   // already marks `done`, so restarting it IS "resume from the failed stage".
   routes.set('POST /api/setup/retry', withBody(async (body, req, res) => { startSetup(res); }));
 
+  // 「처음부터 다시 설치」(2026-09-17 실제 사용자 요청: 2.0.0 이 멈춘 PC 에서 이어하기가 아니라
+  // 새로 하고 싶다). 영수증의 9단계를 전부 `pending` 으로 되돌리고 부품 대조표
+  // (unpack-state.json)를 옆으로 옮겨 모든 부품을 다시 놓게 한다. **아무것도 지우지
+  // 않는다** — 옛 기록은 resetBy='fresh' 표시와 함께 그 자리에, 옛 부품은 `.prev` 로.
+  routes.set('POST /api/setup/fresh', withBody(async (body, req, res) => {
+    if (!requireLocated(res)) return;
+    if (setupRunning) { sendJson(res, 202, { ok: true, running: true }); return; }
+    const root = state.soul.root;
+    const receipt = readReceiptFn(root);
+    if (receipt && !isLegacyReceipt(receipt)) {
+      applyUpdateReset(receipt, {
+        reset: [...SETUP_STAGE_IDS],
+        reasons: Object.fromEntries(SETUP_STAGE_IDS.map((id) => [id, 'fresh'])),
+      });
+      for (const id of SETUP_STAGE_IDS) receipt.setup[id].resetBy = 'fresh';
+      writeReceiptFn(root, receipt);
+    }
+    const unpackState = path.join(root, '_agent', 'setup', 'unpack-state.json');
+    if (fs.existsSync(unpackState)) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      try { fs.renameSync(unpackState, `${unpackState}.prev-${stamp}`); } catch (err) {
+        log(`fresh: unpack-state.json 을 옆으로 옮기지 못함: ${String(err?.message ?? err)}`);
+      }
+    }
+    state.setup = initialSetup();
+    state.setup.fresh = true;
+    save();
+    log('setup fresh: receipt stages reset to pending, unpack-state moved aside');
+    startSetup(res);
+  }));
+
   routes.set('GET /api/setup/progress', async (req, res) => {
-    sendJson(res, 200, { ok: true, ...state.setup, running: setupRunning });
+    sendJson(res, 200, {
+      ok: true, ...state.setup, running: setupRunning,
+      // 실패 화면이 기록 파일 위치를 바로 보여 주기 위해(2026-09-17).
+      logs: { server: serverLog, soul: soulLogPath() },
+    });
   });
 
   // --- ⑦ 온라인 묶음 -------------------------------------------------------

@@ -49,6 +49,23 @@ function Log($m) {
   Write-Host $m
 }
 
+# Opening the browser is a courtesy, not a requirement: the server is already
+# up when this is called. Measured 2026-09-17 (VM S03, a standard-user session
+# without an interactive desktop): Start-Process on a URL threw, bootstrap
+# exited 1, the .cmd printed "Setup could not start" and paused forever while
+# the installer was in fact ready on 127.0.0.1:3460. A PC with no URL handler
+# would look the same. So: try, and on failure print the address instead.
+function Open-Browser($url) {
+  try {
+    Start-Process $url
+  } catch {
+    Log "Could not open the browser automatically ($($_.Exception.Message)). Open this address yourself: $url"
+    Write-Host ""
+    Write-Host "  >>> Open this address in your browser: $url"
+    Write-Host ""
+  }
+}
+
 Log "Starting. ZipRoot=$ZipRoot Port=$Port Auto=$($Auto.IsPresent) Resume=$($Resume.IsPresent)"
 
 # --- Stage: location (exit 10) -------------------------------------------
@@ -126,7 +143,7 @@ if ($alreadyRunning) {
     try { $existingPid = (Get-Content -LiteralPath $pidFile -Raw -Encoding UTF8).Trim() } catch {}
   }
   Log "Setup server already running (pid $existingPid). Reusing it."
-  Start-Process "http://127.0.0.1:$Port/"
+  Open-Browser "http://127.0.0.1:$Port/"
   exit 0
 }
 
@@ -220,6 +237,6 @@ if (-not $ok) {
 }
 
 Log 'Server is ready. Open the browser window to continue.'
-Start-Process "http://127.0.0.1:$Port/"
+Open-Browser "http://127.0.0.1:$Port/"
 Log "Opened browser (server pid $($proc.Id))."
 exit 0

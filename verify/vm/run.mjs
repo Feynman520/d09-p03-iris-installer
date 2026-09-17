@@ -460,7 +460,9 @@ export function scenarioPlan(id, opts) {
     add('plant', guestRunPsFile(vm, { ...g, file: `${PUBLIC_DIR}\\${LEGACY_SCRIPT}`, args: ['-Plant'] }));
     // ③ 그 상태를 스냅샷으로 굳힌다 -- 다음 사람이 1.4.5 를 다시 깔지 않아도 되게.
     //    (같은 이름이 있으면 지우고 다시 찍는다: 옛 스냅샷이 조용히 이기면 안 된다.)
-    add('snapshot-stop', ['controlvm', vm, 'acpipowerbutton']);
+    // 2026-09-16 실측: `acpipowerbutton` 은 윈도 11 기본값대로 종료가 아니라 **잠자기**다 →
+    // 손님 안에서 `shutdown /s` 를 부른다(guest-elevate 필요 없음, 관리자 세션이면 된다).
+    add('snapshot-stop', guestRunCmd(vm, { ...g, command: 'shutdown /s /t 0' }));
     add('snapshot-drop', ['snapshot', vm, 'delete', s.snapshot]);
     add('snapshot-take', ['snapshot', vm, 'take', s.snapshot,
       '--description', '1.4.5 installed up to (not including) login, with user data planted (Task 23d)']);
@@ -668,7 +670,14 @@ export async function main(argv = process.argv.slice(2), { vbox = null, env = pr
     // 가 이 목록에 없어 10분에서 잘렸고(ETIMEDOUT), VBoxManage 가 죽어도 손님
     // 안의 설치는 계속 돌아 시나리오가 통째로 넘어졌다. 단계 이름을 여기 적는 것을
     // 잊으면 같은 일이 또 난다 -- 그래서 목록을 한곳에 둔다.
-    const timeout = LONG_PHASES.has(step.phase) ? opts.installTimeoutMs : 10 * 60 * 1000;
+    // `prep-guest` 는 표준 사용자 계정 만들기 + 상승(runas 재시도 20초×6) 을 거치는데,
+    // 링크 클론은 스냅샷을 되돌릴 때마다 첫 부팅 하드웨어 재탐지가 다시 걸려 이 단계가
+    // 느려진다(2026-09-17 실측: 포렌식은 2.3분, 클론 재실행은 10분 기본 한도에서 잘림).
+    // 그래서 prep-guest 에는 20분을 준다 -- 설치 단계가 아니므로 --install-timeout 은
+    // 받지 않되, 클론 첫 부팅 변동을 견딜 만큼은 늘린다.
+    const timeout = LONG_PHASES.has(step.phase)
+      ? opts.installTimeoutMs
+      : (step.phase === 'prep-guest' ? 20 * 60 * 1000 : 10 * 60 * 1000);
     let r;
     if (step.phase.startsWith('copy')) {
       // 손님이 부팅 직후 디스크로 바쁘면(첫 부팅 작업·Defender) 383MB zip 의 copyto 가
@@ -713,6 +722,12 @@ export async function main(argv = process.argv.slice(2), { vbox = null, env = pr
       const exit = r.out.split(/\r?\n/).find((l) => l.startsWith('ELEVATE-EXIT')) ?? '';
       log(`[prep-guest] ${line.trim()}${exit ? ` · ${exit.trim()}` : ''}`);
       marks[line.trim()] = true;
+    }
+    // 손님 계정 HKCU 탐침(guest-user-prep.ps1, 2026-09-17 S03 E-ENV 조사) — 한 줄 그대로 남긴다.
+    if (step.phase === 'prep-guest' && r.out?.includes('HKCU-PROBE')) {
+      const line = r.out.split(/\r?\n/).find((l) => l.includes('HKCU-PROBE')) ?? '';
+      log(`[prep-guest] ${line.trim()}`);
+      evidence.hkcuProbe = line.trim();
     }
     if (r.out) {
       for (const mark of ['SENTINEL-KEPT', 'SENTINEL-GONE', 'LEGACY-KEPT', 'LEGACY-GONE',

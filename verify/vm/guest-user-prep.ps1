@@ -26,8 +26,16 @@ $shellKey2 = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Fol
 
 if ($Redirect) {
   New-Item -ItemType Directory -Force -Path $redirected | Out-Null
-  Set-ItemProperty -Path $shellKey -Name 'Desktop' -Value '%USERPROFILE%\OneDrive\바탕 화면' -Type ExpandString
-  Set-ItemProperty -Path $shellKey2 -Name 'Desktop' -Value $redirected -Type String
+  # PowerShell 레지스트리 공급자(Set-ItemProperty)는 guestcontrol 의 비대화형
+  # --profile 토큰에서 "Requested registry access is not allowed"(SecurityException)
+  # 으로 죽는다(2026-09-17 S04 실측: HKCU\...\User Shell Folders 쓰기 거부).
+  # reg.exe 는 Win32 레지스트리 API 를 곧장 불러 같은 사용자 하이브에 문제없이 쓴다.
+  $userShellKey = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+  $shellFolders = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
+  & reg.exe add $userShellKey /v Desktop /t REG_EXPAND_SZ /d '%USERPROFILE%\OneDrive\바탕 화면' /f | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "reg add (User Shell Folders Desktop) failed with exit $LASTEXITCODE" }
+  & reg.exe add $shellFolders /v Desktop /t REG_SZ /d $redirected /f | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "reg add (Shell Folders Desktop) failed with exit $LASTEXITCODE" }
 }
 
 if ($Check) {
@@ -38,6 +46,23 @@ if ($Check) {
   if ($hereLnk.Count -gt 0) { Write-Output 'REDIRECTED-SHORTCUT-PRESENT' } else { Write-Output 'REDIRECTED-SHORTCUT-MISSING' }
   if ($oldLnk.Count -gt 0) { Write-Output 'OLD-DESKTOP-SHORTCUT-PRESENT' } else { Write-Output 'OLD-DESKTOP-CLEAN' }
   foreach ($l in $hereLnk) { Write-Output ("LNK " + $l.Name) }
+}
+
+# HKCU 탐침(2026-09-17 S03 실측: 설치기의 `reg add HKCU\Environment` 가 이 계정에서 "액세스가
+# 거부되었습니다"). 이 스크립트는 설치기와 **같은 토큰**(guestcontrol --profile)으로 돌므로,
+# 여기서 같은 쓰기가 되는지·HKCU 가 정말 이 사용자의 하이브인지 찍어 두면 시험대 문제인지
+# 제품 문제인지 갈린다. run.mjs 가 'HKCU-PROBE' 줄을 그대로 로그에 옮긴다.
+try {
+  $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+  $hiveLoaded = (& reg.exe query "HKU\$sid" 2>$null | Measure-Object).Count -gt 0
+  & reg.exe add 'HKCU\Environment' /v IRIS_HKCU_PROBE /t REG_SZ /d probe /f 2>&1 | Out-Null
+  $addExit = $LASTEXITCODE
+  & reg.exe delete 'HKCU\Environment' /v IRIS_HKCU_PROBE /f 2>&1 | Out-Null
+  $envKeyOwnerOk = $true
+  try { $null = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true); } catch { $envKeyOwnerOk = $false }
+  Write-Output ("HKCU-PROBE sid={0} hiveLoaded={1} regAddEnvExit={2} netOpenWritable={3} user={4}" -f $sid, $hiveLoaded, $addExit, $envKeyOwnerOk, $env:USERNAME)
+} catch {
+  Write-Output ("HKCU-PROBE failed: " + $_.Exception.Message)
 }
 
 [PSCustomObject]@{

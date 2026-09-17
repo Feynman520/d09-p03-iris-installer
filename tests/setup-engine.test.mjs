@@ -228,6 +228,10 @@ test('StageError 가 아닌 예외는 E-<단계> 로 감싸고, E-OUTSIDE-ROOT �
   });
   assert.equal(plain.failed.code, 'E-ADAPTERS');
   assert.match(plain.failed.message, /예상치 못한 오류/);
+  // 2026-09-17 실제 사용자 실측: 원문이 영수증에만 남아 되짚지 못했다 — failed 에도 실린다.
+  assert.match(String(plain.failed.detail), /x is not a function/, '원문(스택)이 failed.detail 에 실린다');
+  const receiptAfter = JSON.parse(fs.readFileSync(path.join(root, '_agent', 'setup', 'package-receipt.json'), 'utf8'));
+  assert.match(String(receiptAfter.setup.adapters.detail), /x is not a function/, '영수증에도 원문이 남는다');
 
   const root2 = newRoot('outside');
   const { StageError } = await import('../installer/lib/errors.mjs');

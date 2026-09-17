@@ -607,6 +607,48 @@ test('setup: 실패는 그 단계에 코드로 남고 「다시 시도」가 다
   }
 });
 
+test('setup: 실패 원문(detail)과 기록 파일 위치가 진행 상태에 실리고, 「처음부터 다시」는 영수증 9단계를 pending 으로 되돌린다', async () => {
+  let attempt = 0;
+  const s = await atSetupStep({
+    setupRunner: {
+      async runSetup(ctx, { onStage }) {
+        attempt += 1;
+        if (attempt === 1) {
+          onStage({ id: 'unpack', status: 'running' });
+          onStage({ id: 'unpack', status: 'failed', code: 'E-UNPACK', message: '옛 부품 폴더를 옆으로 옮기지 못했습니다.', detail: { slot: 'tools\\node', code: 'EPERM' } });
+          return { ok: false, failed: { id: 'unpack', code: 'E-UNPACK', message: '옛 부품 폴더를 옆으로 옮기지 못했습니다.', detail: { slot: 'tools\\node', code: 'EPERM' } }, pending: [] };
+        }
+        for (const id of SETUP_STAGE_IDS) onStage({ id, status: 'done' });
+        return { ok: true, pending: [] };
+      },
+    },
+  });
+  try {
+    await post(s.url, '/api/setup/start');
+    const failed = await waitForProgress(s.url, (b) => b.error, 'a failure');
+    assert.equal(failed.error.message, '옛 부품 폴더를 옆으로 옮기지 못했습니다.');
+    assert.match(String(failed.error.detail), /EPERM/, '원문이 진행 상태의 error.detail 에 실린다');
+    assert.ok(failed.logs && failed.logs.server, '설치기 로그 경로가 진행 상태에 실린다');
+    assert.equal(failed.stages.find((x) => x.id === 'unpack').detail, '옛 부품 폴더를 옆으로 옮기지 못했습니다.', '단계 줄에는 사람 문장');
+
+    // 처음부터: 부품 대조표는 옆으로, 영수증 9단계는 pending(resetBy=fresh), 옛 기록은 삭제 안 함.
+    const unpackState = path.join(s.soulRoot, '_agent', 'setup', 'unpack-state.json');
+    fs.mkdirSync(path.dirname(unpackState), { recursive: true });
+    fs.writeFileSync(unpackState, '{"parts":{"node":{"verified":true}}}', 'utf8');
+    const fresh = await post(s.url, '/api/setup/fresh');
+    assert.equal(fresh.status, 202);
+    const done = await waitForProgress(s.url, (b) => b.percent === 100, '100% after fresh');
+    assert.equal(done.error, null);
+    assert.equal(attempt, 2);
+    assert.ok(!fs.existsSync(unpackState), 'unpack-state.json 은 옆으로 옮겨진다');
+    assert.ok(fs.readdirSync(path.dirname(unpackState)).some((f) => f.startsWith('unpack-state.json.prev-')), '지우지 않고 .prev-<시각> 으로 남긴다');
+    const receipt = readReceipt(s.soulRoot);
+    for (const id of SETUP_STAGE_IDS) assert.equal(receipt.setup[id].resetBy, 'fresh', `${id} 는 fresh 로 되돌려졌다`);
+  } finally {
+    await s.close();
+  }
+});
+
 test('setup: 엔진 모듈이 아직 없으면 E-NOT-IMPLEMENTED (서버는 그래도 뜬다)', async () => {
   const s = await atSetupStep({
     setupRunner: createSetupRunner({ importer: () => import('../installer/setup/does-not-exist.mjs') }),

@@ -483,9 +483,17 @@ export function defaultVerifiers({ root, manifest, lock, zipRoot, patchRulesFile
       return { ok: r.code === 0 && contains(r, want('claude')), detail: r.out || r.err };
     },
     codex: async () => {
-      const r = await runWrapper(path.join(t, 'codex', 'codex.cmd'), ['--version'], {
-        extraPath: nodeDir, extraEnv: { CODEX_HOME: path.join(root, '_agent', 'codex') },
-      });
+      // 2026-09-17 VM S06 실측(느린 손님): 갓 풀어 놓은 codex 의 첫 `--version` 이 2분 한도를
+      // 넘겨 부품 전체가 E-UNPACK 으로 넘어졌다(Defender 가 수천 파일을 훑는 중). 한도 5분,
+      // 실패면 20초 뒤 한 번 더(두 번째는 캐시가 따뜻해 빠르다).
+      let r = null;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        r = await runWrapper(path.join(t, 'codex', 'codex.cmd'), ['--version'], {
+          extraPath: nodeDir, extraEnv: { CODEX_HOME: path.join(root, '_agent', 'codex') }, timeoutMs: 300000,
+        });
+        if (r.code === 0 && contains(r, want('codex'))) break;
+        if (attempt === 1) await new Promise((res) => setTimeout(res, 20000));
+      }
       return { ok: r.code === 0 && contains(r, want('codex')), detail: r.out || r.err };
     },
     // File-based on purpose: starting the relay here would bind port 3456 on

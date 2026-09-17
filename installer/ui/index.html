@@ -255,6 +255,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
       <div id="setup-note"></div>
       <div class="acts">
         <button class="go" id="btn-setup-retry" hidden>다시 시도</button>
+        <button class="ghost" id="btn-setup-fresh" hidden>처음부터 다시 설치</button>
         <span class="spacer"></span>
         <button class="ghost" id="btn-log-setup">로그 경로 복사</button>
       </div>
@@ -990,14 +991,32 @@ function renderSetup(s) {
   if (st.error) {
     const code = st.error.code || (byId.get(st.stage) || {}).code || '';
     badge('setup', '막힘', 'bad');
+    const help = ERROR_HELP[code] || '';
+    const msg = st.error.message || '';
+    // 2026-09-17 실제 사용자 요청: "문제가 생겼을 때 자세한 문제를 보여줘야 한다".
+    // 쉬운 안내문 → 엔진의 실제 문장 → 원문(경로·오류 코드) → 기록 파일 위치 순서로 쌓는다.
+    const logs = st.logs || {};
+    const rawLines = [];
+    if (st.error.detail) rawLines.push(st.error.detail);
+    if (logs.soul) rawLines.push('기록 파일: ' + logs.soul);
+    if (logs.server) rawLines.push('설치기 로그: ' + logs.server);
+    const raw = rawLines.length
+      ? '<details><summary>자세한 원인 보기</summary><pre>' + esc(rawLines.join('\n')) + '</pre></details>'
+      : '';
     note('setup-note', '<b>' + esc(SETUP_STAGES.find((p) => p[0] === st.stage) ? SETUP_STAGES.find((p) => p[0] === st.stage)[1] : st.stage) + '</b>에서 멈췄습니다' +
-      (code ? ' (' + esc(code) + ')' : '') + '.<br>' + esc(ERROR_HELP[code] || st.error.message || '자세한 까닭은 기록 파일에 있습니다.') +
-      '<br>만든 것은 하나도 지우지 않았습니다. 다시 시도하면 멈춘 곳부터 이어서 합니다.', 'bad');
+      (code ? ' (' + esc(code) + ')' : '') + '.<br>' + esc(help || msg || '자세한 까닭은 기록 파일에 있습니다.') +
+      (help && msg && msg !== help ? '<br><span class="dt">무슨 일: ' + esc(msg) + '</span>' : '') +
+      '<br>만든 것은 하나도 지우지 않았습니다. 「다시 시도」는 멈춘 곳부터, 「처음부터 다시 설치」는 아홉 단계를 전부 다시 합니다(옛 부품은 .prev 로 옮겨 둡니다).' +
+      raw, 'bad');
     $('btn-setup-retry').hidden = false;
     $('btn-setup-retry').disabled = false;
+    $('btn-setup-fresh').hidden = false;
+    $('btn-setup-fresh').disabled = false;
     return 'failed';
   }
   $('btn-setup-retry').hidden = true;
+  $('btn-setup-fresh').hidden = true;
+  freshArmed = false;
   if (st.stage === 'done' || Number(st.percent) >= 100) { badge('setup', '완료', 'done'); return 'done'; }
   badge('setup', '진행중', 'run');
   note('setup-note', '');
@@ -1021,6 +1040,26 @@ $('btn-setup-retry').onclick = async () => {
   note('setup-note', '멈춘 곳부터 다시 합니다…');
   const { body } = await api('/api/setup/retry', {});
   if (body && body.ok === false) { note('setup-note', esc(body.message || '다시 시작하지 못했습니다.'), 'bad'); $('btn-setup-retry').disabled = false; return; }
+  watchSetup();
+};
+
+// 「처음부터 다시 설치」는 두 번 눌러야 한다(브라우저 confirm 창은 쓰지 않는다 —
+// 자동 시험 브라우저가 그 창을 못 누른다). 첫 번째는 무엇을 하는지 말하고, 두 번째가 실행.
+let freshArmed = false;
+$('btn-setup-fresh').onclick = async () => {
+  if (!freshArmed) {
+    freshArmed = true;
+    $('btn-setup-fresh').textContent = '정말 처음부터 (한 번 더 누르기)';
+    note('setup-note', '아홉 단계를 전부 처음부터 다시 합니다. 지우는 것은 없습니다 — 옛 부품은 <span class="path">.prev</span> 이름으로 옆에 남기고, 폴더·지침·자료는 그대로 둡니다. 정말 그렇게 하려면 같은 단추를 한 번 더 눌러 주세요.');
+    return;
+  }
+  freshArmed = false;
+  $('btn-setup-fresh').textContent = '처음부터 다시 설치';
+  $('btn-setup-fresh').disabled = true;
+  $('btn-setup-retry').disabled = true;
+  note('setup-note', '처음부터 다시 합니다…');
+  const { body } = await api('/api/setup/fresh', {});
+  if (body && body.ok === false) { note('setup-note', esc(body.message || '다시 시작하지 못했습니다.'), 'bad'); $('btn-setup-fresh').disabled = false; $('btn-setup-retry').disabled = false; return; }
   watchSetup();
 };
 

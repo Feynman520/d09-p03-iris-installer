@@ -264,6 +264,14 @@ function percentOf(done) {
   return Math.floor((done / STAGES.length) * 100);
 }
 
+// 원문(detail)은 문자열(스택)일 수도, 단계가 넣은 객체(경로·오류 코드)일 수도 있다.
+// 로그·화면에는 한 줄 문자열로 싣는다.
+export function detailText(detail) {
+  if (detail == null) return '';
+  if (typeof detail === 'string') return detail;
+  try { return JSON.stringify(detail); } catch { return String(detail); }
+}
+
 function normalizePending(list) {
   if (!Array.isArray(list)) return [];
   return list
@@ -306,7 +314,7 @@ export async function runSetup(ctx, options = {}) {
     engineCtx = normalizeContext(ctx);
   } catch (err) {
     const e = isStageError(err) ? err : new StageError('E-SETUP', '세팅을 시작할 수 없습니다.', String(err?.message ?? err));
-    return { ok: false, failed: { id: null, code: e.code, message: e.message }, pending: [], stages: {} };
+    return { ok: false, failed: { id: null, code: e.code, message: e.message, detail: e.detail ?? null }, pending: [], stages: {} };
   }
 
   const { root } = engineCtx;
@@ -372,8 +380,8 @@ export async function runSetup(ctx, options = {}) {
     try {
       saveStage(id, { status: 'running', startedAt, finishedAt: null, code: null, message: null });
     } catch (err) {
-      failed = { id, code: err.code, message: err.message };
-      emit({ id, status: 'failed', code: err.code, message: err.message, detail: err.message, percent: percentOf(done) });
+      failed = { id, code: err.code, message: err.message, detail: err.detail ?? null };
+      emit({ id, status: 'failed', code: err.code, message: err.message, detail: err.detail ?? null, percent: percentOf(done) });
       break;
     }
 
@@ -426,9 +434,13 @@ export async function runSetup(ctx, options = {}) {
       const stageErr = isStageError(err)
         ? err
         : new StageError(code, `${label} 단계에서 예상치 못한 오류가 났습니다.`, String(err?.stack ?? err?.message ?? err));
-      failed = { id, code: stageErr.code, message: stageErr.message };
-      stages[id] = { status: 'failed', code: stageErr.code, message: stageErr.message };
-      log(`[engine] ${id}(${label}) — 실패 ${stageErr.code}: ${stageErr.message}`);
+      // 2026-09-17 실제 사용자 실측(2.0.2, E-UNPACK "예상치 못한 오류"): 원문(detail)이
+      // 영수증에만 남고 화면·로그 어디에도 없어 원인을 되짚을 수 없었다. 이제 화면(failed·
+      // emit)과 로그 세 곳 모두에 원문을 싣는다.
+      const detail = stageErr.detail ?? null;
+      failed = { id, code: stageErr.code, message: stageErr.message, detail };
+      stages[id] = { status: 'failed', code: stageErr.code, message: stageErr.message, detail };
+      log(`[engine] ${id}(${label}) — 실패 ${stageErr.code}: ${stageErr.message}${detail == null ? '' : `\n  원문: ${detailText(detail)}`}`);
       try {
         saveStage(id, {
           status: 'failed',
@@ -443,7 +455,7 @@ export async function runSetup(ctx, options = {}) {
       }
       emit({
         id, status: 'failed', code: stageErr.code, message: stageErr.message,
-        detail: stageErr.message, percent: percentOf(done),
+        detail, percent: percentOf(done),
       });
       break; // 뒤 단계는 앞 단계의 결과 위에 선다 — 계속 갈 수 없다
     }

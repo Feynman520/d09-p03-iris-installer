@@ -503,11 +503,27 @@ export async function run(ctx) {
     // 자리 비우기. 'merge' 폴더는 그 사람 것과 섞여 살기 때문에 절대 옮기지
     // 않는다(옮기면 그 사람 파일이 `.prev` 로 끌려간다).
     let moved = null;
-    if (layout.mode !== 'merge') moved = preserveAside(slot);
+    // 2026-09-17 실제 사용자 실측(2.0.2): 이 이름 바꾸기가 던진 예외가 try 밖이라 "예상치
+    // 못한 오류"로만 보였다. 옛 사본을 옆으로 옮기지 못한 것은 거의 언제나 **다른 프로그램이
+    // 그 폴더를 붙잡고 있는 것**(옛 설치 서버·IRIS 창·터미널·백신)이라 그 사실을 문장으로 말한다.
+    const aside = typeof ctx.preserveAside === 'function' ? ctx.preserveAside : preserveAside;
+    const setAside = (target) => {
+      try {
+        return aside(target);
+      } catch (err) {
+        const codeText = err?.code ? `(${err.code})` : '';
+        throw new StageError(
+          'E-UNPACK',
+          `옛 부품 폴더 "${rel(target)}" 을(를) 옆으로 옮기지 못했습니다${codeText}. 그 폴더를 쓰는 프로그램(IRIS 창·터미널·백신)을 닫거나 PC 를 다시 시작한 뒤 「다시 시도」를 눌러 주세요.`,
+          { part: partId, slot: rel(target), error: String(err?.message ?? err), code: err?.code ?? null },
+        );
+      }
+    };
+    if (layout.mode !== 'merge') moved = setAside(slot);
     else if (layout.kind === 'file') {
       // 낱개 파일은 그 파일만 옮긴다(폴더가 아니라).
       const target = path.join(dest, path.basename(source));
-      if (fs.existsSync(target) && !sameBytes(fs, source, target)) moved = preserveAside(target);
+      if (fs.existsSync(target) && !sameBytes(fs, source, target)) moved = setAside(target);
     }
 
     try {

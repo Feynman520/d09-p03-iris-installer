@@ -128,12 +128,16 @@ export function setupPercent(setup) {
 
 // One engine stage transition (or one sub-progress tick). Mutates + returns
 // `setup` so the caller can save it in the same turn.
-export function markSetupStage(setup, { id, status, code = null, detail = null, sub = null, percent = null }) {
+// `message` = 화면에 보일 한 문장, `detail` = 원문(스택·경로·오류 코드; 문자열이나 객체).
+// `message` 없이 `detail` 만 문자열로 오면(옛 호출자) 그것을 문장으로 쓴다.
+export function markSetupStage(setup, { id, status, code = null, message = null, detail = null, sub = null, percent = null }) {
+  const text = message ?? (typeof detail === 'string' ? detail : (detail?.message ?? null));
+  const raw = message == null ? null : detail;
   const entry = setup.stages.find((s) => s.id === id);
   if (entry) {
     if (status) entry.status = status === 'skipped-done' ? 'done' : status;
     if (code !== null) entry.code = code;
-    if (detail !== null) entry.detail = detail;
+    if (text !== null) entry.detail = text;
     if (sub !== null) entry.sub = sub;
   }
   if (id) {
@@ -144,7 +148,10 @@ export function markSetupStage(setup, { id, status, code = null, detail = null, 
     setup.error = {
       id,
       code,
-      message: typeof detail === 'string' ? detail : (detail?.message ?? null),
+      message: text,
+      // 2026-09-17: 원문이 영수증에만 남아 실제 사용자 실패(E-UNPACK)를 되짚지 못했다.
+      // 화면이 펼침 상자로 보여 주도록 진행 상태에도 싣는다.
+      detail: raw == null ? null : (typeof raw === 'string' ? raw : JSON.stringify(raw)),
     };
   }
   setup.percent = percent === null ? setupPercent(setup) : percent;

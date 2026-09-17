@@ -252,6 +252,30 @@ test('unpack: 판이 바뀌면 옛 사본을 .prev 로 옮기고 지우지 않�
   assert.ok(recorded.moved.some((m) => m.part === 'node' && m.previous.endsWith('node.prev')));
 });
 
+test('unpack: 옛 사본을 .prev 로 옮기지 못하면(다른 프로그램이 붙잡음) 까닭이 문장에 담긴 E-UNPACK 이다', async () => {
+  // 2026-09-17 실제 사용자 실측(2.0.2): 이 예외가 try 밖이라 "예상치 못한 오류"로만 보였다.
+  const v1 = await makePayload('aside-v1', { nodeVersion: '24.21.0' });
+  const ctx = makeCtx('aside', { built: v1 });
+  ctx.verifiers = passAll(v1.lock);
+  await unpack.run(ctx);
+
+  const v2 = await makePayload('aside-v2', { nodeVersion: '25.0.0' });
+  const ctx2 = makeCtx('aside', { built: v2, root: ctx.root });
+  ctx2.verifiers = passAll(v2.lock);
+  ctx2.preserveAside = () => { const e = new Error('EPERM: operation not permitted, rename'); e.code = 'EPERM'; throw e; };
+  await assert.rejects(unpack.run(ctx2), (err) => {
+    assert.ok(isStageError(err));
+    assert.equal(err.code, 'E-UNPACK');
+    assert.match(err.message, /옆으로 옮기지 못했습니다\(EPERM\)/);
+    assert.match(err.message, /다시 시작한 뒤/);
+    assert.equal(err.detail.part, 'node');
+    assert.equal(err.detail.code, 'EPERM');
+    return true;
+  });
+  // 아무것도 지우지 않았다: 옛 node 는 제자리.
+  assert.equal(fs.readFileSync(path.join(ctx.root, '_agent', 'shared', 'tools', 'node', 'node.exe'), 'utf8'), 'fake node 24.21.0');
+});
+
 test('unpack: 섞여 사는 폴더(_ontology)는 통째로 옮기지 않고 그 사람 파일을 남긴다', async () => {
   const v1 = await makePayload('merge-v1');
   const ctx = makeCtx('merge', { built: v1 });

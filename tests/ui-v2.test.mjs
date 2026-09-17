@@ -55,7 +55,7 @@ test('ui/index.html: 계약(API v2)의 길만 부른다', () => {
   const src = html();
   const must = [
     '/api/state', '/api/precheck', '/api/locate', '/api/choice', '/api/structure', '/api/presets',
-    '/api/summary/confirm', '/api/setup/start', '/api/setup/progress', '/api/setup/retry',
+    '/api/summary/confirm', '/api/setup/start', '/api/setup/progress', '/api/setup/retry', '/api/setup/fresh',
     '/api/online/start', '/api/online/status', '/api/online/login', '/api/online/login/retry',
     '/api/online/relay', '/api/report', '/api/open-face', '/api/log/path',
   ];
@@ -80,6 +80,10 @@ test('ui/index.html: 설치 9단계와 오류 코드가 한국어 설명과 함�
   }
   assert.ok(src.includes('다시 시도'), '실패 카드에는 「다시 시도」가 있다');
   assert.ok(src.includes('로그 경로 복사'), '실패 카드에는 「로그 경로 복사」가 있다');
+  // 2026-09-17 실제 사용자 요청: 처음부터 다시 + 자세한 원인.
+  assert.ok(src.includes('처음부터 다시 설치'), '실패 카드에는 「처음부터 다시 설치」가 있다');
+  assert.ok(src.includes('자세한 원인 보기'), '실패 카드는 원문(detail)과 기록 파일 위치를 펼침 상자로 보여 준다');
+  assert.ok(/st\.error\.detail/.test(src) && /logs\.soul/.test(src), '원문과 기록 파일 경로를 진행 상태에서 읽는다');
   assert.ok(/x\.sub && x\.sub\.total/.test(src), '풀기 단계에는 부품별 하위 막대가 있다');
 });
 
