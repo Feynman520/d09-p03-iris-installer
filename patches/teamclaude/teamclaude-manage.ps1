@@ -2,6 +2,10 @@ param([ValidateSet('status','start','restart','stop')][string]$Action = 'status'
 $ErrorActionPreference = 'Stop'
 $configPath = if ($env:TEAMCLAUDE_CONFIG) { $env:TEAMCLAUDE_CONFIG } else { Join-Path $env:USERPROFILE '.config\teamclaude.json' }
 $runtimePath = Join-Path $env:USERPROFILE '.config\teamclaude.server.json'
+# 2026-09-17 (IRIS 2.0.10, VM S01 relay probe): on a clean PC %USERPROFILE%\.config does not exist yet,
+# so Set-Content on the runtime/log files threw DirectoryNotFound and 'start' exited 1.
+$runtimeDir = Split-Path -Parent $runtimePath
+if (-not (Test-Path -LiteralPath $runtimeDir)) { New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null }
 $entryPath = if ($EntryPath) { $EntryPath } else { Join-Path $env:APPDATA 'npm\node_modules\@karpeleslab\teamclaude\src\index.js' }
 $nodePath = if ($NodePath) { $NodePath } else { (Get-Command node.exe).Source }
 $config = Get-Content -LiteralPath $configPath -Encoding UTF8 -Raw | ConvertFrom-Json

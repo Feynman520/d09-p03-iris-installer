@@ -68,9 +68,9 @@ function note(step, data) {
 // 도달하지 못한다 — 시나리오 하나가 통째로 매달린 채 증거 없이 끝난다.
 const REQ_TIMEOUT_MS = Number(arg('--request-timeout-ms', 60 * 1000));
 
-async function fetchWithTimeout(url, init = {}) {
+async function fetchWithTimeout(url, init = {}, { timeoutMs = REQ_TIMEOUT_MS } = {}) {
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), REQ_TIMEOUT_MS);
+  const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: ac.signal });
   } finally {
@@ -78,8 +78,8 @@ async function fetchWithTimeout(url, init = {}) {
   }
 }
 
-async function post(p, body) {
-  const res = await fetchWithTimeout(`${URL_BASE}${p}`, { method: 'POST', headers: JSON_HDR, body: JSON.stringify(body ?? {}) });
+async function post(p, body, opts = {}) {
+  const res = await fetchWithTimeout(`${URL_BASE}${p}`, { method: 'POST', headers: JSON_HDR, body: JSON.stringify(body ?? {}) }, opts);
   let json = null;
   try { json = await res.json(); } catch { json = null; }
   return { status: res.status, json };
@@ -276,7 +276,8 @@ async function main() {
     // proxy.port 누락, 시작 스크립트 파이프 대기). `/api/online/relay` 는 로그인 상태를 묻지 않고
     // 중계기를 띄워 건강 확인까지 한다. 오프라인(net 차단)에서도 로컬 중계기는 뜰 수 있어 시도한다.
     try {
-      const relay = await post('/api/online/relay');   // { status, json } — Response 가 아니다
+      // 중계기 시작은 관리 스크립트 한도(90초)+건강 확인까지 2분 넘게 걸릴 수 있다 — 요청 한도 4분.
+      const relay = await post('/api/online/relay', {}, { timeoutMs: 4 * 60 * 1000 });   // { status, json } — Response 가 아니다
       const body = relay.json ?? {};
       const status = await getJson('/api/online/status').catch(() => null);
       result.relayProbe = {
