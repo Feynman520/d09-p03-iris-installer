@@ -515,7 +515,10 @@ test('env: 영수증 env 에 teamclaudeConfig 를 남기고, relay 가 만드는
   // ④ ⑤-7 relay 가 **바로 그 파일**을 만든다
   await relay.run(ctx);
   assert.ok(fs.existsSync(want), 'relay 가 영수증이 가리키는 자리에 설정을 만들어야 한다');
-  assert.deepEqual(JSON.parse(fs.readFileSync(want, 'utf8')), { accounts: [] });
+  // 2026-09-17(2.0.8): 기본 틀(proxy.port 3456 포함)로 만든다 — 계정은 0.
+  const cfgWritten = JSON.parse(fs.readFileSync(want, 'utf8'));
+  assert.deepEqual(cfgWritten.accounts, []);
+  assert.equal(cfgWritten.proxy.port, 3456);
 });
 
 test('env: 영수증이 없어도(엔진 없이 단독 호출) 멈추지 않는다', async () => {

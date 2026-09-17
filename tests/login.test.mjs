@@ -61,6 +61,30 @@ test('ensureProxy: dead -> start invoked with -NodePath/-EntryPath, becomes aliv
   assert.deepEqual(result, { alive: true, started: true });
 });
 
+test('ensureRelayConfigDefaults: 빠진 칸만 채우고 있는 값은 그대로, 파일 없으면 아무것도 안 한다 (2.0.8)', async () => {
+  const { ensureRelayConfigDefaults, defaultRelayConfig } = await import('../installer/lib/login.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-relaycfg-'));
+  const cfg = path.join(dir, 'teamclaude.json');
+  // 없는 파일: 무접촉
+  assert.deepEqual(ensureRelayConfigDefaults(cfg), { patched: [] });
+  assert.ok(!fs.existsSync(cfg));
+  // 옛 틀: accounts 만
+  fs.writeFileSync(cfg, JSON.stringify({ accounts: [{ id: 'x', provider: 'claude' }] }), 'utf8');
+  const r1 = ensureRelayConfigDefaults(cfg);
+  assert.ok(r1.patched.includes('proxy') && r1.patched.includes('upstream'));
+  const after = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+  assert.equal(after.proxy.port, 3456);
+  assert.match(after.proxy.apiKey, /^tc-/);
+  assert.deepEqual(after.accounts, [{ id: 'x', provider: 'claude' }]);
+  // 두 번째는 아무것도 안 바꾼다
+  assert.deepEqual(ensureRelayConfigDefaults(cfg), { patched: [] });
+  // 사용자가 바꾼 포트·값은 존중(3456 아니어도 덮지 않는다 — 관리 스크립트가 거절할 뿐)
+  fs.writeFileSync(cfg, JSON.stringify({ ...defaultRelayConfig(), proxy: { port: 4000, apiKey: 'tc-user' }, upstream: 'https://x' }), 'utf8');
+  assert.deepEqual(ensureRelayConfigDefaults(cfg), { patched: [] });
+  assert.equal(JSON.parse(fs.readFileSync(cfg, 'utf8')).proxy.port, 4000);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('ensureProxy: dead, start fails, probe still false -> started:true, alive:false', async () => {
   const result = await ensureProxy({
     root: 'C:\\FAKE-ROOT',

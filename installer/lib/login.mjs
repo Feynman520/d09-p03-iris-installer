@@ -17,6 +17,7 @@
 // reads the credential file itself (out of process), and the codex path only
 // ever writes a filesystem *path* into TeamClaude's config, never a token.
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -333,6 +334,65 @@ export async function relayImport({
   } catch {
     return startDetachedLogin('chatgpt');
   }
+}
+
+// ---------------------------------------------------------------------------
+// 중계기 설정 파일의 기본 틀 (2026-09-17 실제 사용자 실측, 2.0.7 → 2.0.8)
+//
+// 설치기는 지금까지 `{ accounts: [] }` 만 썼다. 그런데 관리 스크립트
+// (patches/teamclaude/teamclaude-manage.ps1 9행)는 `config.proxy.port -eq 3456` 을
+// 검사하고, 중계기 자신의 `loadConfig()` 는 빠진 칸을 기본값으로 채우지 **않는다**
+// (`createDefaultConfig()` 는 새 파일을 만들 때만 쓰인다). 그래서 실제 PC 에서
+// 「계정 연결」이 "This helper manages only the TeamClaude proxy on port 3456" 로
+// 서 버렸다 — 가상 PC 시험은 로그인 앞에서 멈추므로 이 단계를 밟지 않아 못 잡았다.
+// 아래 틀은 중계기 1.1.16 `createDefaultConfig()` 와 같은 칸이다(판 고정, lock.json).
+// ---------------------------------------------------------------------------
+export const RELAY_PORT_DEFAULT = 3456;
+
+export function defaultRelayConfig({ randomBytes = crypto.randomBytes } = {}) {
+  return {
+    proxy: { port: RELAY_PORT_DEFAULT, apiKey: `tc-${randomBytes(24).toString('base64url')}` },
+    upstream: 'https://api.anthropic.com',
+    switchThreshold: 0.98,
+    holdSeconds: 0,
+    distributeSessions: false,
+    sessionTitles: { enabled: false, width: 18 },
+    eventLogging: 'hide',
+    blockedModels: [],
+    accounts: [],
+  };
+}
+
+/**
+ * 이미 있는 설정 파일에 빠진 칸(특히 `proxy.port`)만 채운다. 계정·토큰·사용자가 바꾼 값은
+ * 한 글자도 건드리지 않는다. 파일이 없거나 읽을 수 없으면 아무것도 하지 않는다.
+ * @returns {{ patched: string[] }} 채운 칸 이름(없으면 빈 배열)
+ */
+export function ensureRelayConfigDefaults(configPath, { fs: fsImpl = fs, randomBytes } = {}) {
+  if (!configPath || !fsImpl.existsSync(configPath)) return { patched: [] };
+  let config;
+  try {
+    config = JSON.parse(fsImpl.readFileSync(configPath, 'utf8'));
+  } catch {
+    return { patched: [] };
+  }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return { patched: [] };
+  const defaults = defaultRelayConfig(randomBytes ? { randomBytes } : {});
+  const patched = [];
+  for (const [key, value] of Object.entries(defaults)) {
+    if (config[key] === undefined || config[key] === null) { config[key] = value; patched.push(key); }
+  }
+  if (typeof config.proxy !== 'object' || config.proxy === null) { config.proxy = defaults.proxy; if (!patched.includes('proxy')) patched.push('proxy'); }
+  if (Number(config.proxy.port) !== RELAY_PORT_DEFAULT && (config.proxy.port === undefined || config.proxy.port === null)) {
+    config.proxy.port = RELAY_PORT_DEFAULT; patched.push('proxy.port');
+  }
+  if (!config.proxy.apiKey) { config.proxy.apiKey = defaults.proxy.apiKey; patched.push('proxy.apiKey'); }
+  if (!Array.isArray(config.accounts)) { config.accounts = []; if (!patched.includes('accounts')) patched.push('accounts'); }
+  if (patched.length === 0) return { patched };
+  const tmp = `${configPath}.tmp`;
+  fsImpl.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  fsImpl.renameSync(tmp, configPath);
+  return { patched };
 }
 
 /**

@@ -732,6 +732,28 @@ test('startRelay: alive + healthy -> done with the account count, zero model cal
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('startRelay: 옛 설정(proxy.port 없음)은 계정을 건드리지 않고 빠진 칸만 채운 뒤 띄운다 (2.0.8)', async () => {
+  // 2026-09-17 실제 사용자 실측: "This helper manages only the TeamClaude proxy on port 3456".
+  const root = tmpRoot('relaypatch');
+  const cfg = path.join(root, 'tc.json');
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(cfg, JSON.stringify({ accounts: [{ id: 'a1', provider: 'chatgpt', name: 'kept' }] }), 'utf8');
+  const seen = [];
+  const r = await startRelay({
+    root,
+    resolveConfigPathFn: () => cfg,
+    ensureProxyFn: async (a) => { seen.push(JSON.parse(fs.readFileSync(a.teamclaudeConfigPath, 'utf8'))); return { alive: true, started: true }; },
+    healthFn: async () => ({ ok: true, status: 200 }),
+    countAccountsFn: async ({ provider }) => (provider === 'chatgpt' ? 1 : 0),
+  });
+  assert.equal(r.ok, true);
+  const after = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+  assert.equal(after.proxy.port, 3456, '중계기를 띄우기 전에 proxy.port 가 채워져 있다');
+  assert.equal(seen[0].proxy.port, 3456, 'ensureProxy 가 읽는 시점에 이미 채워져 있다');
+  assert.deepEqual(after.accounts, [{ id: 'a1', provider: 'chatgpt', name: 'kept' }], '계정은 한 글자도 안 바뀐다');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('startRelay: will not start -> E-ONLINE-RELAY', async () => {
   const root = tmpRoot('relayfail');
   const r = await startRelay({

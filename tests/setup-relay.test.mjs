@@ -101,7 +101,12 @@ test('relay: 설정 뼈대·대시보드·Face 실행기·소환하기를 만든
   // ① 중계기 설정 뼈대 -- 계정 0, 토큰 0
   const cfg = portableTeamclaudeConfigPath(root);
   assert.ok(fs.existsSync(cfg));
-  assert.deepEqual(JSON.parse(fs.readFileSync(cfg, 'utf8')), { accounts: [] });
+  // 2026-09-17(2.0.8): 관리 스크립트가 `proxy.port -eq 3456` 을 검사하므로 기본 틀을 통째로 쓴다. 계정·토큰은 0.
+  const written = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+  assert.deepEqual(written.accounts, []);
+  assert.equal(written.proxy.port, 3456);
+  assert.match(written.proxy.apiKey, /^tc-/);
+  assert.equal(written.upstream, 'https://api.anthropic.com');
   assert.equal(recorded.config.status, 'created');
 
   // ② 대시보드 바로가기
@@ -183,8 +188,17 @@ test('relay: 이미 있는 설정 파일의 계정을 건드리지 않는다', a
   fs.writeFileSync(cfg, JSON.stringify(mine, null, 2), 'utf8');
 
   const { recorded } = await relay.run(makeCtx(root));
-  assert.deepEqual(JSON.parse(fs.readFileSync(cfg, 'utf8')), mine);
-  assert.equal(recorded.config.status, 'kept');
+  // 2026-09-17(2.0.8): 계정은 한 글자도 안 바뀌고, 빠진 기본 칸(proxy.port 등)만 채워진다.
+  const after = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+  assert.deepEqual(after.accounts, mine.accounts);
+  assert.equal(after.proxy.port, 3456);
+  assert.equal(recorded.config.status, 'patched');
+  assert.ok(recorded.config.patched.includes('proxy'));
+
+  // 이미 온전한 파일은 'kept' 그대로.
+  const { recorded: again } = await relay.run(makeCtx(root));
+  assert.equal(again.config.status, 'kept');
+  assert.deepEqual(JSON.parse(fs.readFileSync(cfg, 'utf8')), after);
 });
 
 test('relay: 영수증 env.teamclaudeConfig 가 가리키는 자리에 만든다', async () => {

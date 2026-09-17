@@ -29,7 +29,7 @@ import path from 'node:path';
 import { StageError } from '../lib/errors.mjs';
 import { assertInside, ensureDir } from '../lib/paths.mjs';
 import { manageScriptPath } from '../lib/proxy.mjs';
-import { portableTeamclaudeConfigPath } from '../lib/login.mjs';
+import { portableTeamclaudeConfigPath, defaultRelayConfig, ensureRelayConfigDefaults } from '../lib/login.mjs';
 import { writeFaceLauncher, faceLauncherPath, faceLauncherContent } from '../lib/handoff.mjs';
 
 export const id = 'relay';
@@ -119,7 +119,10 @@ export function dashboardContent(relFromRoot) {
 // 더한다). 계정·토큰은 한 글자도 쓰지 않는다: 로그인은 ⑥-3 이 하고, 그 결과는
 // 에이전트 CLI 가 자기 자격증명 파일에 쓴다.
 export function emptyRelayConfig() {
-  return { accounts: [] };
+  // 2026-09-17(2.0.8): `{ accounts: [] }` 만 쓰면 관리 스크립트가 `proxy.port` 검사에서 거절한다
+  // (실제 사용자 실측 "This helper manages only the TeamClaude proxy on port 3456"). 중계기의
+  // 기본 틀(proxy.port 3456 등)을 그대로 쓴다 — 계정·토큰은 여전히 0.
+  return defaultRelayConfig();
 }
 
 // ---------------------------------------------------------------------------
@@ -182,8 +185,11 @@ export async function run(ctx) {
   const cfgDir = assertInside(root, path.dirname(cfgFile), { fs, cache: linkCache });
   ensureDir(cfgDir, { fs });
   if (fs.existsSync(cfgFile)) {
-    recorded.config = { path: rel(cfgFile), status: 'kept' };
+    // 옛 설치가 남긴 파일은 그대로 두되, 빠진 기본 칸(proxy.port 등)만 채운다(계정·토큰 무접촉).
+    const { patched } = ensureRelayConfigDefaults(cfgFile, { fs });
+    recorded.config = { path: rel(cfgFile), status: patched.length ? 'patched' : 'kept', ...(patched.length ? { patched } : {}) };
     recorded.files.kept.push(rel(cfgFile));
+    if (patched.length) log(`[relay] 중계기 설정에 빠진 칸을 채움: ${patched.join(', ')}`);
   } else {
     const tmp = `${cfgFile}.tmp`;
     fs.writeFileSync(tmp, `${JSON.stringify(emptyRelayConfig(), null, 2)}\n`, 'utf8');

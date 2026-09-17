@@ -108,6 +108,12 @@ if ($cpba -eq 0) {
   # 2026-09-17 14:31 실측: 연결 복제본의 첫 부팅(하드웨어 재인식)은 데스크톱이 2분 넘게 늦어 여섯 번으로
   # 모자랐다(S04 v3 실행 실패) → 열다섯 번(5분).
   $runasTries = 15
+  # 2026-09-17 15:45 실측: 두 VM 이 같이 돌면 복제본의 데스크톱이 5분(15회)에도 안 떠 S03 준비가 죽었다.
+  # 헛되이 RunAs 를 두드리는 대신 **탐색기(explorer.exe)가 뜰 때까지** 먼저 기다린다(최대 15분) —
+  # 대화형 윈도우 스테이션이 준비됐다는 가장 정직한 신호다. 그 뒤에야 15회 재시도가 시작된다.
+  $deskDeadline = (Get-Date).AddMinutes(15)
+  while ((Get-Date) -lt $deskDeadline -and -not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 10 }
+  Write-Output ('DESKTOP-READY ' + [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue))
   for ($try = 1; $try -le $runasTries; $try++) {
     try {
       $rp = Start-Process -FilePath $ps -Verb RunAs -PassThru -WindowStyle Hidden `

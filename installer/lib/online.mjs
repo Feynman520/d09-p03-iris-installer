@@ -40,7 +40,7 @@ import { assertInside } from './paths.mjs';
 import { defaultNpmInstall } from './install.mjs';
 import {
   startCliLogin, cliLoginStatus, relayImport, relayStatus,
-  countProviderAccounts, resolveTeamclaudeConfigPath,
+  countProviderAccounts, resolveTeamclaudeConfigPath, ensureRelayConfigDefaults,
 } from './login.mjs';
 import { ensureProxy } from './proxy.mjs';
 import { readReceipt, writeReceipt, setInstalled } from './receipt.mjs';
@@ -993,12 +993,22 @@ export async function startRelay({
   healthFn = relayHealth,
   countAccountsFn = countProviderAccounts,
   resolveConfigPathFn = resolveTeamclaudeConfigPath,
+  ensureRelayConfigDefaultsFn = ensureRelayConfigDefaults,
   readReceiptFn = readReceipt, writeReceiptFn = writeReceipt,
   log = () => {},
 } = {}) {
   const deps = { readReceiptFn, writeReceiptFn };
   const configPath = teamclaudeConfigPath ?? resolveConfigPathFn({ root });
   const nodeBase = nodeDir ?? path.join(toolsDir(root), 'node');
+
+  // 2026-09-17(2.0.8): 2.0.4~2.0.7 이 쓴 설정 파일에는 `proxy.port` 가 없어 관리 스크립트가 거절했다.
+  // 이미 그 판으로 깐 PC 는 ⑤-7 이 끝났다고 기록돼 다시 돌지 않으므로 **여기서도** 빠진 칸을 채운다.
+  try {
+    const { patched } = ensureRelayConfigDefaultsFn(configPath);
+    if (patched.length) log(`relay config patched: ${patched.join(', ')}`);
+  } catch (err) {
+    log(`relay config patch skipped: ${String(err?.message ?? err)}`);
+  }
 
   let proxy;
   try {
