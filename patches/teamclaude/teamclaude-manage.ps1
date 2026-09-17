@@ -59,7 +59,10 @@ try {
 }
 @{pid=$started.Id;port=$port;startedAt=[DateTime]::UtcNow.ToString('o');managedBy='teamclaude-manage.ps1';stdout="$logBase.stdout.log";stderr="$logBase.stderr.log"} |
     ConvertTo-Json | Set-Content -LiteralPath $runtimePath -Encoding UTF8
-for ($attempt=0; $attempt -lt 40; $attempt++) {
+# 2026-09-17 (IRIS 2.0.11, VM S01 relay probe): 40 x 250 ms (~10 s) was too short on a cold PC where the
+# first node start of the package is still being scanned by Defender. Wait up to ~60 s; the loop still
+# stops early if the process dies.
+for ($attempt=0; $attempt -lt 240; $attempt++) {
     Start-Sleep -Milliseconds 250
     try {
         $state = Invoke-RestMethod -Uri "http://127.0.0.1:$port/teamclaude/status" -TimeoutSec 2
@@ -71,4 +74,8 @@ for ($attempt=0; $attempt -lt 40; $attempt++) {
         if (-not (Get-Process -Id $started.Id -ErrorAction SilentlyContinue)) { break }
     }
 }
-throw "TeamClaude did not become ready. Check $logBase.stderr.log"
+# Put the tail of the process's own stderr in the error so the installer screen can show WHY (2.0.11).
+$errTail = ''
+try { $errTail = ((Get-Content -LiteralPath "$logBase.stderr.log" -Tail 5 -ErrorAction SilentlyContinue) -join ' | ') } catch { $errTail = '' }
+$aliveNote = if (Get-Process -Id $started.Id -ErrorAction SilentlyContinue) { 'process still running' } else { 'process exited' }
+throw "TeamClaude did not become ready ($aliveNote). Check $logBase.stderr.log$(if ($errTail) { ' -- ' + $errTail })"

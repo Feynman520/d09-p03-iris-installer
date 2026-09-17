@@ -138,6 +138,14 @@ export function judgeRelayProbe(ev) {
   const p = ev?.drive?.relayProbe;
   if (!p) return { ok: true, reason: '' }; // 운전기가 그 단계까지 못 갔거나 옛 운전기 — 다른 판정이 이유를 말한다
   if (p.ok === true) return { ok: true, reason: `중계기 시작 OK(계정 ${p.accounts ?? 0})` };
+  // 2026-09-17 22:5x 실측(개발 PC 포트 3499 실험): 중계기 1.1.16 은 계정이 0이면 "No accounts configured." 를 찍고 스스로
+  // 끝난다. 시험은 사람 로그인을 못 하므로 계정 0 은 **정상 전제**다 — 여기까지 왔다는 것은 설정 파일(proxy.port)·시작
+  // 스크립트(.config 폴더·포트 검사)·동봉 node·중계기 실행 파일이 전부 맞다는 뜻이라 통과로 본다. 그 앞에서 죽는 것
+  // (DirectoryNotFound·포트 검사 거절·스크립트 없음)만 실패다.
+  const text = `${p.message ?? ''} ${p.detail ?? ''}`;
+  if (/No accounts configured/i.test(text)) {
+    return { ok: true, reason: '중계기 준비 OK(계정 0이라 시작 보류 — 로그인 뒤 시작; 설정·스크립트·실행 파일 확인됨)' };
+  }
   return { ok: false, reason: `중계기 시작 실패: ${p.message ?? p.code ?? '까닭 없음'}` };
 }
 
