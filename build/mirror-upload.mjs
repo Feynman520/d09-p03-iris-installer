@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { S3Client } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 
@@ -126,6 +127,7 @@ async function main() {
   console.log(`homepage: add to CONFIG.mirror.assets -> ${results.filter((r) => r.key.endsWith('.zip')).map((r) => `'${r.key}'`).join(', ')}`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))) {
+// 직접 실행일 때만 main() — Windows 경로는 fileURLToPath 로 비교한다(URL pathname 비교는 드라이브 문자에서 어긋난다, 2026-09-17 실측).
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => { console.error(`mirror-upload: ${err?.message ?? err}`); process.exit(1); });
 }
