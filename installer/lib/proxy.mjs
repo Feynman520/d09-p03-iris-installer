@@ -35,11 +35,21 @@ export function defaultRunManage(managePs1, args, { timeoutMs = 90000, env = pro
     });
     let out = '';
     let err = '';
+    let settled = false;
+    const finish = (r) => { if (!settled) { settled = true; clearTimeout(t); resolve(r); } };
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { err += d; });
-    const t = setTimeout(() => child.kill(), timeoutMs);
-    child.on('close', (code) => { clearTimeout(t); resolve({ code, out: out.trim(), err: err.trim() }); });
-    child.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out: '', err: e.message }); });
+    // 2026-09-17 실제 사용자 실측(2.0.8): 「중계기를 띄우는 중」이 7분 넘게 이어졌다. 관리 스크립트가
+    // Start-Process 로 띄운 중계기(node)가 이 파워셸의 표준출력 파이프 핸들을 **물려받아**, 파워셸이
+    // 끝나도 파이프가 안 닫혀 'close' 가 영원히 안 왔다(중계기는 살아 있으니 파이프도 산다). 그래서
+    // 'exit' 에서 매듭짓고, 한도가 지나면 죽인 뒤 timeout 으로 돌려준다 — 'close' 를 기다리지 않는다.
+    const t = setTimeout(() => {
+      try { child.kill(); } catch { /* 이미 죽었다 */ }
+      finish({ code: -2, out: out.trim(), err: `${err.trim()}${err ? ' | ' : ''}timeout after ${Math.round(timeoutMs / 1000)}s`.trim() });
+    }, timeoutMs);
+    child.on('exit', (code) => { setTimeout(() => finish({ code, out: out.trim(), err: err.trim() }), 200); });
+    child.on('close', (code) => finish({ code, out: out.trim(), err: err.trim() }));
+    child.on('error', (e) => finish({ code: -1, out: '', err: e.message }));
   });
 }
 

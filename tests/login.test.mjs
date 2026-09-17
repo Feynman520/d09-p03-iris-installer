@@ -61,6 +61,27 @@ test('ensureProxy: dead -> start invoked with -NodePath/-EntryPath, becomes aliv
   assert.deepEqual(result, { alive: true, started: true });
 });
 
+test('defaultRunManage: 자식이 파이프를 물려받아 열어 둬도 파워셸이 끝나면 돌아온다 (2.0.9)', async () => {
+  // 2026-09-17 실제 사용자 실측(2.0.8): 관리 스크립트가 띄운 중계기(node)가 stdout 파이프를 물려받아
+  // 'close' 가 영원히 안 와 「중계기를 띄우는 중」이 7분 넘게 이어졌다. 파워셸 흉내: 자식을 하나 띄워
+  // 두고(파이프 상속) 바로 끝난다 — 그래도 2초 안에 돌아와야 한다.
+  const { defaultRunManage } = await import('../installer/lib/proxy.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-runmanage-'));
+  const ps1 = path.join(dir, 'fake-manage.ps1');
+  fs.writeFileSync(ps1, [
+    "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','ping','-n','8','127.0.0.1' -WindowStyle Hidden",
+    "Write-Output 'manage-started'",
+    'exit 0',
+  ].join('\r\n'), 'utf8');
+  const t0 = Date.now();
+  const r = await defaultRunManage(ps1, [], { timeoutMs: 20000 });
+  const took = Date.now() - t0;
+  assert.equal(r.code, 0);
+  assert.match(r.out, /manage-started/);
+  assert.ok(took < 6000, `파이프를 쥔 손자 때문에 기다리면 안 된다(걸린 시간 ${took}ms)`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('ensureRelayConfigDefaults: 빠진 칸만 채우고 있는 값은 그대로, 파일 없으면 아무것도 안 한다 (2.0.8)', async () => {
   const { ensureRelayConfigDefaults, defaultRelayConfig } = await import('../installer/lib/login.mjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-relaycfg-'));

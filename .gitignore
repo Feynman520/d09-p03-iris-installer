@@ -7,3 +7,4 @@ build/sanitize-local.json
 .env
 .env.local
 .vercel
+.wrangler/
