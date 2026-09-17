@@ -649,6 +649,83 @@ test('setup: 실패 원문(detail)과 기록 파일 위치가 진행 상태에 �
   }
 });
 
+test('setup: 붙잡은 IRIS 프로그램 목록이 error.holders 로 실리고, 「닫고 다시 시도」는 그 PID 만 멈춘 뒤 이어간다', async () => {
+  // 2026-09-17 실제 사용자 실측(2.0.4): 한도 화면 서버가 teamclaude-dash 를 붙잡아 EBUSY.
+  const holders = [{ pid: 4321, name: 'node.exe', exe: null, what: 'teamclaude-dash\\server.mjs' }];
+  let attempt = 0;
+  const stopCalls = [];
+  const s = await atSetupStep({
+    holdersFn: {
+      list: async () => (stopCalls.length ? [] : holders),
+      stop: async (root, hs) => { stopCalls.push(hs.map((h) => h.pid)); return hs.map((h) => ({ pid: h.pid, stopped: true })); },
+    },
+    setupRunner: {
+      async runSetup(ctx, { onStage }) {
+        attempt += 1;
+        if (attempt === 1) {
+          onStage({ id: 'unpack', status: 'running' });
+          const message = '설치 폴더의 IRIS 프로그램 1개가 아직 실행 중이라 부품을 바꿀 수 없습니다.';
+          onStage({ id: 'unpack', status: 'failed', code: 'E-UNPACK', message, detail: { holders } });
+          return { ok: false, failed: { id: 'unpack', code: 'E-UNPACK', message, detail: { holders } }, pending: [] };
+        }
+        for (const id of SETUP_STAGE_IDS) onStage({ id, status: 'done' });
+        return { ok: true, pending: [] };
+      },
+    },
+  });
+  try {
+    await post(s.url, '/api/setup/start');
+    const failed = await waitForProgress(s.url, (b) => b.error, 'a failure');
+    assert.deepEqual(failed.error.holders, holders, '붙잡은 프로그램 목록이 화면으로 간다');
+
+    const closed = await post(s.url, '/api/setup/close-holders');
+    assert.equal(closed.status, 202);
+    const done = await waitForProgress(s.url, (b) => b.percent === 100, '100% after close-holders');
+    assert.equal(done.error, null);
+    assert.deepEqual(stopCalls, [[4321]], '찾은 PID 만 멈춘다');
+    assert.equal(attempt, 2);
+  } finally {
+    await s.close();
+  }
+});
+
+test('setup: 같은 판을 다시 띄워도(창을 닫았다 다시 열기) 「다시 시도」가 409 로 막히지 않는다', async () => {
+  // 2026-09-17 실제 사용자 실측(2.0.4): "설치 위치 확인을 먼저 해 주세요" — 재시작 뒤 soulConfirmed 가 복원되지 않았다.
+  let attempt = 0;
+  const runner = {
+    async runSetup(ctx, { onStage }) {
+      attempt += 1;
+      if (attempt === 1) {
+        onStage({ id: 'unpack', status: 'failed', code: 'E-UNPACK', message: '멈춤' });
+        return { ok: false, failed: { id: 'unpack', code: 'E-UNPACK', message: '멈춤' }, pending: [] };
+      }
+      for (const id of SETUP_STAGE_IDS) onStage({ id, status: 'done' });
+      return { ok: true, pending: [] };
+    },
+  };
+  const s1 = await atSetupStep({ setupRunner: runner });
+  const { soulRoot } = s1;
+  const stateFile = path.join(tmp, `state-restart-${Date.now()}.json`);
+  // 같은 상태 파일로 다시 띄우기 위해 지금 상태를 그 파일에 옮겨 적는다.
+  await post(s1.url, '/api/setup/start');
+  await waitForProgress(s1.url, (b) => b.error, 'a failure');
+  const st1 = await getJson(s1.url, '/api/state');
+  await s1.close();
+  fs.writeFileSync(stateFile, JSON.stringify({ ...st1, packageVersion: st1.packageVersion ?? st1.version }), 'utf8');
+
+  const s2 = await start({ setupRunner: runner, soulRoot, stateFile });
+  try {
+    const st2 = await getJson(s2.url, '/api/state');
+    assert.equal(st2.step, 'setup', '같은 판은 그 자리에서 이어간다');
+    const retry = await post(s2.url, '/api/setup/retry');
+    assert.equal(retry.status, 202, `재시작 뒤 다시 시도가 막히면 안 된다: ${retry.status}`);
+    await waitForProgress(s2.url, (b) => b.percent === 100, '100% after restart+retry');
+    assert.equal(attempt, 2);
+  } finally {
+    await s2.close();
+  }
+});
+
 test('setup: 엔진 모듈이 아직 없으면 E-NOT-IMPLEMENTED (서버는 그래도 뜬다)', async () => {
   const s = await atSetupStep({
     setupRunner: createSetupRunner({ importer: () => import('../installer/setup/does-not-exist.mjs') }),

@@ -24,6 +24,26 @@ $redirected = Join-Path $env:USERPROFILE 'OneDrive\바탕 화면'
 $shellKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
 $shellKey2 = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
 
+# HKCU 탐침(2026-09-17 S03·S04 실측: 이 계정의 `reg add HKCU\…` 가 전부 "액세스가 거부되었습니다").
+# 원인 = guestcontrol `--profile` 이 **표준 사용자의 하이브를 얹지 않는다**(HKU 에 그 SID 가 없고
+# HKCU 는 .DEFAULT 로 떨어져 읽기만 됨; 관리자 tester 는 SID …-1000 이 얹혀 있어 통과). 이 스크립트는
+# 설치기와 같은 토큰으로 돌므로, 여기서 하이브가 얹혀 있는지·쓰기가 되는지를 먼저 찍는다 —
+# -Redirect 가 실패하더라도 근거는 남게 하려고 그 앞에 둔다. run.mjs 가 'HKCU-PROBE' 줄을 로그에 옮긴다.
+try {
+  # reg.exe 의 stderr("키를 찾을 수 없습니다")가 $ErrorActionPreference=Stop 아래에서 종료 오류가 되어
+  # 탐침 전체가 죽는다(2026-09-17 실측) — 탐침 안에서만 Continue.
+  $ErrorActionPreference = 'Continue'
+  $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+  $hiveLoaded = (& reg.exe query "HKU\$sid" 2>&1 | Where-Object { $_ -is [string] -and $_ -like 'HKEY_USERS*' } | Measure-Object).Count -gt 0
+  & reg.exe add 'HKCU\Environment' /v IRIS_HKCU_PROBE /t REG_SZ /d probe /f 2>&1 | Out-Null
+  $addExit = $LASTEXITCODE
+  if ($addExit -eq 0) { & reg.exe delete 'HKCU\Environment' /v IRIS_HKCU_PROBE /f 2>&1 | Out-Null }
+  Write-Output ("HKCU-PROBE sid={0} hiveLoaded={1} regAddEnvExit={2} user={3}" -f $sid, $hiveLoaded, $addExit, $env:USERNAME)
+} catch {
+  Write-Output ("HKCU-PROBE failed: " + $_.Exception.Message)
+}
+$ErrorActionPreference = 'Stop'
+
 if ($Redirect) {
   New-Item -ItemType Directory -Force -Path $redirected | Out-Null
   # PowerShell 레지스트리 공급자(Set-ItemProperty)는 guestcontrol 의 비대화형
@@ -46,23 +66,6 @@ if ($Check) {
   if ($hereLnk.Count -gt 0) { Write-Output 'REDIRECTED-SHORTCUT-PRESENT' } else { Write-Output 'REDIRECTED-SHORTCUT-MISSING' }
   if ($oldLnk.Count -gt 0) { Write-Output 'OLD-DESKTOP-SHORTCUT-PRESENT' } else { Write-Output 'OLD-DESKTOP-CLEAN' }
   foreach ($l in $hereLnk) { Write-Output ("LNK " + $l.Name) }
-}
-
-# HKCU 탐침(2026-09-17 S03 실측: 설치기의 `reg add HKCU\Environment` 가 이 계정에서 "액세스가
-# 거부되었습니다"). 이 스크립트는 설치기와 **같은 토큰**(guestcontrol --profile)으로 돌므로,
-# 여기서 같은 쓰기가 되는지·HKCU 가 정말 이 사용자의 하이브인지 찍어 두면 시험대 문제인지
-# 제품 문제인지 갈린다. run.mjs 가 'HKCU-PROBE' 줄을 그대로 로그에 옮긴다.
-try {
-  $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
-  $hiveLoaded = (& reg.exe query "HKU\$sid" 2>$null | Measure-Object).Count -gt 0
-  & reg.exe add 'HKCU\Environment' /v IRIS_HKCU_PROBE /t REG_SZ /d probe /f 2>&1 | Out-Null
-  $addExit = $LASTEXITCODE
-  & reg.exe delete 'HKCU\Environment' /v IRIS_HKCU_PROBE /f 2>&1 | Out-Null
-  $envKeyOwnerOk = $true
-  try { $null = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true); } catch { $envKeyOwnerOk = $false }
-  Write-Output ("HKCU-PROBE sid={0} hiveLoaded={1} regAddEnvExit={2} netOpenWritable={3} user={4}" -f $sid, $hiveLoaded, $addExit, $envKeyOwnerOk, $env:USERNAME)
-} catch {
-  Write-Output ("HKCU-PROBE failed: " + $_.Exception.Message)
 }
 
 [PSCustomObject]@{

@@ -69,7 +69,10 @@ export function makeVbox({ exec = defaultExec, exe = null } = {}) {
     const out = captureOutput ? String(r?.stdout ?? '').trim() : '';
     const err = captureOutput ? String(r?.stderr ?? '').trim() : '';
     if (r?.status !== 0 && !allowFail) {
-      throw new Error(`VBoxManage ${args.join(' ')} -- failed: ${(err || out || `exit ${r?.status}`).trim()}`);
+      // 비밀번호는 오류 문장에도 남기지 않는다(2026-09-17: 던진 문장이 실행 로그 파일에 그대로 찍힌 사고).
+      // -ArgumentsB64 는 상승 스크립트 인자(비밀번호 포함)를 base64 로 싼 것이라 같이 가린다.
+      const shown = args.map((a, i) => (['--password', '-ArgumentsB64'].includes(args[i - 1]) ? '<redacted>' : a));
+      throw new Error(`VBoxManage ${shown.join(' ')} -- failed: ${(err || out || `exit ${r?.status}`).trim()}`);
     }
     return { code: r?.status ?? -1, out, err };
   };

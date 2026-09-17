@@ -276,6 +276,38 @@ test('unpack: 옛 사본을 .prev 로 옮기지 못하면(다른 프로그램이
   assert.equal(fs.readFileSync(path.join(ctx.root, '_agent', 'shared', 'tools', 'node', 'node.exe'), 'utf8'), 'fake node 24.21.0');
 });
 
+test('unpack: 바꿀 부품이 있는데 설치 폴더의 우리 프로그램이 돌고 있으면 아무것도 옮기기 전에 목록과 함께 멈춘다', async () => {
+  // 2026-09-17 실제 사용자 실측(2.0.4): 한도 화면 서버가 teamclaude-dash 를 붙잡아 9번째 부품에서 EBUSY.
+  const v1 = await makePayload('busy-v1', { nodeVersion: '24.21.0' });
+  const ctx = makeCtx('busy', { built: v1 });
+  ctx.verifiers = passAll(v1.lock);
+  await unpack.run(ctx);
+  const before = snapshot(ctx.root);
+
+  const v2 = await makePayload('busy-v2', { nodeVersion: '25.0.0' });
+  const ctx2 = makeCtx('busy', { built: v2, root: ctx.root });
+  ctx2.verifiers = passAll(v2.lock);
+  const holders = [{ pid: 4321, name: 'node.exe', exe: null, what: 'teamclaude-dash\\server.mjs' }];
+  ctx2.processes = { list: async () => holders };
+  await assert.rejects(unpack.run(ctx2), (err) => {
+    assert.ok(isStageError(err));
+    assert.equal(err.code, 'E-UNPACK');
+    assert.match(err.message, /IRIS 프로그램 1개가 아직 실행 중/);
+    assert.match(err.message, /node\.exe\(PID 4321, teamclaude-dash\\server\.mjs\)/);
+    assert.deepEqual(err.detail.holders, holders);
+    assert.ok(err.detail.willPlace.includes('node'));
+    return true;
+  });
+  assert.deepEqual(snapshot(ctx.root), before, '아무것도 옮기지 않았다(.prev 도 없다)');
+
+  // 같은 판을 다시 돌리면(바꿀 부품 없음) 프로그램이 돌고 있어도 막지 않는다.
+  const ctx3 = makeCtx('busy', { built: v1, root: ctx.root });
+  ctx3.verifiers = passAll(v1.lock);
+  ctx3.processes = { list: async () => holders };
+  const { recorded } = await unpack.run(ctx3);
+  assert.equal(recorded.placed.length, 0);
+});
+
 test('unpack: 섞여 사는 폴더(_ontology)는 통째로 옮기지 않고 그 사람 파일을 남긴다', async () => {
   const v1 = await makePayload('merge-v1');
   const ctx = makeCtx('merge', { built: v1 });

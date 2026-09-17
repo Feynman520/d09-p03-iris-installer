@@ -33,7 +33,7 @@ import {
   SCENARIOS, scenarioPlan, parseArgs as runArgs,
   ENTRY, COLLECT, HOSTS_BLOCK_SCRIPT, GUEST_USERS,
   JUDGES, EXPECTED_INSTALLER_EXIT, RUNNER, DRIVER, DRIVE_RESULT, buildFingerprint,
-  ACCOUNT_NAMES, ACCOUNT_PREP, PUBLIC_DIR, SHARE_DIR, LEGACY_SCRIPT, LEGACY_SNAPSHOT, HOSTS_SCRIPT,
+  ACCOUNT_NAMES, ACCOUNT_PREP, USER_PREP, PUBLIC_DIR, SHARE_DIR, LEGACY_SCRIPT, LEGACY_SNAPSHOT, HOSTS_SCRIPT,
   BASE_VM, ELEVATE_SCRIPT, elevateArgs, argsB64,
 } from '../verify/vm/run.mjs';
 
@@ -382,7 +382,17 @@ test('S03 runs the installer as a standard user out of the shared public folder'
   assert.ok(elevated, '계정 준비는 상승 문을 거친다');
   assert.ok(elevated.join(' ').includes(`${PUBLIC_DIR}\\${ACCOUNT_PREP}`));
   assert.match(decodeElevated(elevated), /-Fixture s03\b/);
-  assert.equal(prep.at(-1)[prep.at(-1).indexOf('--username') + 1], account, '프로필 만들기는 그 계정으로');
+  // 2026-09-17: guestcontrol --profile 은 표준 사용자 하이브를 얹지 않아 HKCU 가 .DEFAULT 로 떨어진다 →
+  // 계정 확인 때 자동 로그온을 그 계정으로 바꾸고(-AutoLogon) 재부팅해 진짜 대화형 로그온을 만든 뒤 준비한다.
+  assert.match(decodeElevated(elevated), /-AutoLogon\b/, '자동 로그온을 표준 계정으로 바꾼다');
+  const userPrep = prep.filter((a) => a.join(' ').includes(`${PUBLIC_DIR}\\${USER_PREP}`));
+  assert.equal(userPrep.length, 1, 'S03 은 리디렉션이 없으니 그 계정 준비는 한 번');
+  assert.equal(userPrep[0][userPrep[0].indexOf('--username') + 1], account, '프로필 만들기는 그 계정으로');
+  const phases = plan.map((st) => st.phase);
+  const rebootAt = phases.indexOf('reboot');
+  assert.ok(rebootAt > 0, '계정 준비 뒤 재부팅이 있다');
+  const idxOf = (args) => plan.findIndex((st) => st.args === args);
+  assert.ok(idxOf(elevated) < rebootAt && rebootAt < idxOf(userPrep[0]), '계정 확인 → 재부팅 → 그 계정 준비 순서');
 
   const install = argsOf(plan, 'install')[0];
   assert.equal(install[install.indexOf('--username') + 1], account);
@@ -408,6 +418,10 @@ test('S04 makes the Korean+space account, redirects its desktop, and checks wher
   const userPrep = prep.at(-1);
   assert.equal(userPrep[userPrep.indexOf('--username') + 1], account);
   assert.ok(userPrep.includes('-Redirect'), 'S04 는 바탕화면을 옮겨 둔 뒤 설치한다');
+  // 2026-09-17: 리디렉션(HKCU 쓰기)은 그 계정이 자동 로그온으로 **진짜 로그온한 뒤**(재부팅 뒤) 한다.
+  assert.match(decodeElevated(elevated), /-AutoLogon\b/, '자동 로그온을 표준 계정으로 바꾼다');
+  const rebootAt = plan.findIndex((st) => st.phase === 'reboot');
+  assert.ok(rebootAt > 0 && rebootAt < plan.findIndex((st) => st.args === userPrep), '-Redirect 는 재부팅(진짜 로그온) 뒤');
 
   // 한글+공백 이름은 **인자로 넘기지 않는다** -- VBoxManage 가 인자 묶음을 지켜
   // 주지 않아 두 토막이 된다(lib.mjs). 그래서 -File 뒤 인자에는 공백이 없다.

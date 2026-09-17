@@ -46,6 +46,7 @@ import {
 import { writeShims, shimsDir } from '../lib/shims.mjs';
 import { portableTeamclaudeConfigPath } from '../lib/login.mjs';
 import { readReceipt, writeReceipt } from '../lib/receipt.mjs';
+import { listHolders, holdersText } from '../lib/holders.mjs';
 import * as userpathDefault from '../lib/userpath.mjs';
 
 export const id = 'unpack';
@@ -469,6 +470,31 @@ export async function run(ctx) {
 
   ensureDir(root, { fs });
 
+  // 2026-09-17 실제 사용자 실측(2.0.4): 이전 설치가 띄운 우리 프로그램(한도 화면 서버)이
+  // `tools\teamclaude-dash` 를 붙잡고 있어 아홉 번째 부품에서 EBUSY 로 섰고, 「다시 시도」로는
+  // 풀리지 않았다. 그래서 **아무것도 옮기기 전에** 실제로 바꿀 부품이 하나라도 있고 그 폴더에서
+  // 도는 우리 프로그램이 있으면 그 목록과 함께 멈춘다 — 화면이 「IRIS 프로그램 닫고 다시 시도」를
+  // 내민다. 바꿀 부품이 없으면(같은 판 재실행·이어하기) 프로그램이 돌고 있어도 막지 않는다.
+  const willPlace = parts.filter((partId) => {
+    const layout = V2_LAYOUT[partId] ?? { kind: 'archive', strip: 0, mode: 'slot' };
+    const destRel = lockField(ctx, partId, 'dest');
+    if (!destRel) return true;
+    const dest = underRoot(root, destRel);
+    const slot = layout.slot ? path.join(dest, layout.slot) : dest;
+    const prior = state.parts[partId];
+    return !(prior?.verified && sameIdentity(prior.identity, partIdentity(ctx, partId)) && fs.existsSync(slot));
+  });
+  const procs = ctx.processes ?? { list: (r) => listHolders(r, { run: ctx.run }) };
+  const holders = willPlace.length > 0 ? await procs.list(root) : [];
+  if (holders.length > 0) {
+    log(`[unpack] 설치 폴더에서 도는 우리 프로그램 ${holders.length}개: ${holdersText(holders)}`);
+    throw new StageError(
+      'E-UNPACK',
+      `설치 폴더의 IRIS 프로그램 ${holders.length}개가 아직 실행 중이라 부품을 바꿀 수 없습니다: ${holdersText(holders)}. 「IRIS 프로그램 닫고 다시 시도」를 누르거나, PC 를 다시 시작한 뒤 「다시 시도」를 눌러 주세요.`,
+      { holders, willPlace },
+    );
+  }
+
   for (let i = 0; i < parts.length; i += 1) {
     const partId = parts[i];
     const layout = V2_LAYOUT[partId] ?? { kind: 'archive', strip: 0, mode: 'slot' };
@@ -507,23 +533,27 @@ export async function run(ctx) {
     // 못한 오류"로만 보였다. 옛 사본을 옆으로 옮기지 못한 것은 거의 언제나 **다른 프로그램이
     // 그 폴더를 붙잡고 있는 것**(옛 설치 서버·IRIS 창·터미널·백신)이라 그 사실을 문장으로 말한다.
     const aside = typeof ctx.preserveAside === 'function' ? ctx.preserveAside : preserveAside;
-    const setAside = (target) => {
+    const setAside = async (target) => {
       try {
         return aside(target);
       } catch (err) {
         const codeText = err?.code ? `(${err.code})` : '';
+        // 누가 붙잡고 있는지 한 번 더 찾아 문장에 넣는다(위 사전 검사 뒤에 새로 뜬 것일 수 있다).
+        let late = [];
+        try { late = await procs.list(root); } catch { late = []; }
+        const who = late.length ? ` 붙잡은 프로그램: ${holdersText(late)}.` : '';
         throw new StageError(
           'E-UNPACK',
-          `옛 부품 폴더 "${rel(target)}" 을(를) 옆으로 옮기지 못했습니다${codeText}. 그 폴더를 쓰는 프로그램(IRIS 창·터미널·백신)을 닫거나 PC 를 다시 시작한 뒤 「다시 시도」를 눌러 주세요.`,
-          { part: partId, slot: rel(target), error: String(err?.message ?? err), code: err?.code ?? null },
+          `옛 부품 폴더 "${rel(target)}" 을(를) 옆으로 옮기지 못했습니다${codeText}.${who} 그 폴더를 쓰는 프로그램(IRIS 창·터미널·백신)을 닫거나 PC 를 다시 시작한 뒤 「다시 시도」를 눌러 주세요.`,
+          { part: partId, slot: rel(target), error: String(err?.message ?? err), code: err?.code ?? null, holders: late },
         );
       }
     };
-    if (layout.mode !== 'merge') moved = setAside(slot);
+    if (layout.mode !== 'merge') moved = await setAside(slot);
     else if (layout.kind === 'file') {
       // 낱개 파일은 그 파일만 옮긴다(폴더가 아니라).
       const target = path.join(dest, path.basename(source));
-      if (fs.existsSync(target) && !sameBytes(fs, source, target)) moved = setAside(target);
+      if (fs.existsSync(target) && !sameBytes(fs, source, target)) moved = await setAside(target);
     }
 
     try {

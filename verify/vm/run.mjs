@@ -426,14 +426,21 @@ export function scenarioPlan(id, opts) {
     add('prep-guest', guestCopyTo(vm, { ...g, from: path.join(HERE, ELEVATE_SCRIPT), toDir: PUBLIC_DIR }));
     add('prep-guest', guestCopyTo(vm, { ...g, from: path.join(HERE, ACCOUNT_PREP), toDir: PUBLIC_DIR }));
     add('prep-guest', guestCopyTo(vm, { ...g, from: path.join(HERE, USER_PREP), toDir: PUBLIC_DIR }));
+    // ② 계정 확인 + **자동 로그온을 그 계정으로 바꿈**(-AutoLogon) → ③ 재부팅 → 그 계정이 진짜
+    // 대화형 로그온을 한다. 2026-09-17 실측: guestcontrol `--profile` 은 표준 사용자의 하이브를 얹지
+    // 않아(HKU 에 그 SID 없음) HKCU 가 읽기 전용 .DEFAULT 로 떨어졌고(S03 E-ENV·S04 reg add 거부),
+    // SYSTEM 의 `reg load` 로 얹어도 그 계정 프로세스에 붙지 않았다. 관리자 tester 가 되는 까닭은
+    // 대화형 자동 로그온 세션이라서다 — 같은 조건을 표준 계정에 준다(실제 사용자와 같은 모양).
     add('prep-guest', guestRunPsFile(vm, {
       ...g,
       file: `${PUBLIC_DIR}\\${ELEVATE_SCRIPT}`,
       args: elevateArgs({
         script: `${PUBLIC_DIR}\\${ACCOUNT_PREP}`,
-        argumentLine: `-Fixture ${s.account.fixture} -Password "${opts.password}" -Out "${ELEVATE_OUT}"`,
+        argumentLine: `-Fixture ${s.account.fixture} -Password "${opts.password}" -AutoLogon -Out "${ELEVATE_OUT}"`,
       }),
     }));
+    add('reboot', guestRunCmd(vm, { ...g, command: 'shutdown /r /t 0' }));
+    // ④ 그 계정으로 준비(HKCU 탐침 한 줄 + S04 는 바탕화면을 OneDrive 한글 경로로 옮김).
     add('prep-guest', guestRunPsFile(vm, {
       ...gu,
       file: `${PUBLIC_DIR}\\${USER_PREP}`,

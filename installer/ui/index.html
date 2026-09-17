@@ -255,6 +255,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
       <div id="setup-note"></div>
       <div class="acts">
         <button class="go" id="btn-setup-retry" hidden>다시 시도</button>
+        <button class="go" id="btn-setup-close" hidden>IRIS 프로그램 닫고 다시 시도</button>
         <button class="ghost" id="btn-setup-fresh" hidden>처음부터 다시 설치</button>
         <span class="spacer"></span>
         <button class="ghost" id="btn-log-setup">로그 경로 복사</button>
@@ -1003,19 +1004,29 @@ function renderSetup(s) {
     const raw = rawLines.length
       ? '<details><summary>자세한 원인 보기</summary><pre>' + esc(rawLines.join('\n')) + '</pre></details>'
       : '';
+    // 설치 폴더에서 도는 IRIS 프로그램이 부품을 붙잡고 있을 때(2026-09-17 실제 사용자 실측: 한도 화면
+    // 서버가 teamclaude-dash 를 잡아 EBUSY) — 무엇인지 보여 주고 「닫고 다시 시도」를 내민다.
+    const holders = Array.isArray(st.error.holders) ? st.error.holders : [];
+    const holderHtml = holders.length
+      ? '<br><b>실행 중인 IRIS 프로그램</b>: ' + esc(holders.map((h) => (h.name || '?') + ' (PID ' + h.pid + (h.what ? ', ' + h.what : '') + ')').join(' · ')) +
+        '<br>「IRIS 프로그램 닫고 다시 시도」를 누르면 <b>이 목록만</b> 닫고 이어서 합니다(다른 프로그램은 건드리지 않습니다).'
+      : '';
     note('setup-note', '<b>' + esc(SETUP_STAGES.find((p) => p[0] === st.stage) ? SETUP_STAGES.find((p) => p[0] === st.stage)[1] : st.stage) + '</b>에서 멈췄습니다' +
       (code ? ' (' + esc(code) + ')' : '') + '.<br>' + esc(help || msg || '자세한 까닭은 기록 파일에 있습니다.') +
       (help && msg && msg !== help ? '<br><span class="dt">무슨 일: ' + esc(msg) + '</span>' : '') +
       '<br>만든 것은 하나도 지우지 않았습니다. 「다시 시도」는 멈춘 곳부터, 「처음부터 다시 설치」는 아홉 단계를 전부 다시 합니다(옛 부품은 .prev 로 옮겨 둡니다).' +
-      raw, 'bad');
+      holderHtml + raw, 'bad');
     $('btn-setup-retry').hidden = false;
     $('btn-setup-retry').disabled = false;
     $('btn-setup-fresh').hidden = false;
     $('btn-setup-fresh').disabled = false;
+    $('btn-setup-close').hidden = holders.length === 0;
+    $('btn-setup-close').disabled = false;
     return 'failed';
   }
   $('btn-setup-retry').hidden = true;
   $('btn-setup-fresh').hidden = true;
+  $('btn-setup-close').hidden = true;
   freshArmed = false;
   if (st.stage === 'done' || Number(st.percent) >= 100) { badge('setup', '완료', 'done'); return 'done'; }
   badge('setup', '진행중', 'run');
@@ -1040,6 +1051,15 @@ $('btn-setup-retry').onclick = async () => {
   note('setup-note', '멈춘 곳부터 다시 합니다…');
   const { body } = await api('/api/setup/retry', {});
   if (body && body.ok === false) { note('setup-note', esc(body.message || '다시 시작하지 못했습니다.'), 'bad'); $('btn-setup-retry').disabled = false; return; }
+  watchSetup();
+};
+
+$('btn-setup-close').onclick = async () => {
+  $('btn-setup-close').disabled = true;
+  $('btn-setup-retry').disabled = true;
+  note('setup-note', '실행 중인 IRIS 프로그램을 닫고 멈춘 곳부터 다시 합니다…');
+  const { body } = await api('/api/setup/close-holders', {});
+  if (body && body.ok === false) { note('setup-note', esc(body.message || '다시 시작하지 못했습니다.'), 'bad'); $('btn-setup-close').disabled = false; $('btn-setup-retry').disabled = false; return; }
   watchSetup();
 };
 

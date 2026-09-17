@@ -47,6 +47,7 @@ import { createOnlineRunner } from './lib/adapters/online-runner.mjs';
 import { planUpdateReset, applyUpdateReset } from './lib/update-plan.mjs';
 import { relaunchFace as defaultRelaunchFace, finish as defaultFinish } from './lib/handoff.mjs';
 import { run as defaultRun } from '../lib/run.mjs';
+import { listHolders, stopHolders } from './lib/holders.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -350,6 +351,8 @@ export function startServer({
   readReceiptFn = readReceipt,
   writeReceiptFn = writeReceipt,
   runFn = defaultRun,
+  // 설치 폴더에서 도는 우리 프로그램 찾기·멈추기(lib/holders.mjs). 시험은 가짜를 넣는다.
+  holdersFn = { list: (root) => listHolders(root, { run: runFn }), stop: (root, hs) => stopHolders(root, hs, { run: runFn }) },
   openFaceFn,
   // update-mode (POST /api/auto) seams. The install itself is `setupRunner`
   // (the same v2 engine as the wizard) -- there is no v1 install seam any more.
@@ -558,6 +561,12 @@ export function startServer({
         }
       }
       log(`resume verdict: step=${verdict.step} (${verdict.reason}) forced=${resume}`);
+    } else if (verdict && samePackage) {
+      // 2026-09-17 실제 사용자 실측(2.0.4): 같은 판을 다시 띄우면(창을 닫았다 다시 연 경우) 저장 상태는
+      // setup 에 있는데 soulConfirmed 가 false 라 「다시 시도」가 409 "설치 위치 확인을 먼저 해 주세요"
+      // 로 막혔다. 영수증·decisions.json 이 그 폴더 아래 있으면 우리 것임은 이미 증명된 것이다.
+      soulConfirmed = true;
+      log(`restored state (same package ${version}): receipt/decisions under the soul root prove it is ours -- writes allowed`);
     } else if (resume) {
       state.resume = { step: null, reason: 'nothing-to-resume', forced: true };
     }
@@ -816,6 +825,8 @@ export function startServer({
           code: failed.code ?? 'E-SETUP',
           message: failed.message ?? '설치 도중 멈췄습니다.',
           detail,
+          // 설치 폴더에서 도는 우리 프로그램이 부품을 붙잡고 있으면 화면이 「닫고 다시 시도」를 내민다.
+          holders: Array.isArray(failed.detail?.holders) && failed.detail.holders.length ? failed.detail.holders : null,
         };
         state.setup.percent = setupPercent(state.setup);
         log(`setup failed at ${state.setup.error.id} (${state.setup.error.code})${detail ? `: ${detail}` : ''}`);
@@ -880,6 +891,23 @@ export function startServer({
     state.setup.fresh = true;
     save();
     log('setup fresh: receipt stages reset to pending, unpack-state moved aside');
+    startSetup(res);
+  }));
+
+  // 「IRIS 프로그램 닫고 다시 시도」(2026-09-17): 설치 폴더 `_agent\shared\tools\` 에서 도는 우리
+  // 프로그램만 PID 로 하나씩 멈춘 뒤 엔진을 다시 돈다. 다른 프로세스는 이름이 같아도 건드리지 않는다.
+  routes.set('POST /api/setup/close-holders', withBody(async (body, req, res) => {
+    if (!requireLocated(res)) return;
+    if (setupRunning) { sendJson(res, 202, { ok: true, running: true }); return; }
+    const root = state.soul.root;
+    const found = await holdersFn.list(root);
+    const stopped = found.length ? await holdersFn.stop(root, found) : [];
+    for (const r of stopped) log(`close-holders: pid ${r.pid} ${r.name ?? ''} ${r.what ?? ''} -> ${r.stopped ? 'stopped' : `NOT stopped (${r.detail ?? r.reason ?? ''})`}`);
+    if (state.setup?.error) state.setup.error.holders = null;
+    save();
+    // 프로세스가 손을 놓는 데 잠깐 걸린다(파일 핸들 정리).
+    await new Promise((r) => setTimeout(r, 1500));
+    state.setup.closedHolders = stopped;
     startSetup(res);
   }));
 

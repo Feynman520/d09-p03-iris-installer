@@ -104,8 +104,11 @@ if ($cpba -eq 0) {
   $rCmd = "& '" + $ps + "' " + $argLine + " *> '" + $rOut + "'; exit `$LASTEXITCODE"
   $rExit = 99
   # 2026-09-17 S04 실측: 부팅 직후(자동 로그온 데스크톱이 아직 없을 때) RunAs 가
-  # "이 작업에는 대화형 윈도우 스테이션이 필요합니다" 로 거절된다. 20초 간격으로 여섯 번까지 기다린다.
-  for ($try = 1; $try -le 6; $try++) {
+  # "이 작업에는 대화형 윈도우 스테이션이 필요합니다" 로 거절된다. 20초 간격으로 기다린다 —
+  # 2026-09-17 14:31 실측: 연결 복제본의 첫 부팅(하드웨어 재인식)은 데스크톱이 2분 넘게 늦어 여섯 번으로
+  # 모자랐다(S04 v3 실행 실패) → 열다섯 번(5분).
+  $runasTries = 15
+  for ($try = 1; $try -le $runasTries; $try++) {
     try {
       $rp = Start-Process -FilePath $ps -Verb RunAs -PassThru -WindowStyle Hidden `
         -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $rCmd)
@@ -115,7 +118,7 @@ if ($cpba -eq 0) {
       break
     } catch {
       Write-Output ('RUNAS-FAILED (try ' + $try + ') ' + $_.Exception.Message)
-      if ($try -lt 6) { Start-Sleep -Seconds 20 }
+      if ($try -lt $runasTries) { Start-Sleep -Seconds 20 }
     }
   }
   Write-Output ('ELEVATE-EXIT ' + $rExit)
