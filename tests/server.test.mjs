@@ -80,6 +80,9 @@ async function start(opts = {}) {
     precheckFn: async () => OK_PRECHECK,
     setupRunner: okEngine(),
     onlineRunner: okOnline(),
+    // 실제 중계기·구글 폼에 닿지 않게(2026-09-19 신설 두 이음새)
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    reportFetchFn: async () => ({ status: 200 }),
     ...opts,
   });
   return { ...server, soulRoot };
@@ -1138,6 +1141,99 @@ test('인수 문서가 아직 없으면 중계기 성공이 그것을 지어내�
     assert.equal((await getJson(url, '/api/state')).step, 'done');
     assert.equal(fs.existsSync(path.join(soulRoot, '_agent', 'setup', 'handoff.json')), false,
       '검사 결과 없이 "다 됐다"고 적힌 문서를 만들어 내지 않는다');
+  } finally {
+    await s.close();
+  }
+});
+
+test('report: POST /api/report/send 는 미리 보기(전송 0)와 전송(fetch 1회·사본 저장)을 가르고, 영혼이 없어도 된다', async () => {
+  const calls = [];
+  const s = await start({ reportFetchFn: async (url, init) => { calls.push({ url, init }); return { status: 200 }; } });
+  try {
+    // 영혼이 정해지기 전(precheck 단계)에도 신고할 수 있어야 한다 — 설치가 그 앞에서 막힐 수도 있으니까.
+    const pv = await (await post(s.url, '/api/report/send', { preview: true, memo: 'm', contact: 'c' })).json();
+    assert.equal(pv.ok, true); assert.equal(pv.preview, true);
+    assert.match(pv.id, /^R-\d{8}-\d{4}-[0-9a-f]{4}$/);
+    assert.equal(pv.payload.memo, 'm'); assert.equal(pv.payload.contact, 'c');
+    assert.ok(pv.payload.summary.includes('"step": "precheck"'));
+    assert.equal(calls.length, 0, '미리 보기는 보내지 않는다');
+
+    const sent = await (await post(s.url, '/api/report/send', { memo: '멈춤', contact: '' })).json();
+    assert.equal(sent.ok, true); assert.equal(sent.status, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].init.method, 'POST');
+    const form = new URLSearchParams(calls[0].init.body);
+    assert.equal(form.get('entry.1325620015'), sent.id, '접수번호 항목');
+    assert.equal(form.get('entry.1736423815'), '멈춤', '메모 항목');
+    assert.ok(sent.savedTo && fs.existsSync(sent.savedTo), `사본이 없음: ${sent.savedTo}`);
+    assert.ok(!sent.savedTo.includes(s.soulRoot), '영혼이 없으면 설치기 로그 폴더에 남긴다');
+  } finally {
+    await s.close();
+  }
+});
+
+test('report: 보내기 실패는 ok:false + 까닭 + 사본 경로', async () => {
+  const s = await start({ reportFetchFn: async () => { throw new Error('getaddrinfo ENOTFOUND docs.google.com'); } });
+  try {
+    const r = await (await post(s.url, '/api/report/send', {})).json();
+    assert.equal(r.ok, false);
+    assert.match(r.error, /ENOTFOUND/);
+    assert.ok(r.savedTo && fs.existsSync(r.savedTo));
+  } finally {
+    await s.close();
+  }
+});
+
+test('online: 중계기가 뜨면 검사 12·13 을 다시 재어 online.recheck 에 싣고 영수증 검사 기록의 같은 id 를 갈아 끼운다', async () => {
+  const items = [
+    { id: 'relay', num: 12, label: '중계기 경유(클로드)', status: 'pass', detail: '통과' },
+    { id: 'relayCodex', num: 13, label: '중계기 경유(코덱스 세션 → TeamClaude)', status: 'pass', detail: 'CA 번들 갱신' },
+  ];
+  let recheckRoot = null;
+  const s = await atSetupStep({ relayRecheckFn: async (root) => { recheckRoot = root; return { at: 't', items }; } });
+  try {
+    await post(s.url, '/api/setup/start');
+    await waitForProgress(s.url, (b) => b.percent === 100, '100%');
+    // 엔진(가짜)이 남긴 검사 기록에 "대기" 항목을 심어 둔다 — 실제 신규 설치의 ⑥ 시점 모습.
+    const before = readReceipt(s.soulRoot);
+    before.setup.checks = { ...(before.setup.checks ?? {}), recorded: { checks: { pass: 1, pending: 1, fail: 0 }, items: [
+      { id: 'exe', num: 1, label: '실행 파일', status: 'pass', detail: 'ok' },
+      { id: 'relayCodex', num: 13, label: '중계기 경유(코덱스 세션 → TeamClaude)', status: 'pending', detail: '중계기가 응답하지 않음' },
+    ] } };
+    writeReceipt(s.soulRoot, before);
+    await post(s.url, '/api/online/start');
+    await waitForOnline(s.url, (b) => b.stage === 'login' || b.stage === 'relay', 'login phase');
+    await post(s.url, '/api/online/login', { provider: 'claude' });
+    await waitForOnline(s.url, (b) => b.logins.claude?.state === 'done', 'login done');
+    const relay = await (await post(s.url, '/api/online/relay')).json();
+    assert.equal(relay.ok, true);
+    assert.equal(recheckRoot, s.soulRoot);
+    const st = await getJson(s.url, '/api/online/status');
+    assert.equal(st.recheck.items.length, 2);
+    assert.equal(st.recheck.items[1].status, 'pass');
+    const after = readReceipt(s.soulRoot);
+    const rec = after.setup.checks.recorded;
+    assert.equal(rec.items.find((c) => c.id === 'relayCodex').status, 'pass', '대기였던 검사 13 이 통과로 바뀐다');
+    assert.equal(rec.items.find((c) => c.id === 'relay').num, 12, '없던 검사 12 는 덧붙인다');
+    assert.equal(rec.items.find((c) => c.id === 'exe').status, 'pass', '다른 항목은 그대로');
+    assert.deepEqual(rec.checks, { pass: 3, pending: 0, fail: 0 });
+  } finally {
+    await s.close();
+  }
+});
+
+test('online: 다시 재기가 던져도 설치 완료는 막지 않는다(기록만)', async () => {
+  const s = await atSetupStep({ relayRecheckFn: async () => { throw new Error('probe exploded'); } });
+  try {
+    await post(s.url, '/api/setup/start');
+    await waitForProgress(s.url, (b) => b.percent === 100, '100%');
+    await post(s.url, '/api/online/start');
+    await waitForOnline(s.url, (b) => b.stage === 'login' || b.stage === 'relay', 'login phase');
+    await post(s.url, '/api/online/login', { provider: 'claude' });
+    await waitForOnline(s.url, (b) => b.logins.claude?.state === 'done', 'login done');
+    assert.equal((await (await post(s.url, '/api/online/relay')).json()).ok, true);
+    assert.equal((await getJson(s.url, '/api/state')).step, 'done');
+    assert.match((await getJson(s.url, '/api/online/status')).recheck.error, /probe exploded/);
   } finally {
     await s.close();
   }

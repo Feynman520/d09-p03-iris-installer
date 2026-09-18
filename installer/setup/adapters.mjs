@@ -25,7 +25,7 @@ import {
 } from '../lib/paths.mjs';
 import { policyDir } from '../lib/payload.mjs';
 import {
-  seedClaudePermissions, seedCodexPermissions,
+  seedClaudePermissions, seedCodexPermissions, seedClaudeFirstRun, seedCodexFirstRun,
   claudeSettingsPath, claudeConfigJsonPath, codexConfigTomlPath,
 } from '../lib/firstrun.mjs';
 
@@ -637,6 +637,15 @@ export async function run(ctx) {
   recorded.codex.mcp = specs.map((s) => s.name);
   note('codex', codexConfigTomlPath(root));
 
+  // ── 6-2. 첫 실행 물음 미리 답하기(온보딩·폴더 신뢰) ────────────────────
+  // v1 설치기(install.mjs)만 부르던 것을 v2 엔진이 빠뜨려 2.0.0~2.0.19 신규 설치는
+  // 첫 세션에서 "Do you trust the files in this folder?" 가 영어로 떴다(2026-09-19 실제 사용자 실측).
+  // 두 헬퍼 모두 빠진 키만 더한다(있는 값 무접촉) — 두 번 실행해도 변경 0.
+  recorded.claude.firstRun = seedClaudeFirstRun(root);
+  recorded.codex.firstRun = seedCodexFirstRun(root);
+  if (recorded.claude.firstRun.written !== 'unchanged') note('claude', recorded.claude.firstRun.path);
+  if (recorded.codex.firstRun.written !== 'unchanged') note('codex', recorded.codex.firstRun.path);
+
   // ── 7. 코덱스 스킬(superpowers 를 스킬 단위로 풀어서) ──────────────────
   recorded.codex.skills = copySuperpowersSkills(ctx, { fs, root, log });
   if (recorded.codex.skills.status === 'missing') {
@@ -1059,6 +1068,21 @@ function writeCodexConfig(ctx, specs, { fs, root, log }) {
     } else {
       text = `${endWithBlankLine(text)}[features]\n${line}\n`;
       added.push('features.multi_agent');
+    }
+  }
+
+  // ── [windows] sandbox — 코덱스 0.154 는 윈도에서 첫 실행 때 "관리자 권한 샌드박스"를 만들려다
+  // (UAC·로컬 사용자 생성·방화벽 규칙) 실패하면 "Couldn't set up your sandbox with Administrator permissions"
+  // 물음을 띄운다(2026-09-19 실제 사용자 실측). IRIS 세션은 sandbox_mode = danger-full-access 라 샌드박스를
+  // 쓰지 않으므로 관리자 설정 자체를 건너뛰게 "unelevated"(제한 토큰 방식)를 미리 적는다. 있으면 손대지 않는다.
+  if (!hasTableKey(text, 'windows', 'sandbox')) {
+    const line = 'sandbox = "unelevated"';
+    if (hasTable(text, 'windows')) {
+      const merged = insertIntoTable(text, 'windows', line);
+      if (merged) { text = merged; added.push('windows.sandbox'); }
+    } else {
+      text = `${endWithBlankLine(text)}[windows]\n${line}\n`;
+      added.push('windows.sandbox');
     }
   }
 

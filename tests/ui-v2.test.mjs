@@ -57,7 +57,7 @@ test('ui/index.html: 계약(API v2)의 길만 부른다', () => {
     '/api/state', '/api/precheck', '/api/locate', '/api/choice', '/api/structure', '/api/presets',
     '/api/summary/confirm', '/api/setup/start', '/api/setup/progress', '/api/setup/retry', '/api/setup/fresh', '/api/setup/close-holders',
     '/api/online/start', '/api/online/status', '/api/online/login', '/api/online/login/retry',
-    '/api/online/relay', '/api/report', '/api/open-face', '/api/log/path',
+    '/api/online/relay', '/api/report', '/api/report/send', '/api/open-face', '/api/log/path',
   ];
   for (const p of must) assert.ok(src.includes(p), `계약의 길 ${p} 를 부르지 않는다`);
   // v1에만 있던 길은 업데이트 카드(/api/auto·SSE) 말고는 남아 있지 않아야 한다.

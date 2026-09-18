@@ -534,6 +534,30 @@ async function collectGit({ name, p, cacheDir, log, noCache, skipDownload, run, 
 // kind: npm-prefix
 // ---------------------------------------------------------------------------
 
+// A `dir` part with `npmCi` that depends on `electron` needs the Electron
+// binary, which npm's postinstall fetches from GitHub into
+// node_modules/electron/dist. When that download was skipped or failed, the
+// package still installs "successfully" and the shipped Face silently falls
+// back to a browser tab. Run electron's own install script, pointed at our
+// build cache (`electron_config_cache`), and refuse to ship without the exe.
+async function ensureElectronBinary({ work, name, run, nodeExe, cacheDir, npmEnv, log }) {
+  const pkg = path.join(work, 'node_modules', 'electron');
+  if (!fs.existsSync(path.join(pkg, 'package.json'))) return { present: false, reason: 'no-electron-dependency' };
+  const exe = path.join(pkg, 'dist', 'electron.exe');
+  if (fs.existsSync(exe)) { log(`  ${name}: electron.exe present`); return { present: true, ran: false }; }
+  const electronCache = path.join(cacheDir, 'electron');
+  fs.mkdirSync(electronCache, { recursive: true });
+  const env = { ...npmEnv, electron_config_cache: electronCache, ELECTRON_CACHE: electronCache };
+  log(`  ${name}: electron.exe missing after npm ci -> running node_modules/electron/install.js (cache=${electronCache})`);
+  const r = await run(nodeExe, [path.join(pkg, 'install.js')], { cwd: pkg, env, timeoutMs: LONG_TIMEOUT_MS });
+  if (r.code !== 0 || !fs.existsSync(exe)) {
+    assertOnline(`electron binary for ${name} (install.js could not fetch the electron zip into the build cache)`);
+    throw new Error(`electron binary for ${name}: install.js exit ${r.code} — ${(r.err || r.out || '').trim().slice(-400)}`);
+  }
+  log(`  ${name}: electron.exe fetched (${(fs.statSync(exe).size / 1048576).toFixed(1)} MB)`);
+  return { present: true, ran: true };
+}
+
 async function collectNpmPrefix({ name, p, cacheDir, log, noCache, skipDownload, run, nodeExe, npmCli, npmEnv, licensesDir }) {
   const patchesFile = p.patches ? path.resolve(ROOT_DIR, p.patches) : null;
   const patchesSha = patchesFile && fs.existsSync(patchesFile) ? await sha256File(patchesFile) : null;
@@ -868,6 +892,11 @@ export async function collect({
           assertOnline(`npm ci ${name} (npm cache cannot satisfy package-lock.json)`);
           throw new Error(`npm ci ${name}: ${r.err || r.out}`);
         }
+        // Electron 실행 파일(2026-09-19): `npm ci` 가 끝나도 `node_modules/electron/dist/electron.exe` 가 없으면
+        // 설치된 PC 의 IRIS 창은 브라우저 탭으로 열린다(launch.mjs 의 폴백 — 2.0.19 까지 모든 판이 그랬다,
+        // 실제 사용자 실측). 전자 창의 설치 스크립트를 명시적으로 돌려 실행 파일을 채우고, 그래도 없으면 빌드를 멈춘다.
+        // 내려받은 원본은 빌드 캐시(_build\cache\electron)에 남아 다음 빌드는 오프라인으로 재현된다.
+        await ensureElectronBinary({ work, name, run, nodeExe, cacheDir, npmEnv, log });
       }
       if (name === 'face') {
         const pkgPath = path.join(work, 'package.json');

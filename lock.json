@@ -8,7 +8,7 @@
     "dest 는 영혼 루트 기준 '폴더' 경로다(POSIX 구분자). '/' 는 영혼 루트 자체."
   ],
   "schema": 2,
-  "package": { "version": "2.0.19" },
+  "package": { "version": "2.0.20" },
   "parts": {
     "node": {
       "kind": "url",
@@ -150,14 +150,14 @@
     },
     "messenger": {
       "kind": "url",
-      "version": "0.3.2",
-      "url": "https://github.com/Feynman520/d06-p04-iris-messenger/releases/download/iris-messenger--v0.3.2/iris-messenger-v0.3.2.zip",
-      "sha256": "33889f23b39213fc4ce27306d60e3e7f8d33fe257fb0f753a30c637d6a77556b",
-      "sha256Source": "vendor",
-      "file": "face/iris-messenger-v0.3.2.zip",
+      "version": "0.4.3",
+      "url": "https://github.com/Feynman520/d06-p04-iris-messenger/releases/download/iris-messenger--v0.4.3/iris-messenger-v0.4.3.zip",
+      "sha256": "b08519ff3f8e81b3217d6767ca79a81eb062ef4a939c0b5af51b679e4e4d3e6c",
+      "sha256Source": "iris-release.mjs messenger 0.4.3 (2026-09-19, 78,864 bytes)",
+      "file": "face/iris-messenger-v0.4.3.zip",
       "dest": "_agent/shared/tools/face/modules/messenger",
       "license": "MIT",
-      "note": "2026-09-15 확인 결과 0.3.2 가 여전히 최신 릴리스다. Face 자체 서명 모듈 설치기로 꽂는다(1.4.0 결정 유지)."
+      "note": "2026-09-19 0.4.3(말풍선 폭). Face 자체 서명 모듈 설치기로 꽂는다(1.4.0 결정 유지)."
     },
     "dash": {
       "kind": "dir",

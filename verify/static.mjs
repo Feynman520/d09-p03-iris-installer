@@ -280,6 +280,13 @@ async function main() {
     const faceZipPath = path.join(payloadDir, 'face', 'iris-face.zip');
     let ptyOk = false;
     let ptyDetail = `face zip not found: ${faceZipPath}`;
+    // ⑳ (2026-09-19) the Electron executable must ship too: without
+    // node_modules/electron/dist/electron.exe Face's launch.mjs silently
+    // falls back to the default browser, which is what every 2.0.0-2.0.19
+    // install did (home-desktop feedback, item 5). collect.mjs now fetches
+    // it explicitly; this check proves the zip that was packed has it.
+    let electronOk = false;
+    let electronDetail = ptyDetail;
     if (fs.existsSync(faceZipPath)) {
       const faceTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-face-'));
       try {
@@ -293,11 +300,17 @@ async function main() {
           : fs.existsSync(builtPath)
             ? builtPath
             : `neither ${prebuiltPath} nor ${builtPath} exists (inside ${faceZipPath})`;
+        const electronExe = path.join(faceTmpDir, 'node_modules', 'electron', 'dist', 'electron.exe');
+        electronOk = fs.existsSync(electronExe) && fs.statSync(electronExe).size > 1_000_000;
+        electronDetail = electronOk
+          ? `${electronExe} (${(fs.statSync(electronExe).size / 1048576).toFixed(1)} MB)`
+          : `node_modules/electron/dist/electron.exe missing or tiny inside ${faceZipPath} -- Face would open in a browser tab`;
       } finally {
         fs.rmSync(faceTmpDir, { recursive: true, force: true });
       }
     }
     record('⑤ node-pty native binary in shipped zip', ptyOk, ptyDetail);
+    record('⑳ electron.exe in shipped face zip (IRIS 창 = Electron, not a browser tab)', electronOk, electronDetail);
 
     // ⑥ shim template parity -- P02 daemon/wake.mjs re-implements P03
     // installer/lib/shims.mjs's agentShim() byte-for-byte (it cannot import

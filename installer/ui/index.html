@@ -65,9 +65,10 @@ select { background: var(--base); color: var(--ink); border: 1px solid var(--lin
 .acts .spacer { flex: 1; }
 
 .rows { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 0; }
-.row { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: baseline; font-size: 13.5px; }
+.row { display: grid; grid-template-columns: 22px max-content minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 13.5px; }
+.row > span:nth-child(2) { white-space: nowrap; }
 .row .st { text-align: center; }
-.row .dt { color: var(--ink-3); font-size: 12px; font-family: var(--mono); }
+.row .dt { color: var(--ink-3); font-size: 12px; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; text-align: right; }
 .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .idle { color: var(--ink-3); }
 
 .note { border-left: 2px solid var(--warn); background: var(--raised); padding: 10px 13px; border-radius: 6px; color: var(--ink-2); font-size: 13.5px; margin: 12px 0 0; }
@@ -85,7 +86,9 @@ label.pick .sub { display: block; }
 .mini .bar-fill { color: var(--iris); }
 .login-box { border: 1px solid var(--line); border-radius: 8px; padding: 13px; margin-bottom: 10px; }
 .login-box h3 { margin: 0 0 8px; }
-.stage { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; font-size: 13.5px; padding: 3px 0; align-items: baseline; }
+.stage { display: grid; grid-template-columns: 22px max-content minmax(0, 1fr); gap: 10px; font-size: 13.5px; padding: 3px 0; align-items: baseline; }
+.stage > span:nth-child(2) { white-space: nowrap; }
+.stage .dt { color: var(--ink-3); font-size: 12px; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; text-align: right; }
 footer { color: var(--ink-3); font-size: 11.5px; margin-top: 26px; text-align: center; }
 
 /* ---- ④ 작업 폴더 구성 ---- */
@@ -109,7 +112,12 @@ pre.tree { font-family: var(--mono); font-size: 12.5px; line-height: 1.75; color
 pre.tree .empty { color: var(--ink-3); }
 .conn { color: var(--ink-3); font-size: 12.5px; margin: 10px 0 0; }
 .stage-rows { display: flex; flex-direction: column; gap: 5px; margin: 12px 0 0; }
-.stage-row { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; font-size: 13.5px; align-items: baseline; }
+/* 단계 줄: 이름 열은 제 폭(max-content)을 지키고 줄바꿈하지 않는다 — 옛 `1fr auto` 는 오른쪽 설명이 길어지면
+   한글 이름이 한 글자씩 세로로 쌓였다(2026-09-19 실제 사용자 실측). 설명은 오른쪽 열에서 작은 고정폭 글꼴로 구분한다. */
+.stage-row { display: grid; grid-template-columns: 22px max-content minmax(0, 1fr); gap: 10px; font-size: 13.5px; align-items: baseline; }
+.stage-row > span:nth-child(2) { white-space: nowrap; }
+.stage-row .dt { color: var(--ink-3); font-size: 12px; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; text-align: right; }
+.stage-row .dt .live { color: var(--iris-2); }
 .sub-bar { grid-column: 2 / -1; }
 .report h3 { margin: 16px 0 4px; color: var(--iris); }
 .report p { margin: 0 0 6px; color: var(--ink-2); font-size: 14px; }
@@ -258,6 +266,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
         <button class="go" id="btn-setup-close" hidden>IRIS 프로그램 닫고 다시 시도</button>
         <button class="ghost" id="btn-setup-fresh" hidden>처음부터 다시 설치</button>
         <span class="spacer"></span>
+        <button class="ghost" id="btn-report-setup" hidden>개발자에게 신고하기</button>
         <button class="ghost" id="btn-log-setup">로그 경로 복사</button>
       </div>
     </div>
@@ -276,6 +285,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
         <button class="go" id="btn-online-retry" hidden>다시 확인</button>
         <button class="go" id="btn-relay-retry" hidden>계정 연결 다시 시도</button>
         <span class="spacer"></span>
+        <button class="ghost" id="btn-report-online" hidden>개발자에게 신고하기</button>
         <button class="ghost" id="btn-log-online">로그 경로 복사</button>
       </div>
     </div>
@@ -289,6 +299,24 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
       <div id="done-note"></div>
       <div class="acts">
         <button class="go" id="btn-open-face">IRIS 열기</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 개발자에게 신고하기(2026-09-19): 멈춘 자리의 단추가 이 카드를 연다. 사람이 「보내기」를 눌러야만 보낸다. -->
+  <section class="card" id="card-report" hidden>
+    <div class="card-head"><span class="mark">✉</span><h2>개발자에게 신고하기</h2><span class="badge" id="badge-report">준비</span></div>
+    <div class="card-body">
+      <p class="hint">멈춘 단계·오류 코드·진단 파일·로그의 마지막 부분을 개발자에게 보냅니다. 윈도 계정 이름은 <b>&lt;user&gt;</b>로 가려서 보내고, 로그인 정보·키는 들어가지 않습니다. 보내기 전에 아래에서 내용을 확인할 수 있습니다.</p>
+      <label class="pick" style="display:block"><b>덧붙일 말(선택)</b><span class="sub">무엇을 하다 멈췄는지, 화면에 무엇이 보였는지 적어 주시면 큰 도움이 됩니다.</span>
+        <textarea id="report-memo" rows="3" style="width:100%;margin-top:6px;background:var(--base);color:var(--ink);border:1px solid var(--line-2);border-radius:8px;padding:7px 10px;font:14px var(--sans)"></textarea></label>
+      <label class="pick" style="display:block"><b>회신 받을 연락처(선택)</b><span class="sub">답을 받고 싶으면 이메일이나 메신저 이름을 적어 주세요. 비워 두면 익명으로 접수됩니다.</span>
+        <input type="text" id="report-contact" style="margin-top:6px"></label>
+      <details id="report-preview-box"><summary>보낼 내용 미리 보기</summary><pre id="report-preview">불러오는 중…</pre></details>
+      <div id="report-note"></div>
+      <div class="acts">
+        <button class="go" id="btn-report-send">보내기</button>
+        <button class="ghost" id="btn-report-close">닫기</button>
       </div>
     </div>
   </section>
@@ -460,6 +488,55 @@ function wireLogCopy(btnId, noteId) {
 }
 wireLogCopy('btn-log-precheck', 'precheck-note');
 wireLogCopy('btn-log-setup', 'setup-note');
+
+// 개발자에게 신고하기 — 멈춘 자리의 단추가 카드를 열고, 미리 보기를 채운 뒤, 「보내기」에서만 실제로 보낸다.
+let reportSending = false;
+async function openReportCard() {
+  const card = $('card-report');
+  if (!card) return;
+  card.hidden = false;
+  badge('report', '준비', '');
+  $('report-note').innerHTML = '';
+  $('btn-report-send').disabled = false;
+  $('report-preview').textContent = '불러오는 중…';
+  try {
+    const { body } = await api('/api/report/send', { preview: true, memo: $('report-memo').value, contact: $('report-contact').value });
+    const p = body && body.payload ? body.payload : null;
+    $('report-preview').textContent = p
+      ? ['접수번호: ' + p.id, '설치기 판: ' + p.version, '어디서: ' + p.where, '', '[요약]', p.summary, '', '[진단]', p.diagnostics, '', '[로그 끝부분]', p.logs].join('\n')
+      : '미리 보기를 만들지 못했습니다.';
+  } catch { $('report-preview').textContent = '미리 보기를 만들지 못했습니다(설치기 서버가 응답하지 않음).'; }
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function wireReportOpen(btnId) { const b = $(btnId); if (b) b.onclick = openReportCard; }
+wireReportOpen('btn-report-setup');
+wireReportOpen('btn-report-online');
+$('btn-report-close').onclick = () => { $('card-report').hidden = true; };
+$('btn-report-send').onclick = async () => {
+  if (reportSending) return;
+  reportSending = true;
+  $('btn-report-send').disabled = true;
+  badge('report', '보내는 중', 'run');
+  note('report-note', '보내는 중입니다… (docs.google.com 으로 한 번 보냅니다)', '');
+  try {
+    const { body } = await api('/api/report/send', { memo: $('report-memo').value, contact: $('report-contact').value });
+    if (body && body.ok) {
+      badge('report', '접수됨', 'done');
+      note('report-note', '<b>접수됐습니다.</b> 접수번호 <span class="path">' + esc(body.id) + '</span> — 개발자에게 전달됩니다.' +
+        (body.savedTo ? '<br>보낸 내용의 사본: <span class="path">' + esc(body.savedTo) + '</span>' : ''), 'ok');
+    } else {
+      badge('report', '실패', 'bad');
+      note('report-note', '<b>보내지 못했습니다</b>' + (body && body.error ? ' (' + esc(body.error) + ')' : (body && body.status ? ' (HTTP ' + esc(body.status) + ')' : '')) +
+        '.<br>인터넷이 막힌 자리일 수 있습니다. 사본은 여기에 남겼으니 파일을 직접 보내 주셔도 됩니다: <span class="path">' + esc((body && body.savedTo) || '(저장 실패)') + '</span>', 'bad');
+      $('btn-report-send').disabled = false;
+    }
+  } catch (e) {
+    badge('report', '실패', 'bad');
+    note('report-note', '보내지 못했습니다: ' + esc(e && e.message ? e.message : e), 'bad');
+    $('btn-report-send').disabled = false;
+  }
+  reportSending = false;
+};
 wireLogCopy('btn-log-online', 'online-note');
 
 // ---------------------------------------------------------------------------
@@ -992,14 +1069,16 @@ function renderSetup(s) {
     const status = x.status || 'pending';
     let detail = status === 'running' ? (x.detail || STAGE_WHAT[id] || '') : (x.detail || '');
     // 2026-09-17 사용자 요청: 긴 단계에서 멈춘 건지 진행 중인지 보이게 — 경과 시간과 마지막 기록 한 줄.
+    // 2026-09-19: 이름 열과 구분되게 경과·기록은 오른쪽 열(.dt)에만 쌓고, 살아 있는 기록은 색을 달리한다.
+    let detailHtml = esc(detail);
     if (status === 'running') {
       const now = Number(st.now) || Date.now();
-      if (x.startedAt) detail += ' · ' + fmtElapsed(now - Number(x.startedAt)) + '째';
+      if (x.startedAt) detailHtml += ' · ' + esc(fmtElapsed(now - Number(x.startedAt))) + '째';
       const live = st.live && st.live.text ? st.live.text : '';
-      if (live) detail += ' · 마지막 기록: ' + live + (st.live.at ? ' (' + fmtElapsed(now - Number(st.live.at)) + ' 전)' : '');
-      detail += ' ' + SPIN[spinTick++ % SPIN.length];
+      if (live) detailHtml += ' · <span class="live">' + esc(live) + (st.live.at ? ' (' + esc(fmtElapsed(now - Number(st.live.at))) + ' 전)' : '') + '</span>';
+      detailHtml += ' ' + SPIN[spinTick++ % SPIN.length];
     }
-    let html = '<div class="stage-row"><span>' + stageMark(status) + '</span><span>' + esc(label) + '</span><span class="dt">' + esc(detail) + '</span></div>';
+    let html = '<div class="stage-row"><span>' + stageMark(status) + '</span><span>' + esc(label) + '</span><span class="dt">' + detailHtml + '</span></div>';
     if (id === 'unpack' && x.sub && x.sub.total) {
       const pct = Math.floor((Number(x.sub.done) / Number(x.sub.total)) * 100);
       html += '<div class="stage-row"><span></span><span class="sub-bar">' + bar20(pct) +
@@ -1045,11 +1124,13 @@ function renderSetup(s) {
     $('btn-setup-fresh').disabled = false;
     $('btn-setup-close').hidden = holders.length === 0;
     $('btn-setup-close').disabled = false;
+    $('btn-report-setup').hidden = false;
     return 'failed';
   }
   $('btn-setup-retry').hidden = true;
   $('btn-setup-fresh').hidden = true;
   $('btn-setup-close').hidden = true;
+  $('btn-report-setup').hidden = true;
   freshArmed = false;
   if (st.stage === 'done' || Number(st.percent) >= 100) { badge('setup', '완료', 'done'); return 'done'; }
   badge('setup', '진행중', 'run');
@@ -1166,6 +1247,12 @@ function renderOnlineRows(on) {
       relay.state === 'failed' ? (relay.message || '아직 연결되지 않았습니다') :
         relay.state === 'running' ? '중계기를 띄우는 중' : '로그인이 끝나면 합니다',
   ]);
+  // ⑦ 뒤 다시 잰 검사 12·13(중계기 경유) — 2026-09-19: 코덱스만 쓰는 PC 에서 CA 번들이 끝내 안 만들어지던 자리.
+  const recheck = o.recheck && Array.isArray(o.recheck.items) ? o.recheck.items : [];
+  for (const c of recheck) {
+    rows.push([c.status === 'pass' ? 'done' : c.status === 'fail' ? 'failed' : 'pending', (c.num ? '검사 ' + c.num + ' ' : '') + (c.label || c.id), c.detail || '']);
+  }
+  if (o.recheck && o.recheck.error) rows.push(['failed', '중계기 경유 다시 재기', o.recheck.error]);
   // 진행 중인 줄에는 경과 시간과 회전 표시(2026-09-17 사용자 요청: 멈춘 건지 진행 중인지 보이게).
   const now = Number(o.now) || Date.now();
   const since = Number(o.stageAt) || 0;
@@ -1182,6 +1269,7 @@ function renderOnlineRows(on) {
   // 중계기 실패(2026-09-17 실제 사용자 실측: 로그인은 끝났는데 계정 연결이 안 되고 누를 단추가 없었다).
   const relayFailed = relay.state === 'failed';
   $('btn-relay-retry').hidden = !relayFailed;
+  $('btn-report-online').hidden = !(relayFailed || !!o.error || (o.net && o.net.ok === false));
   if (relayFailed && !relayNoteShown) {
     relayNoteShown = true;
     note('online-note', '<b>계정 연결(중계기)</b>에서 멈췄습니다.<br>' + esc(relay.message || '중계기를 시작하지 못했습니다.') +

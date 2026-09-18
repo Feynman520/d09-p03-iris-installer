@@ -48,6 +48,7 @@ import { planUpdateReset, applyUpdateReset } from './lib/update-plan.mjs';
 import { relaunchFace as defaultRelaunchFace, finish as defaultFinish } from './lib/handoff.mjs';
 import { run as defaultRun } from '../lib/run.mjs';
 import { listHolders, stopHolders } from './lib/holders.mjs';
+import { buildReportPayload, sendReport, saveReportCopy } from './lib/report-send.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -358,6 +359,10 @@ export function startServer({
   // (the same v2 engine as the wizard) -- there is no v1 install seam any more.
   relaunchFaceFn = defaultRelaunchFace,
   finishFn = defaultFinish,
+  // 「개발자에게 신고하기」(lib/report-send.mjs) — 시험은 가짜 fetch 를 넣는다.
+  reportFetchFn = globalThis.fetch,
+  // ⑦ 뒤 검사 12·13 다시 재기 — 시험은 가짜를 넣어 실제 중계기에 닿지 않게 한다.
+  relayRecheckFn = null,
   faceDir,
   faceNodeExe,
   workDir,
@@ -789,6 +794,18 @@ export function startServer({
     };
   }
 
+  // ⑦ 중계기가 뜬 뒤 검사 12(클로드 경유)·13(코덱스 경유)만 다시 잰다 — 엔진과 같은 ctx, 온라인 허용.
+  async function defaultRelayRecheck(root) {
+    const { runChecks } = await import('./setup/checks.mjs');
+    const { normalizeContext } = await import('./setup/engine.mjs');
+    const ctx = normalizeContext({ ...buildSetupContext(root), offline: false });
+    const rc = await runChecks(ctx, { only: ['relay', 'relayCodex'] });
+    return {
+      at: new Date().toISOString(),
+      items: rc.items.map((c) => ({ id: c.id, num: c.num, label: c.label, status: c.status, detail: c.detail })),
+    };
+  }
+
   async function runSetupNow() {
     const root = state.soul?.root;
     setupRunning = true;
@@ -1085,6 +1102,18 @@ export function startServer({
     if (!relay?.ok) log(`online relay failed: ${state.online.relay.message}${state.online.relay.detail ? ` ${state.online.relay.detail}` : ''}`);
     state.online.stage = 'relay';
     if (relay?.ok) {
+      // 검사 12·13 다시 재기(2026-09-19, 코덱스만 쓰는 실제 PC 실측): 신규 설치의 ⑥ 에서는 중계기가 아직 없어
+      // 검사 13 이 "대기"로 끝나고 CA 번들(codex-ca-bundle.pem)이 만들어지지 않는다. 그런데 ⑦ 뒤에 아무도 다시
+      // 재지 않아 코덱스 심의 SSL_CERT_FILE 이 **없는 파일**을 가리킨 채 남았다 — 대시보드에 코덱스 활동이 안 잡힌 원인.
+      // 중계기가 살아 있는 지금 다시 재면 CA 를 만들고(첫 CONNECT) 번들을 쓴다. 실패해도 설치를 막지 않는다(기록만).
+      try {
+        const rc = await (relayRecheckFn ?? defaultRelayRecheck)(root);
+        state.online.recheck = rc;
+        log(`online recheck: ${rc.items.map((c) => `${c.id}=${c.status}`).join(' ')}`);
+      } catch (err) {
+        state.online.recheck = { at: new Date().toISOString(), items: [], error: String(err?.message ?? err) };
+        log(`online recheck failed: ${String(err?.stack ?? err)}`);
+      }
       state.online.completed = true;
       state.step = 'done';
       try {
@@ -1093,6 +1122,19 @@ export function startServer({
           ensureV2Fields(receipt);
           receipt.online = { ...state.online };
           markReceiptStep(receipt, 'online', 'done');
+          // 영수증의 검사 기록(⑨)도 같은 id 를 갈아 끼운다 — 완료 보고·인수 문서가 "대기"를 그대로 들고 있지 않게.
+          const rec = receipt.setup?.checks?.recorded;
+          if (rec && Array.isArray(rec.items) && Array.isArray(state.online.recheck?.items)) {
+            for (const it of state.online.recheck.items) {
+              const i = rec.items.findIndex((x) => x && x.id === it.id);
+              if (i >= 0) rec.items[i] = it; else rec.items.push(it);
+            }
+            rec.checks = {
+              pass: rec.items.filter((c) => c.status === 'pass').length,
+              pending: rec.items.filter((c) => c.status === 'pending').length,
+              fail: rec.items.filter((c) => c.status === 'fail').length,
+            };
+          }
           writeReceiptFn(root, receipt);
         }
       } catch { /* the receipt is the engine's; a failure here is not fatal */ }
@@ -1175,6 +1217,27 @@ export function startServer({
   // --- 로그 경로 복사 -------------------------------------------------------
   routes.set('POST /api/log/path', withBody(async (body, req, res) => {
     sendJson(res, 200, { ok: true, path: serverLog, soulPath: soulLogPath() });
+  }));
+
+  // 「개발자에게 신고하기」(2026-09-19): 화면 상태·진단 파일·로그 꼬리를 사용자 이름을 가린 채 묶어
+  // 개발자의 접수 양식으로 보낸다. 사람이 단추를 눌렀을 때만 온다(자동 전송 없음). 사본은 로컬에 남긴다.
+  // preview=true 면 보내지 않고 묶음만 돌려준다(화면이 "이런 내용을 보냅니다"를 먼저 보여 주게).
+  routes.set('POST /api/report/send', withBody(async (body, req, res) => {
+    const root = soulConfirmed ? (state.soul?.root ?? null) : null;
+    const payload = buildReportPayload({
+      state, root, fs,
+      logs: { server: serverLog, soul: soulLogPath() },
+      memo: body?.memo ?? '', contact: body?.contact ?? '',
+    });
+    const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+    if (body?.preview) {
+      sendJson(res, 200, { ok: true, preview: true, id: payload.id, bytes, payload });
+      return;
+    }
+    const sent = await sendReport(payload, { fetchImpl: reportFetchFn });
+    const saved = saveReportCopy({ root, fallbackDir: logDir, payload, fs, sent });
+    log(`report ${payload.id} sent=${sent.ok} status=${sent.status ?? '-'}${sent.error ? ` error=${sent.error}` : ''} bytes=${bytes} saved=${saved?.path ?? '-'}`);
+    sendJson(res, 200, { ok: sent.ok, id: payload.id, status: sent.status ?? null, error: sent.error ?? null, bytes, savedTo: saved?.path ?? null });
   }));
 
   // =========================================================================

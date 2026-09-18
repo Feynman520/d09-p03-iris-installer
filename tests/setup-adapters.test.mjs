@@ -231,6 +231,16 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   assert.match(top, /project_root_markers = \["soul-state\.json"\]/);
   assert.match(top, /web_search = "live"/);
   assert.match(toml, /\[features\]\nmulti_agent = true/);
+  // 2026-09-19: 윈도 샌드박스는 관리자 설정 없이(unelevated) — "Couldn't set up your sandbox with Administrator permissions" 물음 예방
+  assert.match(toml, /\[windows\]\nsandbox = "unelevated"/);
+  // 2026-09-19: 첫 실행 물음(폴더 신뢰) 선답 — v2 엔진이 빠뜨려 2.0.0~2.0.19 신규 설치에서 영어 물음이 떴다
+  assert.match(toml, /\[projects\.'[^']+'\]\ntrust_level = "trusted"/);
+  assert.equal(recorded.codex.firstRun.written, 'appended', 'config.toml 은 6단계가 먼저 만들었으니 신뢰 표는 덧붙는다');
+  const claudeJson = JSON.parse(fs.readFileSync(agentFile(root, 'claude', '.claude.json'), 'utf8'));
+  assert.equal(claudeJson.hasCompletedOnboarding, true);
+  const trustKey = Object.keys(claudeJson.projects ?? {}).find((k) => claudeJson.projects[k]?.hasTrustDialogAccepted === true);
+  assert.ok(trustKey && !trustKey.includes('\\'), `클로드 신뢰 키(슬래시)가 없음: ${JSON.stringify(Object.keys(claudeJson.projects ?? {}))}`);
+  assert.ok(['created', 'merged'].includes(recorded.claude.firstRun.written), recorded.claude.firstRun.written);
   for (const name of ['playwright', 'self-improve', 'hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation']) {
     assert.ok(adapters.hasTable(toml, `mcp_servers.${name}`), `코덱스 MCP 없음: ${name}`);
   }
