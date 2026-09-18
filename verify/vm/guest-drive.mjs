@@ -177,7 +177,9 @@ async function waitForOnlineStop() {
 // 복사 진행은 SSE(`GET /api/install/events`)로 흐르지만, 우리는 끝났는지만
 // 알면 되므로 `GET /api/state` 를 본다. 🔴 `POST /api/login` 은 부르지 않는다.
 async function driveLegacy() {
-  const pre = (await post('/api/precheck')).json;
+  // precheck 는 손님에서 41~49초 걸린다(2026-09-17 S04·09-18 S03 실측: 오프라인 망 탐침 시한 + PowerShell 기동).
+  // 기본 60초 한도를 조금만 넘겨도 운전기가 중단돼 판정 없이 끝나므로(09-18 22:01 S04) 4분을 준다.
+  const pre = (await post('/api/precheck', {}, { timeoutMs: 4 * 60 * 1000 })).json;
   note('legacy-precheck', { ok: pre?.ok, canProceed: pre?.canProceed });
 
   const name = (await post('/api/name')).json;
@@ -233,7 +235,9 @@ async function main() {
     return;
   }
 
-  const pre = (await post('/api/precheck')).json;
+  // precheck 는 손님에서 41~49초 걸린다(2026-09-17 S04·09-18 S03 실측: 오프라인 망 탐침 시한 + PowerShell 기동).
+  // 기본 60초 한도를 조금만 넘겨도 운전기가 중단돼 판정 없이 끝나므로(09-18 22:01 S04) 4분을 준다.
+  const pre = (await post('/api/precheck', {}, { timeoutMs: 4 * 60 * 1000 })).json;
   note('precheck', { ok: pre?.ok, canProceed: pre?.canProceed, blockers: pre?.result?.blockers?.length ?? null });
   if (!pre?.canProceed) throw new Error(`사전 점검이 진행을 막았습니다: ${JSON.stringify(pre?.result?.blockers ?? pre)}`);
 
