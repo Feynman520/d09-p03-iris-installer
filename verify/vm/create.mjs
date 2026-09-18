@@ -158,6 +158,11 @@ export function stockTemplatePath(vboxExe, file = STOCK_POST_INSTALL) {
 export const STOCK_SCRIPT_TEMPLATE = 'win_nt6_unattended.xml';
 const PRODUCT_KEY_BLOCK_RE = /^[ \t]*<ProductKey>[\s\S]*?<\/ProductKey>[ \t]*\r?\n/m;
 
+/** Windows 10 setup stops at the license-terms screen on an empty <ProductKey>; Windows 11 does not. */
+export function needsProductKeyStrip(ostype) {
+  return /^Windows10/i.test(String(ostype ?? ''));
+}
+
 export function buildScriptTemplate(stockText) {
   const text = String(stockText);
   if (!PRODUCT_KEY_BLOCK_RE.test(text)) {
@@ -300,13 +305,19 @@ export async function main(argv = process.argv.slice(2), { vbox = makeVbox(), en
     log('bake: OFF (--no-bake) -- S03/S04/S05/S07/S09 will have no elevation channel.');
   }
 
-  // --- 답변 틀: 제품 키 블록 제거 ------------------------------------------
+  // --- 답변 틀: 제품 키 블록 제거 — **Windows 10 에만** ---------------------------
+  // Windows 11 평가판은 빈 키를 그대로 넘기고(기준 VM IRIS-Win11-v2, 2026-09-16), 오히려 블록을
+  // 뺀 틀로 만든 IRIS-Win11-EN 은 두 번 다 「Installing 42%」에서 30분 넘게 멈췄다(2026-09-18
+  // 17:46·20:35 실측, CPU 는 계속 바쁨). 검증된 길에서 벗어나지 않도록 Win10 에만 뺀다.
   // 비밀은 없으니(비밀번호는 VBoxManage 가 따로 채움) 진단용으로 VM 폴더에 남긴다.
-  const scriptTemplate = path.join(path.dirname(cfg ? cfg[1] : '.'), `${opts.name}-unattended.xml`);
-  {
+  let scriptTemplate = null;
+  if (needsProductKeyStrip(opts.ostype)) {
+    scriptTemplate = path.join(path.dirname(cfg ? cfg[1] : '.'), `${opts.name}-unattended.xml`);
     const stockXml = requireFile(stockTemplatePath(findVBoxManage(), STOCK_SCRIPT_TEMPLATE), 'stock answer-file template');
     fs.writeFileSync(scriptTemplate, buildScriptTemplate(fs.readFileSync(stockXml, 'utf8')), 'utf8');
-    log(`answer file: ${STOCK_SCRIPT_TEMPLATE} minus <ProductKey> -> ${path.basename(scriptTemplate)}`);
+    log(`answer file: ${STOCK_SCRIPT_TEMPLATE} minus <ProductKey> -> ${path.basename(scriptTemplate)} (${opts.ostype})`);
+  } else {
+    log(`answer file: Oracle stock template (${opts.ostype} tolerates the empty <ProductKey>)`);
   }
 
   const plan = createPlan(opts, { password, diskPath, postInstallTemplate, scriptTemplate }).slice(1); // createvm already ran

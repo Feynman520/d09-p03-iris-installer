@@ -26,7 +26,7 @@ import {
 } from '../verify/vm/lib.mjs';
 import {
   createPlan, finalizePlan, parseArgs as createArgs, DEFAULTS,
-  cmdEchoLines, chunk64, bakeBlock, buildPostInstallTemplate, stockTemplatePath, buildScriptTemplate, STOCK_SCRIPT_TEMPLATE,
+  cmdEchoLines, chunk64, bakeBlock, buildPostInstallTemplate, stockTemplatePath, buildScriptTemplate, STOCK_SCRIPT_TEMPLATE, needsProductKeyStrip,
   POST_INSTALL_ANCHOR, STOCK_POST_INSTALL,
 } from '../verify/vm/create.mjs';
 import {
@@ -281,6 +281,10 @@ test('buildScriptTemplate removes the empty <ProductKey> block Windows 10 eval c
   // Oracle 이 템플릿을 바꿔 블록이 없으면 조용히 지나가지 않고 멈춘다.
   assert.throws(() => buildScriptTemplate('<UserData><AcceptEula>true</AcceptEula></UserData>'), /ProductKey.*not found/);
   assert.equal(stockTemplatePath('C:\\VB\\VBoxManage.exe', STOCK_SCRIPT_TEMPLATE), 'C:\\VB\\UnattendedTemplates\\win_nt6_unattended.xml');
+  // 2026-09-18: Win11 EN 은 뺀 틀로 두 번 다 「Installing 42%」에서 멈췄고, Win11 ko 기준 VM 은 빈 키로 잘 됐다 → Win10 에만.
+  assert.equal(needsProductKeyStrip('Windows10_64'), true);
+  assert.equal(needsProductKeyStrip('Windows11_64'), false);
+  assert.equal(needsProductKeyStrip(undefined), false);
 });
 
 test('cmdEchoLines wraps every echo in parens -- a base64 line ending in a digit is a cmd redirect otherwise', () => {
