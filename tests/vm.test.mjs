@@ -148,16 +148,41 @@ test('guest command builders wrap cmd.exe / powershell.exe with wait flags', () 
 test('waitForGuestControl polls until the guest echoes back, then stops', async () => {
   let n = 0;
   const vbox = () => { n += 1; return n < 3 ? { code: 1, out: '', err: '' } : { code: 0, out: 'ready', err: '' }; };
-  const ok = await waitForGuestControl(vbox, 'VM', 'u', 'p', { pollMs: 0, maxMs: 10000, sleepFn: async () => {} });
+  const ok = await waitForGuestControl(vbox, 'VM', 'u', 'p', { pollMs: 0, maxMs: 10000, sleepFn: async () => {}, vmStateFn: () => 'running' });
   assert.equal(ok, true);
   assert.equal(n, 3);
+});
+
+test('waitForGuestControl restarts a VM that shut itself down (Win10 post-install), at most maxRestarts times', async () => {
+  // IRIS-Win10 2026-09-18: post-install 끝에 손님이 스스로 꺼져 finalize 가 120 분을 헛기다렸다.
+  const calls = [];
+  let state = 'poweroff';
+  const vbox = (args) => {
+    calls.push(args[0]);
+    if (args[0] === 'startvm') { state = 'running'; return { code: 0, out: '', err: '' }; }
+    return state === 'running' && calls.filter((c) => c === 'guestcontrol').length >= 2
+      ? { code: 0, out: 'ready', err: '' } : { code: 1, out: '', err: '' };
+  };
+  const ok = await waitForGuestControl(vbox, 'VM', 'u', 'p', { pollMs: 0, maxMs: 10000, sleepFn: async () => {}, vmStateFn: () => state });
+  assert.equal(ok, true);
+  assert.equal(calls.filter((c) => c === 'startvm').length, 1, '꺼져 있으면 한 번 켠다');
+
+  // 켜도 계속 꺼지는 VM 은 maxRestarts 뒤 더 켜지 않고 시한까지 기다리다 false.
+  const starts = [];
+  let clock = 0;
+  const dead = (args) => { if (args[0] === 'startvm') starts.push(1); return { code: 1, out: '', err: '' }; };
+  const no = await waitForGuestControl(dead, 'VM', 'u', 'p', {
+    pollMs: 100, maxMs: 1000, sleepFn: async () => { clock += 100; }, now: () => clock, vmStateFn: () => 'aborted', maxRestarts: 2,
+  });
+  assert.equal(no, false);
+  assert.equal(starts.length, 2);
 });
 
 test('waitForGuestControl gives up (false, not a throw) when the deadline passes', async () => {
   let clock = 0;
   const vbox = () => ({ code: 1, out: '', err: '' });
   const ok = await waitForGuestControl(vbox, 'VM', 'u', 'p', {
-    pollMs: 100, maxMs: 300, sleepFn: async () => { clock += 100; }, now: () => clock,
+    pollMs: 100, maxMs: 300, sleepFn: async () => { clock += 100; }, now: () => clock, vmStateFn: () => 'running',
   });
   assert.equal(ok, false);
 });

@@ -242,12 +242,19 @@ export async function waitForPowerOff(vbox, vm, {
 // Poll guest control readiness by actually running a trivial command as the
 // target user -- that IS the capability every later step needs, so it is a
 // better gate than any guest property whose name Oracle does not guarantee.
+//
+// 2026-09-18 IRIS-Win10 실측: Windows 10 무인설치는 post-install 이 끝나면 **손님이 스스로
+// 꺼진다**(Win11 은 켜진 채 남는다). 꺼진 VM 에는 손님 제어가 영영 안 열리므로, 프로브가
+// 실패할 때 VM 상태를 보고 꺼져 있으면 headless 로 다시 켠다(최대 maxRestarts 번).
 export async function waitForGuestControl(vbox, vmName, username, password, {
   pollMs = 30 * 1000, maxMs = 90 * 60 * 1000, sleepFn = sleep, now = () => Date.now(),
+  vmStateFn = () => parseVmState(vbox(['showvminfo', vmName, '--machinereadable'], { allowFail: true }).out),
+  maxRestarts = 2,
 } = {}) {
   const start = now();
   const deadline = start + maxMs;
   let attempt = 0;
+  let restarts = 0;
   while (now() < deadline) {
     attempt += 1;
     log(`guest control probe #${attempt} (elapsed ${Math.round((now() - start) / 60000)} min)...`);
@@ -256,6 +263,13 @@ export async function waitForGuestControl(vbox, vmName, username, password, {
     if (r.code === 0 && r.out.includes('ready')) {
       log('guest control is ready.');
       return true;
+    }
+    let state = '';
+    try { state = String(vmStateFn() ?? ''); } catch { state = ''; }
+    if (STOPPED_STATES.includes(state) && restarts < maxRestarts) {
+      restarts += 1;
+      log(`VM is ${state} while waiting for guest control (the guest shut itself down after post-install?) -- starting it headless (${restarts}/${maxRestarts}).`);
+      vbox(['startvm', vmName, '--type', 'headless'], { allowFail: true });
     }
     await sleepFn(Math.min(pollMs, Math.max(0, deadline - now())));
   }
