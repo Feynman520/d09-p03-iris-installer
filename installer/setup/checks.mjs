@@ -568,6 +568,12 @@ export function installStartedAt(receipt) {
 // · LibreOffice(.~lock.*) · 탐색기 캐시(Thumbs.db) · macOS 동기화 잔재(.DS_Store).
 export const SYNC_SCRATCH_RE = /^(\.tmp\.drive(upload|download)|~\$.*|.*\.tmp|.*\.partial|\.~lock\..*|thumbs\.db|\.ds_store)$/i;
 
+// 윈도가 스스로 바탕화면에 놓는 바로가기 — 우리가 만든 것이 아니다.
+// 2026-09-18 VM S02(Windows 10 22H2) 실측: 설치 도중 엣지 업데이트기가 `Microsoft Edge.lnk` 를
+// 바탕화면에 만들어 검사 6 이 "허용되지 않은 새 항목 1개" 로 실패했다(IRIS 는 엣지를 열지 않는다,
+// 검사 9 는 있는지만 본다). 목록은 실측된 것만 넣는다 — 넓히면 진짜 이탈을 가린다.
+export const OS_DESKTOP_ITEMS_RE = /^(Microsoft Edge)\.lnk$/i;
+
 export async function checkDesktop(ctx, opts = {}) {
   const fs = fsOf(ctx);
   const root = ctx.root;
@@ -581,6 +587,7 @@ export async function checkDesktop(ctx, opts = {}) {
     for (const e of entries) {
       if (allowed.some((a) => a.toLowerCase() === e.name.toLowerCase())) continue;
       if (SYNC_SCRATCH_RE.test(e.name)) continue;
+      if (OS_DESKTOP_ITEMS_RE.test(e.name)) continue;
       const full = path.join(dir, e.name);
       let st;
       try { st = fs.statSync(full); } catch { continue; }

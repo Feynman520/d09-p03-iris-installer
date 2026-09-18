@@ -373,6 +373,25 @@ test('검사6: 동기화 클라이언트 임시 파일(.tmp.driveupload 등)은 
   assert.deepEqual(c.strays.map((s) => s.name), ['설치기가 흘린 파일.txt'], '동기화 임시 파일 셋은 빠지고 진짜 흘린 파일만 남는다');
 });
 
+test('검사6: 윈도가 스스로 놓는 Microsoft Edge.lnk 는 새 항목으로 세지 않는다(VM S02 Windows 10, 2026-09-18)', async () => {
+  const root = newRoot('desktop-os');
+  const desktop = path.join(tmp, `desk-os-${seq}`);
+  fs.mkdirSync(desktop, { recursive: true });
+  write(path.join(desktop, 'IRIS.lnk'), 'shortcut');
+  write(path.join(desktop, 'Microsoft Edge.lnk'), 'edge updater made this');
+  const ctx = ctxFor(root, {
+    desktopDir: desktop,
+    receipt: { schema: 2, setup: { unpack: { startedAt: new Date(Date.now() - 60000).toISOString() } } },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'pass', c.detail);
+  // 목록은 좁다 — 다른 바로가기는 여전히 잡는다.
+  write(path.join(desktop, 'Some Game.lnk'), 'not ours');
+  const c2 = await checkDesktop(ctx);
+  assert.equal(c2.status, 'fail');
+  assert.deepEqual(c2.strays.map((s) => s.name), ['Some Game.lnk']);
+});
+
 test('검사6: 단계 기록에 루트 밖 경로가 있으면 실패', async () => {
   const root = newRoot('outside');
   const ctx = ctxFor(root, {
