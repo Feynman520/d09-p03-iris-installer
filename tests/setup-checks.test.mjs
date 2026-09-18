@@ -11,10 +11,11 @@ import { EventEmitter } from 'node:events';
 import {
   run as runChecksStage, runChecks, checkExe, checkMcp, checkPlugins, checkHooks,
   checkConfig, checkDesktop, checkOntology, checkReceiptIdempotent, checkEdge,
-  checkSkeleton, checkStructure, checkRelayRoute, tomlSanity, mcpInitialize, collectMcpServers,
+  checkSkeleton, checkStructure, checkRelayRoute, checkRelayCodex, tomlSanity, mcpInitialize, collectMcpServers,
   scanCardIds, recordedPaths, resolveExe, installStartedAt, batchWrap,
 } from '../installer/setup/checks.mjs';
 import { writeReceipt, newReceiptV2 } from '../installer/lib/receipt.mjs';
+import { CODEX_PROXY_LINES } from '../installer/lib/shims.mjs';
 
 const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 't18c-'));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
@@ -666,12 +667,12 @@ test('단계 전체: 검사가 실패하면 인수 문서가 그것을 실패로
   assert.equal(handoff.setupCompletedAt, null);
 });
 
-test('runChecks: only 로 고른 검사만 돌린다(열두 항목이 다 있다)', async () => {
+test('runChecks: only 로 고른 검사만 돌린다(열세 항목이 다 있다)', async () => {
   const root = fullyPassingRoot('only');
   const all = await runChecks(stageCtx(root), { spawn: fakeSpawn() });
-  assert.equal(all.items.length, 12);
+  assert.equal(all.items.length, 13);
   assert.deepEqual(all.items.map((c) => c.id), [
-    'exe', 'mcp', 'plugins', 'hooks', 'config', 'desktop', 'ontology', 'receipt', 'edge', 'skeleton', 'structure', 'relay',
+    'exe', 'mcp', 'plugins', 'hooks', 'config', 'desktop', 'ontology', 'receipt', 'edge', 'skeleton', 'structure', 'relay', 'relayCodex',
   ]);
   const one = await runChecks(stageCtx(root), { only: ['edge'] });
   assert.equal(one.items.length, 1);
@@ -683,7 +684,7 @@ test('검사 하나가 터져도 그 검사만 실패로 적고 나머지는 계
     run: async () => { throw new Error('시험용 폭발'); },
   });
   const res = await runChecks(ctx, { spawn: fakeSpawn() });
-  assert.equal(res.items.length, 12);
+  assert.equal(res.items.length, 13);
   assert.ok(res.items.some((c) => c.status === 'pass'), '나머지는 계속 돈다');
 });
 
@@ -709,7 +710,7 @@ test('검사12: 배선 4곳 + 클로드 계정 + 살아 있는 요청 200 이면
   assert.match(c.detail, /살아 있는 요청 1건 통과/);
 });
 
-test('검사12: 중계기에 클로드 계정이 0개면 — 클로드 구독을 골랐으면 실패, 코덱스만 골랐으면 대기(요청은 보내지 않는다)', async () => {
+test('검사12: 중계기에 클로드 계정이 0개면 — 클로드 구독을 골랐으면 실패, 코덱스만 골랐으면 통과(배선은 맞고 요청은 보내지 않는다)', async () => {
   const { root, receipt } = relayRoot('relay-codex-only');
   const relay = fakeRelay({ accounts: [{ name: 'c', provider: 'codex' }] });
   const asClaude = await checkRelayRoute(ctxFor(root, { receipt, fetch: relay.fetchImpl, choice: { subscriptions: ['claude'] } }));
@@ -719,7 +720,98 @@ test('검사12: 중계기에 클로드 계정이 0개면 — 클로드 구독을
   assert.ok(!relay.calls.some((k) => k.url.endsWith('/v1/messages')), '계정이 없으면 살아 있는 요청을 보내지 않는다');
 
   const asCodex = await checkRelayRoute(ctxFor(root, { receipt, fetch: relay.fetchImpl, choice: { subscriptions: ['codex'] } }));
-  assert.equal(asCodex.status, 'pending');
+  assert.equal(asCodex.status, 'pass', asCodex.detail);   // 설계 A': 코덱스만 고른 설치는 클로드 계정 0 이 정상
+  assert.match(asCodex.detail, /클로드 계정 0개/);
+});
+
+// ---------------------------------------------------------------------------
+// 13. 중계기 경유(코덱스) — 설계 A' (2026-09-18): 코덱스 심의 프록시 3줄 + 가로채기 실측 + CA 번들
+// ---------------------------------------------------------------------------
+
+const FAKE_CA = '-----BEGIN CERTIFICATE-----\nMIIBfakeTeamClaudeCA0000000000000000000000000000000000000000000000\n-----END CERTIFICATE-----\n';
+
+function codexRoot(label, { shimLines = CODEX_PROXY_LINES } = {}) {
+  const root = newRoot(label);
+  const receipt = { schema: 2, setup: {}, online: {} };
+  wireRelay(root, receipt);
+  write(path.join(root, '_agent', 'shared', 'shims', 'codex.cmd'), `@echo off\r\n${shimLines.join('\r\n')}\r\n`);
+  return { root, receipt, dir: path.join(root, '_agent', 'shared', 'portable-state', 'teamclaude') };
+}
+
+// 중계기 MITM 흉내: ca 없이 부르면 "첫 CONNECT" 가 CA 파일을 만들고, ca 를 주면 검증된 200 + mitm-proxy-ok.
+function fakeMitm(dir, { verified = true, body = '{"teamclaude":"mitm-proxy-ok"}', mint = true } = {}) {
+  const calls = [];
+  const impl = async ({ ca }) => {
+    calls.push({ withCa: ca != null });
+    if (ca == null) {
+      if (mint) write(path.join(dir, 'teamclaude-ca.pem'), FAKE_CA);
+      return { ok: true, status: 200, body, verified: false, issuer: 'TeamClaude MITM CA', error: null };
+    }
+    return { ok: true, status: 200, body, verified, issuer: 'TeamClaude MITM CA', error: verified ? null : 'tls: self signed' };
+  };
+  return { impl, calls };
+}
+
+test('검사13: 코덱스 심 3줄 + 코덱스 계정 + 가로채기 실측(CA 지연 생성 → 검증) 통과, CA 번들이 생긴다', async () => {
+  const { root, receipt, dir } = codexRoot('codex-ok');
+  const relay = fakeRelay({ accounts: [{ name: 'c', provider: 'codex' }] });
+  const mitm = fakeMitm(dir);
+  const c = await checkRelayCodex(ctxFor(root, { receipt, fetch: relay.fetchImpl, mitmProbe: mitm.impl, choice: { subscriptions: ['codex'] } }));
+  assert.equal(c.status, 'pass', c.detail);
+  assert.deepEqual(mitm.calls, [{ withCa: false }, { withCa: true }], '첫 CONNECT 로 CA 를 만들고, 그 CA 로 다시 검증한다');
+  assert.equal(c.wiring.shim, true);
+  assert.equal(c.relay.accounts.codex, 1);
+  assert.ok(c.bundle.ok && c.bundle.changed, JSON.stringify(c.bundle));
+  const bundle = fs.readFileSync(path.join(dir, 'codex-ca-bundle.pem'), 'utf8');
+  assert.ok(bundle.includes(FAKE_CA.trim()), '번들에 중계기 CA 가 들어 있다');
+  assert.ok((bundle.match(/-----BEGIN CERTIFICATE-----/g) || []).length > 50, '번들에 공인 루트가 함께 들어 있다');
+  assert.match(c.detail, /가로채기 실측 통과/);
+
+  // 두 번째 실행: CA 는 이미 있으니 mint 없이 검증 1번, 번들은 그대로.
+  const again = fakeMitm(dir);
+  const c2 = await checkRelayCodex(ctxFor(root, { receipt, fetch: relay.fetchImpl, mitmProbe: again.impl, choice: { subscriptions: ['codex'] } }));
+  assert.equal(c2.status, 'pass', c2.detail);
+  assert.deepEqual(again.calls, [{ withCa: true }]);
+  assert.equal(c2.bundle.changed, false);
+});
+
+test('검사13: 코덱스를 고르지 않은 설치는 해당 없음으로 통과(아무 요청도 보내지 않는다)', async () => {
+  const { root, receipt } = relayRoot('codex-skip');
+  const relay = fakeRelay({ accounts: [{ name: 'a', provider: 'anthropic' }] });
+  const c = await checkRelayCodex(ctxFor(root, { receipt, fetch: relay.fetchImpl, choice: { subscriptions: ['claude'] } }));
+  assert.equal(c.status, 'pass');
+  assert.equal(c.skipped, 'no-codex');
+  assert.equal(relay.calls.length, 0);
+});
+
+test('검사13: 심에 프록시 줄이 빠졌거나 코덱스 계정이 0개면 실패, 가로채기 검증이 안 되면 실패, 중계기가 없으면 대기', async () => {
+  const { root, receipt, dir } = codexRoot('codex-shim-bad', { shimLines: ['set "HTTPS_PROXY=http://127.0.0.1:3456"'] });
+  const relay = fakeRelay({ accounts: [{ name: 'c', provider: 'codex' }] });
+  const bad = await checkRelayCodex(ctxFor(root, { receipt, fetch: relay.fetchImpl, mitmProbe: fakeMitm(dir).impl, choice: { subscriptions: ['codex'] } }));
+  assert.equal(bad.status, 'fail');
+  assert.match(bad.detail, /프록시 설정 2줄이 없음\(NO_PROXY, SSL_CERT_FILE\)/);
+
+  const ok = codexRoot('codex-no-acct');
+  const none = fakeRelay({ accounts: [{ name: 'a', provider: 'anthropic' }] });
+  const zero = await checkRelayCodex(ctxFor(ok.root, { receipt: ok.receipt, fetch: none.fetchImpl, mitmProbe: fakeMitm(ok.dir).impl, choice: { subscriptions: ['codex'] } }));
+  assert.equal(zero.status, 'fail');
+  assert.match(zero.detail, /코덱스 계정 0개\(클로드 1개\)/);
+  assert.match(zero.detail, /ChatGPT 로그인을 추가/);
+
+  const unv = codexRoot('codex-unverified');
+  const un = await checkRelayCodex(ctxFor(unv.root, { receipt: unv.receipt, fetch: relay.fetchImpl, mitmProbe: fakeMitm(unv.dir, { verified: false }).impl, choice: { subscriptions: ['codex'] } }));
+  assert.equal(un.status, 'fail');
+  assert.match(un.detail, /가로채기 실측 실패/);
+
+  const nomint = codexRoot('codex-nomint');
+  const nm = await checkRelayCodex(ctxFor(nomint.root, { receipt: nomint.receipt, fetch: relay.fetchImpl, mitmProbe: fakeMitm(nomint.dir, { mint: false }).impl, choice: { subscriptions: ['codex'] } }));
+  assert.equal(nm.status, 'fail');
+  assert.match(nm.detail, /중계기가 CA 를 만들지 않음/);
+
+  const down = codexRoot('codex-down');
+  const d = await checkRelayCodex(ctxFor(down.root, { receipt: down.receipt, choice: { subscriptions: ['codex'] } }));
+  assert.equal(d.status, 'pending');
+  assert.match(d.detail, /중계기가 응답하지 않음/);
 });
 
 test('검사12: 심에 중계기 주소가 없으면 실패(그 길로 연 세션은 직행한다)', async () => {

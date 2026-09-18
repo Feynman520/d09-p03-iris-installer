@@ -89,12 +89,26 @@ function pyShim() {
 // check ⑥ can byte-compare this template against its P02 daemon/wake.mjs
 // sibling copy (agentShimText()) -- the two must never drift (see that file's
 // header comment for the provenance/duplication rationale).
+// 코덱스는 base-URL 방식이 없다 — TeamClaude 는 코덱스를 **전달 프록시(MITM) 방식**으로만
+// 중계한다(chatgpt.com 행 CONNECT 를 가로채 계정 토큰을 끼움). 그래서 코덱스 심에서만
+// HTTPS_PROXY 를 중계기로 두고, 중계기의 CA 를 담은 번들을 SSL_CERT_FILE 로 넘긴다
+// (Rust CLI 는 NODE_EXTRA_CA_CERTS 를 모른다). 번들 = 공인 루트 전부 + TeamClaude CA:
+// SSL_CERT_FILE 은 rustls 에서 시스템 신뢰 목록을 **대체**하므로 CA 하나만 주면
+// 가로채지 않고 통과시키는 호스트(auth.openai.com 등)의 진짜 인증서가 실패한다.
+// 세션의 다른 도구(git·npm·curl)는 프록시를 모른 채 그대로 둔다(설계 A', 2026-09-18).
+export const CODEX_PROXY_LINES = Object.freeze([
+  'set "HTTPS_PROXY=http://127.0.0.1:3456"',
+  'set "NO_PROXY=localhost,127.0.0.1,::1"',
+  'set "SSL_CERT_FILE=%~dp0..\\portable-state\\teamclaude\\codex-ca-bundle.pem"',
+]);
+
 export function agentShim(agent) {
   const { envName, envDir, tool } = AGENT_SHIMS[agent];
   return crlf([
     '@echo off',
     'setlocal',
     'set "ANTHROPIC_BASE_URL=http://127.0.0.1:3456"',
+    ...(agent === 'codex' ? CODEX_PROXY_LINES : []),
     `set "${envName}=%~dp0..\\..\\${envDir}"`,
     'set "PATH=%~dp0..\\tools\\node;%PATH%"',
     `call "%~dp0..\\tools\\${tool}\\${tool}.cmd" %*`,

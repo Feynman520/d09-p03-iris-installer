@@ -353,6 +353,16 @@
           "with": "  exec(cmd === 'start' ? `start \"\" ${JSON.stringify(url)}` : `${cmd} ${JSON.stringify(url)}`, () => {});"
         }
       ]
+    },
+    {
+      "path": "node_modules/@karpeleslab/teamclaude/src/mitm.js",
+      "replace": [
+        {
+          "find": "/** Every host the MITM leaf must be valid for, given this config. */\nexport function mitmHosts(config) {\n  return [...new Set([upstreamHostOf(config), ...interceptHostsFor(config?.accounts || [])])];\n}",
+          "with": "/** Every host the MITM leaf must be valid for, given this config. */\n// local patch 2026-09-18 IRIS: name every provider host up front. server.js computes\n// this list ONCE at start (mitmHostList) and memoises the leaf, but IRIS adds the\n// Codex account AFTER the relay is up (install step 7), so a leaf minted from the\n// accounts-at-start would never cover chatgpt.com until a restart -- and the\n// installer never restarts a running relay. Naming the host costs nothing when no\n// Codex account exists: hostMode() still tunnels it.\nexport function mitmHosts(config) {\n  return [...new Set([upstreamHostOf(config), 'chatgpt.com', ...interceptHostsFor(config?.accounts || [])])];\n}",
+          "count": 1
+        }
+      ]
     }
   ]
 }
