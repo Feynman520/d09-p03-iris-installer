@@ -775,6 +775,14 @@ test('검사13: 코덱스 심 3줄 + 코덱스 계정 + 가로채기 실측(CA �
   assert.equal(c2.bundle.changed, false);
 });
 
+test("검사13: 구독 선택값의 실제 ID 는 'chatgpt' — 그 값으로도 코덱스 검사가 돈다", async () => {
+  const { root, receipt, dir } = codexRoot('codex-chatgpt-id');
+  const relay = fakeRelay({ accounts: [{ name: 'c', provider: 'codex' }] });
+  const c = await checkRelayCodex(ctxFor(root, { receipt, fetch: relay.fetchImpl, mitmProbe: fakeMitm(dir).impl, choice: { subscriptions: ['chatgpt'] } }));
+  assert.equal(c.status, 'pass', c.detail);
+  assert.notEqual(c.skipped, 'no-codex');
+});
+
 test('검사13: 코덱스를 고르지 않은 설치는 해당 없음으로 통과(아무 요청도 보내지 않는다)', async () => {
   const { root, receipt } = relayRoot('codex-skip');
   const relay = fakeRelay({ accounts: [{ name: 'a', provider: 'anthropic' }] });
@@ -812,6 +820,29 @@ test('검사13: 심에 프록시 줄이 빠졌거나 코덱스 계정이 0개면
   const d = await checkRelayCodex(ctxFor(down.root, { receipt: down.receipt, choice: { subscriptions: ['codex'] } }));
   assert.equal(d.status, 'pending');
   assert.match(d.detail, /중계기가 응답하지 않음/);
+});
+
+test('검사12: 신규 설치의 ⑥ — claude 심은 ⑦ 에서 내려받은 뒤 생기므로 없어도 실패가 아니라 대기(2.0.17 다섯 번째 PC)', async () => {
+  const root = newRoot('relay-fresh');
+  const receipt = { schema: 2, setup: { env: { recorded: { claudeShim: { written: false, expectedExe: null } } } }, online: {} };
+  wireRelay(root, receipt);
+  fs.rmSync(path.join(root, '_agent', 'shared', 'shims', 'claude.cmd'));   // ⑥ 시점: 심 없음, claude CLI 없음
+  const fresh = await checkRelayRoute(ctxFor(root, { receipt }));            // 중계기도 아직 없음(⑦ 뒤 시작)
+  assert.equal(fresh.status, 'pending', fresh.detail);
+  assert.equal(fresh.wiring.shim, 'deferred');
+  assert.match(fresh.detail, /⑦ 계정 연결에서 claude 를 내려받은 뒤/);
+  assert.ok(!/심이 없음/.test(fresh.detail));
+
+  // receipt 표시가 없어도 claude CLI 자체가 아직 없으면 같은 판단(업데이트 설치의 옛 영수증 대비).
+  const noFlag = await checkRelayRoute(ctxFor(root, { receipt: { schema: 2, setup: {}, online: {}, env: receipt.env } }));
+  assert.equal(noFlag.status, 'pending');
+  assert.equal(noFlag.wiring.shim, 'deferred');
+
+  // claude CLI 가 있는데 심이 없으면 진짜 문제 — 실패.
+  write(path.join(root, '_agent', 'shared', 'tools', 'claude', 'claude.cmd'), '@echo off\r\n');
+  const broken = await checkRelayRoute(ctxFor(root, { receipt: { schema: 2, setup: {}, online: {}, env: receipt.env } }));
+  assert.equal(broken.status, 'fail');
+  assert.match(broken.detail, /claude\.cmd 심이 없음/);
 });
 
 test('검사12: 심에 중계기 주소가 없으면 실패(그 길로 연 세션은 직행한다)', async () => {

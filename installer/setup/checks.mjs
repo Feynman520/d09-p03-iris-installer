@@ -852,9 +852,25 @@ export async function checkRelayRoute(ctx, {
   const readText = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
   const setLine = `ANTHROPIC_BASE_URL=${baseUrl}`;
   const shim = readText(shimPath(root, 'claude.cmd'));
-  wiring.shim = shim == null ? null : shim.includes(setLine);
-  if (shim == null) problems.push('claude.cmd 심이 없음');
-  else if (!shim.includes(setLine)) problems.push('claude.cmd 심에 중계기 주소가 없음');
+  // 신규 설치의 ⑥ 시점에는 claude.cmd 심이 **아직 없는 게 정상**이다: claude CLI 는 ⑦(온라인)에서
+  // 내려받고, env 단계는 그때까지 심을 미루며 receipt 에 claudeShim.written=false 로 적는다
+  // (2026-09-18 다섯 번째 실제 PC: 2.0.17 신규 설치가 이 검사의 「심이 없음」으로 ⑥ 에서 막힘 —
+  // 2.0.16 부터 모든 신규 설치가 그랬고, 업데이트 설치만 옛 심이 있어 지나갔다). 미룬 심은 대기.
+  const claudeShimDeferred = [ctx.receipt?.setup?.env?.recorded, ctx.receipt?.setup?.unpack?.recorded]
+    .some((r) => r?.claudeShim?.written === false);
+  const claudeCliPresent = (() => { try { return fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', 'claude.cmd')); } catch { return false; } })();
+  if (shim == null) {
+    if (claudeShimDeferred || !claudeCliPresent) {
+      wiring.shim = 'deferred';
+      notes.push('claude.cmd 심은 ⑦ 계정 연결에서 claude 를 내려받은 뒤 만들어집니다 — 그때 다시 잽니다');
+    } else {
+      wiring.shim = null;
+      problems.push('claude.cmd 심이 없음');
+    }
+  } else {
+    wiring.shim = shim.includes(setLine);
+    if (!shim.includes(setLine)) problems.push('claude.cmd 심에 중계기 주소가 없음');
+  }
 
   const summon = readText(path.join(root, '소환하기.cmd'));
   wiring.summon = summon == null ? null : summon.includes(setLine);
@@ -968,7 +984,9 @@ export async function checkRelayCodex(ctx, {
   const root = ctx.root;
   const problems = [];
   const notes = [];
-  const wantsCodex = Array.isArray(ctx.choice?.subscriptions) ? ctx.choice.subscriptions.includes('codex') : false;
+  // 구독 선택값은 UI·server 가 'chatgpt' 로 넘긴다(install.mjs activeAgents 도 'chatgpt'); 'codex' 도 받아 둔다.
+  const wantsCodex = Array.isArray(ctx.choice?.subscriptions)
+    ? ctx.choice.subscriptions.some((s) => s === 'codex' || s === 'chatgpt') : false;
   const readText = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
 
   if (!wantsCodex) {
