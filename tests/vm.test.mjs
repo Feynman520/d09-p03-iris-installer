@@ -26,7 +26,7 @@ import {
 } from '../verify/vm/lib.mjs';
 import {
   createPlan, finalizePlan, parseArgs as createArgs, DEFAULTS,
-  cmdEchoLines, chunk64, bakeBlock, buildPostInstallTemplate, stockTemplatePath,
+  cmdEchoLines, chunk64, bakeBlock, buildPostInstallTemplate, stockTemplatePath, buildScriptTemplate, STOCK_SCRIPT_TEMPLATE,
   POST_INSTALL_ANCHOR, STOCK_POST_INSTALL,
 } from '../verify/vm/create.mjs';
 import {
@@ -229,6 +229,33 @@ test('createPlan passes the generated post-install template only when one is giv
   assert.ok(baked.at(-1).includes('--post-install-template=D:\\t.cmd'));
   // `--post-install-command` 는 "명령 한 줄"뿐이라 굽기 블록을 담지 못한다(7.2.16 도움말).
   assert.ok(!baked.at(-1).some((a) => a.startsWith('--post-install-command=')));
+});
+
+test('createPlan passes the stripped answer-file template only when one is given', () => {
+  const opts = { ...DEFAULTS, name: 'VM1', iso: 'D:\\win10.iso' };
+  const plain = createPlan(opts, { password: 'pw', diskPath: 'D:\\VM1.vdi' });
+  assert.ok(!plain.at(-1).some((a) => a.startsWith('--script-template=')));
+  const stripped = createPlan(opts, { password: 'pw', diskPath: 'D:\\VM1.vdi', scriptTemplate: 'D:\\u.xml' });
+  assert.ok(stripped.at(-1).includes('--script-template=D:\\u.xml'));
+});
+
+test('buildScriptTemplate removes the empty <ProductKey> block Windows 10 eval chokes on (VirtualBox #19839)', () => {
+  const stock = [
+    '<UserData>',
+    '                <ProductKey>',
+    '                    <Key>@@VBOX_INSERT_PRODUCT_KEY_ELEMENT@@</Key>',
+    '                    <WillShowUI>OnError</WillShowUI>',
+    '                </ProductKey>',
+    '                <AcceptEula>true</AcceptEula>',
+    '</UserData>',
+  ].join('\r\n');
+  const out = buildScriptTemplate(stock);
+  assert.ok(!out.includes('<ProductKey>'));
+  assert.ok(out.includes('<AcceptEula>true</AcceptEula>'));
+  assert.equal(out.split('\r\n').length, 3); // UserData open / AcceptEula / UserData close
+  // Oracle 이 템플릿을 바꿔 블록이 없으면 조용히 지나가지 않고 멈춘다.
+  assert.throws(() => buildScriptTemplate('<UserData><AcceptEula>true</AcceptEula></UserData>'), /ProductKey.*not found/);
+  assert.equal(stockTemplatePath('C:\\VB\\VBoxManage.exe', STOCK_SCRIPT_TEMPLATE), 'C:\\VB\\UnattendedTemplates\\win_nt6_unattended.xml');
 });
 
 test('cmdEchoLines wraps every echo in parens -- a base64 line ending in a digit is a cmd redirect otherwise', () => {

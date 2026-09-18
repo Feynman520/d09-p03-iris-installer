@@ -141,12 +141,32 @@ export function buildPostInstallTemplate(stockText, block) {
 }
 
 // Oracle 이 설치해 주는 원본 템플릿 자리. VBoxManage.exe 옆의 UnattendedTemplates\.
-export function stockTemplatePath(vboxExe) {
+export function stockTemplatePath(vboxExe, file = STOCK_POST_INSTALL) {
   const exe = String(vboxExe ?? '');
   const dir = exe.includes('\\') || exe.includes('/')
     ? path.dirname(exe)
     : 'C:\\Program Files\\Oracle\\VirtualBox';
-  return path.join(dir, 'UnattendedTemplates', STOCK_POST_INSTALL);
+  return path.join(dir, 'UnattendedTemplates', file);
+}
+
+// 답변 파일(autounattend.xml) 틀. Oracle 의 win_nt6_unattended.xml 은 제품 키를
+// 안 줘도 `<ProductKey><Key></Key>…</ProductKey>` 를 **빈 채로** 넣는다
+// (VirtualBox 버그 #19839·#21712). Windows 11 설치기는 빈 키를 넘기지만
+// **Windows 10(19041) 평가판은 첫 화면에서 「Microsoft 소프트웨어 사용 조건을
+// 찾을 수 없습니다」로 멈춘다**(2026-09-18 IRIS-Win10 실측, 90 분 무응답).
+// 평가판은 제품 키가 필요 없으므로 그 블록을 통째로 뺀 사본을 --script-template 로 넘긴다.
+export const STOCK_SCRIPT_TEMPLATE = 'win_nt6_unattended.xml';
+const PRODUCT_KEY_BLOCK_RE = /^[ \t]*<ProductKey>[\s\S]*?<\/ProductKey>[ \t]*\r?\n/m;
+
+export function buildScriptTemplate(stockText) {
+  const text = String(stockText);
+  if (!PRODUCT_KEY_BLOCK_RE.test(text)) {
+    throw new Error('script template: <ProductKey> block not found in win_nt6_unattended.xml -- '
+      + 'Oracle changed the template; re-read it before stripping.');
+  }
+  const out = text.replace(PRODUCT_KEY_BLOCK_RE, '');
+  if (/<ProductKey>/.test(out)) throw new Error('script template: more than one <ProductKey> block -- refusing to guess.');
+  return out;
 }
 
 /**
@@ -167,7 +187,7 @@ export function stockTemplatePath(vboxExe) {
  *   ⓓ `--usbxhci`(USB 3.0)는 확장팩이 있어야 한다. 이 PC 는 확장팩 0개라
  *      기본 패키지에 있는 `--usbohci` 로 바꿨다(시험에 USB 는 필요 없다).
  */
-export function createPlan(opts, { password, diskPath, postInstallTemplate = null }) {
+export function createPlan(opts, { password, diskPath, postInstallTemplate = null, scriptTemplate = null }) {
   return [
     ['createvm', '--name', opts.name, '--ostype', opts.ostype, '--register'],
     [
@@ -213,6 +233,8 @@ export function createPlan(opts, { password, diskPath, postInstallTemplate = nul
       // 그대로 쓰되 우리 블록 하나를 끼운 사본을 넘긴다(buildPostInstallTemplate).
       // `--post-install-command` 는 "명령 한 줄"뿐이라 우리 블록(수십 줄)을 담지 못한다.
       ...(postInstallTemplate ? [`--post-install-template=${postInstallTemplate}`] : []),
+      // 제품 키 블록을 뺀 답변 틀(buildScriptTemplate). 없으면 Windows 10 평가판이 멈춘다.
+      ...(scriptTemplate ? [`--script-template=${scriptTemplate}`] : []),
       `--start-vm=${opts.sessionType}`,
     ],
   ];
@@ -278,7 +300,16 @@ export async function main(argv = process.argv.slice(2), { vbox = makeVbox(), en
     log('bake: OFF (--no-bake) -- S03/S04/S05/S07/S09 will have no elevation channel.');
   }
 
-  const plan = createPlan(opts, { password, diskPath, postInstallTemplate }).slice(1); // createvm already ran
+  // --- 답변 틀: 제품 키 블록 제거 ------------------------------------------
+  // 비밀은 없으니(비밀번호는 VBoxManage 가 따로 채움) 진단용으로 VM 폴더에 남긴다.
+  const scriptTemplate = path.join(path.dirname(cfg ? cfg[1] : '.'), `${opts.name}-unattended.xml`);
+  {
+    const stockXml = requireFile(stockTemplatePath(findVBoxManage(), STOCK_SCRIPT_TEMPLATE), 'stock answer-file template');
+    fs.writeFileSync(scriptTemplate, buildScriptTemplate(fs.readFileSync(stockXml, 'utf8')), 'utf8');
+    log(`answer file: ${STOCK_SCRIPT_TEMPLATE} minus <ProductKey> -> ${path.basename(scriptTemplate)}`);
+  }
+
+  const plan = createPlan(opts, { password, diskPath, postInstallTemplate, scriptTemplate }).slice(1); // createvm already ran
   for (const args of plan) {
     const isInstall = args[0] === 'unattended';
     log(isInstall ? `starting unattended install from ${opts.iso} (30-60 min)...` : `VBoxManage ${args[0]} ${args[1] ?? ''}`);
