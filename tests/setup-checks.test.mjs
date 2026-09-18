@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events';
 import {
   run as runChecksStage, runChecks, checkExe, checkMcp, checkPlugins, checkHooks,
   checkConfig, checkDesktop, checkOntology, checkReceiptIdempotent, checkEdge,
-  checkSkeleton, checkStructure, tomlSanity, mcpInitialize, collectMcpServers,
+  checkSkeleton, checkStructure, checkRelayRoute, tomlSanity, mcpInitialize, collectMcpServers,
   scanCardIds, recordedPaths, resolveExe, installStartedAt, batchWrap,
 } from '../installer/setup/checks.mjs';
 import { writeReceipt, newReceiptV2 } from '../installer/lib/receipt.mjs';
@@ -43,8 +43,34 @@ function ctxFor(root, extra = {}) {
     choice: { subscriptions: ['claude'], leadAgent: 'claude' },
     manifest: { package: { name: 'IRIS', version: '2.0.0' } },
     run: async () => ({ code: 0, out: 'v1.0.0', err: '' }),
+    // 검사 12 는 중계기(127.0.0.1:3456)에 실제 요청을 보내므로 시험에서는 항상 막아 둔다
+    // (이 개발 PC 의 진짜 중계기·계정에 닿으면 안 된다).
+    fetch: async () => { throw new Error('offline (test)'); },
+    readUserEnv: async () => ({ exists: false, type: null, value: null }),
     ...extra,
   };
+}
+
+// 검사 12 의 배선 4곳 중 파일 셋(심·소환하기·영수증 env)을 통과 상태로 놓는다.
+function wireRelay(root, receipt) {
+  const line = 'set "ANTHROPIC_BASE_URL=http://127.0.0.1:3456"';
+  write(path.join(root, '_agent', 'shared', 'shims', 'claude.cmd'), `@echo off\r\n${line}\r\n`);
+  write(path.join(root, '소환하기.cmd'), `@echo off\r\n${line}\r\n`);
+  if (receipt) receipt.env = { ...(receipt.env ?? {}), ANTHROPIC_BASE_URL: 'http://127.0.0.1:3456', applied: false };
+}
+
+// 중계기 흉내: /teamclaude/status 는 계정 목록, /v1/messages 는 지정한 응답.
+function fakeRelay({ accounts = [], probe = { status: 200, body: { id: 'msg_1' } } } = {}) {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method ?? 'GET' });
+    if (String(url).endsWith('/teamclaude/status')) {
+      return { ok: true, status: 200, json: async () => ({ accounts }), text: async () => '' };
+    }
+    const body = JSON.stringify(probe.body ?? {});
+    return { ok: probe.status >= 200 && probe.status < 300, status: probe.status, json: async () => JSON.parse(body), text: async () => body };
+  };
+  return { fetchImpl, calls };
 }
 
 // ---------------------------------------------------------------------------
@@ -567,6 +593,7 @@ function fullyPassingRoot(label) {
   });
   write(path.join(root, 'cache', 'sp', '.claude-plugin', 'plugin.json'), { name: 'superpowers' });
   writeReceipt(root, newReceiptV2({ root, name: 'IRIS', manifest: { package: { version: '2.0.0' } }, createdBy: 't' }));
+  wireRelay(root, null);
   return root;
 }
 
@@ -577,6 +604,7 @@ function stageCtx(root, extra = {}) {
   }
   receipt.setup.ontology.recorded = { commands: [{ script: 'check_fresh.py', code: 0 }] };
   receipt.setup.checks = { status: 'running' };
+  wireRelay(root, receipt);
   return ctxFor(root, { receipt, desktopDir: null, ...extra });
 }
 
@@ -638,12 +666,12 @@ test('단계 전체: 검사가 실패하면 인수 문서가 그것을 실패로
   assert.equal(handoff.setupCompletedAt, null);
 });
 
-test('runChecks: only 로 고른 검사만 돌린다(열한 항목이 다 있다)', async () => {
+test('runChecks: only 로 고른 검사만 돌린다(열두 항목이 다 있다)', async () => {
   const root = fullyPassingRoot('only');
   const all = await runChecks(stageCtx(root), { spawn: fakeSpawn() });
-  assert.equal(all.items.length, 11);
+  assert.equal(all.items.length, 12);
   assert.deepEqual(all.items.map((c) => c.id), [
-    'exe', 'mcp', 'plugins', 'hooks', 'config', 'desktop', 'ontology', 'receipt', 'edge', 'skeleton', 'structure',
+    'exe', 'mcp', 'plugins', 'hooks', 'config', 'desktop', 'ontology', 'receipt', 'edge', 'skeleton', 'structure', 'relay',
   ]);
   const one = await runChecks(stageCtx(root), { only: ['edge'] });
   assert.equal(one.items.length, 1);
@@ -655,6 +683,89 @@ test('검사 하나가 터져도 그 검사만 실패로 적고 나머지는 계
     run: async () => { throw new Error('시험용 폭발'); },
   });
   const res = await runChecks(ctx, { spawn: fakeSpawn() });
-  assert.equal(res.items.length, 11);
+  assert.equal(res.items.length, 12);
   assert.ok(res.items.some((c) => c.status === 'pass'), '나머지는 계속 돈다');
+});
+
+// ---------------------------------------------------------------------------
+// 12. 중계기 경유 (2026-09-18 네 번째 실제 PC: 코덱스 계정만 있는 중계기 + 클로드 세션 직행)
+// ---------------------------------------------------------------------------
+
+function relayRoot(label) {
+  const root = newRoot(label);
+  const receipt = { schema: 2, setup: {}, online: {} };
+  wireRelay(root, receipt);
+  return { root, receipt };
+}
+
+test('검사12: 배선 4곳 + 클로드 계정 + 살아 있는 요청 200 이면 통과(요청은 중계기로만 간다)', async () => {
+  const { root, receipt } = relayRoot('relay-ok');
+  const relay = fakeRelay({ accounts: [{ name: 'a', provider: 'anthropic' }, { name: 'c', provider: 'codex' }] });
+  const c = await checkRelayRoute(ctxFor(root, { receipt, fetch: relay.fetchImpl }));
+  assert.equal(c.status, 'pass', c.detail);
+  assert.equal(c.relay.accounts.anthropic, 1);
+  assert.equal(c.probe.status, 200);
+  assert.ok(relay.calls.every((k) => k.url.startsWith('http://127.0.0.1:3456/')), '요청은 전부 중계기 주소로만');
+  assert.match(c.detail, /살아 있는 요청 1건 통과/);
+});
+
+test('검사12: 중계기에 클로드 계정이 0개면 — 클로드 구독을 골랐으면 실패, 코덱스만 골랐으면 대기(요청은 보내지 않는다)', async () => {
+  const { root, receipt } = relayRoot('relay-codex-only');
+  const relay = fakeRelay({ accounts: [{ name: 'c', provider: 'codex' }] });
+  const asClaude = await checkRelayRoute(ctxFor(root, { receipt, fetch: relay.fetchImpl, choice: { subscriptions: ['claude'] } }));
+  assert.equal(asClaude.status, 'fail');
+  assert.match(asClaude.detail, /클로드 계정 0개\(코덱스 1개\)/);
+  assert.match(asClaude.detail, /claude\.ai 로그인을 추가/);
+  assert.ok(!relay.calls.some((k) => k.url.endsWith('/v1/messages')), '계정이 없으면 살아 있는 요청을 보내지 않는다');
+
+  const asCodex = await checkRelayRoute(ctxFor(root, { receipt, fetch: relay.fetchImpl, choice: { subscriptions: ['codex'] } }));
+  assert.equal(asCodex.status, 'pending');
+});
+
+test('검사12: 심에 중계기 주소가 없으면 실패(그 길로 연 세션은 직행한다)', async () => {
+  const { root, receipt } = relayRoot('relay-shim-bad');
+  write(path.join(root, '_agent', 'shared', 'shims', 'claude.cmd'), '@echo off\r\nrem no base url\r\n');
+  const relay = fakeRelay({ accounts: [{ name: 'a', provider: 'anthropic' }] });
+  const c = await checkRelayRoute(ctxFor(root, { receipt, fetch: relay.fetchImpl }));
+  assert.equal(c.status, 'fail');
+  assert.match(c.detail, /claude\.cmd 심에 중계기 주소가 없음/);
+  assert.equal(c.wiring.shim, false);
+});
+
+test('검사12: 사용자 환경변수가 실제 적용된 설치에서 HKCU 값이 다르면 실패, 연습(applied:false)이면 기록만', async () => {
+  const { root, receipt } = relayRoot('relay-hkcu');
+  const relay = fakeRelay({ accounts: [{ name: 'a', provider: 'anthropic' }] });
+  receipt.env.applied = true;
+  const wrong = await checkRelayRoute(ctxFor(root, {
+    receipt, fetch: relay.fetchImpl, readUserEnv: async () => ({ exists: true, type: 'REG_SZ', value: 'http://localhost:9999' }),
+  }));
+  assert.equal(wrong.status, 'fail');
+  assert.match(wrong.detail, /사용자 환경변수 ANTHROPIC_BASE_URL=http:\/\/localhost:9999/);
+
+  const right = await checkRelayRoute(ctxFor(root, {
+    receipt, fetch: relay.fetchImpl, readUserEnv: async () => ({ exists: true, type: 'REG_SZ', value: 'http://127.0.0.1:3456' }),
+  }));
+  assert.equal(right.status, 'pass', right.detail);
+
+  receipt.env.applied = false;
+  const rehearsal = await checkRelayRoute(ctxFor(root, { receipt, fetch: relay.fetchImpl }));
+  assert.equal(rehearsal.status, 'pass', rehearsal.detail);
+  assert.equal(rehearsal.wiring.userEnv, 'skipped');
+});
+
+test('검사12: 중계기가 안 떠 있으면 대기(⑦ 뒤에 다시), 살아 있는 요청이 401/429 면 실패 문장에 까닭', async () => {
+  const { root, receipt } = relayRoot('relay-down');
+  const down = await checkRelayRoute(ctxFor(root, { receipt }));
+  assert.equal(down.status, 'pending');
+  assert.match(down.detail, /중계기가 응답하지 않음/);
+
+  const r401 = fakeRelay({ accounts: [{ name: 'a', provider: 'anthropic' }], probe: { status: 401, body: { error: { message: 'invalid x-api-key' } } } });
+  const c401 = await checkRelayRoute(ctxFor(root, { receipt, fetch: r401.fetchImpl }));
+  assert.equal(c401.status, 'fail');
+  assert.match(c401.detail, /계정 토큰을 넣지 않고 그대로 넘겼습니다\(401\)/);
+
+  const r429 = fakeRelay({ accounts: [{ name: 'a', provider: 'anthropic' }], probe: { status: 429, body: { error: { message: 'no account can serve claude-haiku' } } } });
+  const c429 = await checkRelayRoute(ctxFor(root, { receipt, fetch: r429.fetchImpl }));
+  assert.equal(c429.status, 'fail');
+  assert.match(c429.detail, /429: no account can serve/);
 });

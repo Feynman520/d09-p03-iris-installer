@@ -19,6 +19,7 @@ import nodeFs from 'node:fs';
 import nodePath from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { StageError } from '../lib/errors.mjs';
+import { readUserEnv } from '../lib/userpath.mjs';
 import { SETUP_STAGE_IDS, receiptPath } from '../lib/receipt.mjs';
 import { writeHandoff, copyInstallerProgram } from './handoff.mjs';
 import { writeReport, writeDiagnostics, reportPath, diagnosticsPath } from './report.mjs';
@@ -795,6 +796,144 @@ export function checkStructure(ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// 12. 중계기 경유 — 클로드 세션이 정말 TeamClaude(3456)를 거치는가
+// ---------------------------------------------------------------------------
+//
+// 2026-09-18 네 번째 실제 PC: 설치는 11/11 통과, 대시보드에 계정도 보이는데 세션을
+// 써도 활동이 0 — 중계기에는 ChatGPT/코덱스 계정만 있었고 클로드 세션은 자기
+// 로그인 계정으로 직행했다. 검사 1~11 은 "부품이 있는가"만 보고 **길이 이어졌는가**는
+// 아무도 보지 않았다. 이 검사는 네 곳의 배선과 실제 요청 한 건으로 그 길을 잰다.
+//
+//   ⓐ 배선 4곳: 영수증 env · 사용자 환경변수(HKCU) · claude.cmd 심 · 소환하기.cmd 가
+//      전부 RELAY_BASE_URL 을 가리킨다(하나라도 다르면 그 길로 연 세션은 직행한다).
+//   ⓑ 중계기 응답 + 공급자별 계정 수(/teamclaude/status 의 provider).
+//   ⓒ 클로드 계정 0 이면: 중계기는 클로드 요청을 합성 429 로 막는다(직행시키지 않는다).
+//      그러니 "클로드 세션이 되는데 대시보드에 안 뜬다"는 ⓐ 가 새는 것이다.
+//   ⓓ 살아 있는 요청 1건: 중계기로 max_tokens 1 짜리 메시지를 보내 200 이 오면
+//      "심 → 중계기 → 계정 → 업스트림" 이 실제로 이어진 것(대시보드 활동에도 찍힌다).
+//      토큰 자리에는 가짜 값을 둔다 — 중계기가 계정 토큰을 넣지 않으면 401 이 돌아와
+//      그 자체가 증거가 된다. 클로드 계정이 없으면 ⓓ 는 건너뛴다.
+export const RELAY_ROUTE_URL = 'http://127.0.0.1:3456';
+export const RELAY_PROBE_MODEL = 'claude-haiku-4-5-20251001';
+
+function accountsByProvider(status) {
+  const out = { anthropic: 0, codex: 0, other: 0 };
+  for (const a of Array.isArray(status?.accounts) ? status.accounts : []) {
+    const p = String(a?.provider ?? '').toLowerCase();
+    if (p === 'anthropic' || p === 'claude') out.anthropic += 1;
+    else if (p === 'codex' || p === 'openai') out.codex += 1;
+    else out.other += 1;
+  }
+  return out;
+}
+
+export async function checkRelayRoute(ctx, {
+  fetchImpl = ctx?.fetch ?? globalThis.fetch,
+  readUserEnvFn = ctx?.readUserEnv ?? readUserEnv,
+  baseUrl = RELAY_ROUTE_URL,
+  timeoutMs = 4000,
+  probeTimeoutMs = 25000,
+} = {}) {
+  const fs = fsOf(ctx);
+  const root = ctx.root;
+  const problems = [];
+  const notes = [];
+  const wiring = {};
+
+  // ⓐ 배선
+  const receiptUrl = ctx.receipt?.env?.ANTHROPIC_BASE_URL ?? null;
+  wiring.receipt = receiptUrl;
+  if (receiptUrl !== baseUrl) problems.push(`영수증 env.ANTHROPIC_BASE_URL=${receiptUrl ?? '없음'}`);
+
+  const readText = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
+  const setLine = `ANTHROPIC_BASE_URL=${baseUrl}`;
+  const shim = readText(shimPath(root, 'claude.cmd'));
+  wiring.shim = shim == null ? null : shim.includes(setLine);
+  if (shim == null) problems.push('claude.cmd 심이 없음');
+  else if (!shim.includes(setLine)) problems.push('claude.cmd 심에 중계기 주소가 없음');
+
+  const summon = readText(path.join(root, '소환하기.cmd'));
+  wiring.summon = summon == null ? null : summon.includes(setLine);
+  if (summon == null) problems.push('소환하기.cmd 가 없음');
+  else if (!summon.includes(setLine)) problems.push('소환하기.cmd 에 중계기 주소가 없음');
+
+  if (ctx.receipt?.env?.applied === false) {
+    wiring.userEnv = 'skipped';
+    notes.push('사용자 환경변수는 연습(no-user-env)이라 기록만');
+  } else {
+    let hk = null;
+    try {
+      const r = await readUserEnvFn('ANTHROPIC_BASE_URL');   // userpath.readUserEnv → { exists, type, value }
+      hk = r && typeof r === 'object' ? (r.exists ? r.value : null) : (typeof r === 'string' ? r : null);
+    } catch { hk = null; }
+    wiring.userEnv = hk;
+    if (hk !== baseUrl) problems.push(`사용자 환경변수 ANTHROPIC_BASE_URL=${hk ?? '없음'}`);
+  }
+
+  // ⓑ 중계기 + 계정
+  let relay = { up: false, status: null, accounts: null };
+  if (typeof fetchImpl === 'function') {
+    try {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), timeoutMs);
+      const r = await fetchImpl(`${baseUrl}/teamclaude/status`, { signal: ac.signal });
+      clearTimeout(t);
+      const j = r.ok ? await r.json().catch(() => null) : null;
+      relay = { up: r.ok && j && typeof j === 'object', status: r.status, accounts: j ? accountsByProvider(j) : null };
+    } catch {
+      relay = { up: false, status: null, accounts: null };
+    }
+  }
+
+  const wantsClaude = Array.isArray(ctx.choice?.subscriptions) ? ctx.choice.subscriptions.includes('claude') : true;
+  let probe = null;
+  if (!relay.up) {
+    notes.push('중계기가 응답하지 않음(⑦ 계정 연결 뒤 시작됨) — 살아 있는 요청은 다음에');
+  } else if (relay.accounts.anthropic === 0) {
+    const s = `중계기에 클로드 계정 0개(코덱스 ${relay.accounts.codex}개) — 클로드 세션은 중계기가 429 로 막으므로 대시보드에 클로드 활동이 없는 게 정상입니다. 클로드 계정을 쓰려면 IRIS 창 ⑦ 계정 연결에서 claude.ai 로그인을 추가하세요`;
+    if (wantsClaude) problems.push(s); else notes.push(s);
+  } else {
+    // ⓓ 살아 있는 요청
+    try {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), probeTimeoutMs);
+      const r = await fetchImpl(`${baseUrl}/v1/messages`, {
+        method: 'POST',
+        signal: ac.signal,
+        headers: {
+          'content-type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          authorization: 'Bearer iris-route-check',
+        },
+        body: JSON.stringify({ model: RELAY_PROBE_MODEL, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
+      });
+      clearTimeout(t);
+      const text = await r.text().catch(() => '');
+      let msg = '';
+      try { msg = JSON.parse(text)?.error?.message ?? ''; } catch { msg = text.slice(0, 160); }
+      probe = { status: r.status, ok: r.ok, message: String(msg).slice(0, 200) };
+    } catch (e) {
+      probe = { status: null, ok: false, message: String(e?.message ?? e).slice(0, 200) };
+    }
+    if (!probe.ok) {
+      const why = probe.status === 401 ? '중계기가 계정 토큰을 넣지 않고 그대로 넘겼습니다(401)'
+        : probe.status === 429 ? `중계기가 요청을 막았습니다(429: ${probe.message})`
+        : probe.status ? `업스트림 응답 ${probe.status}: ${probe.message}`
+        : `요청이 끝나지 않았습니다: ${probe.message}`;
+      problems.push(`살아 있는 요청 실패 — ${why}`);
+    }
+  }
+
+  const status = problems.length ? 'fail' : (relay.up && relay.accounts.anthropic > 0 ? 'pass' : 'pending');
+  const detailParts = [];
+  detailParts.push(problems.length ? `배선·경유 문제 ${problems.length}건: ${problems.join(' / ')}` : '배선 4곳 모두 중계기(3456)를 가리킴');
+  if (relay.up) detailParts.push(`중계기 응답 OK(클로드 ${relay.accounts.anthropic}·코덱스 ${relay.accounts.codex})`);
+  if (probe?.ok) detailParts.push(`살아 있는 요청 1건 통과(${RELAY_PROBE_MODEL}, ${probe.status}) — 대시보드 활동에 찍힘`);
+  if (notes.length) detailParts.push(notes.join(' · '));
+  return item('relay', 12, '중계기 경유(클로드 세션 → TeamClaude)', status, detailParts.join(' · '), { wiring, relay, probe });
+}
+
+// ---------------------------------------------------------------------------
 // 전체 검사
 // ---------------------------------------------------------------------------
 
@@ -810,6 +949,7 @@ export const CHECKS = Object.freeze([
   { id: 'edge', fn: checkEdge },
   { id: 'skeleton', fn: checkSkeleton },
   { id: 'structure', fn: checkStructure },
+  { id: 'relay', fn: checkRelayRoute },
 ]);
 
 export async function runChecks(ctx, { only = null, ...opts } = {}) {
