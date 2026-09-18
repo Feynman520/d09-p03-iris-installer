@@ -325,6 +325,27 @@ test('검사6: 설치 뒤 생긴 다른 파일은 실패로 잡는다', async ()
   assert.deepEqual(c.strays.map((s) => s.name), ['설치기가 흘린 파일.txt']);
 });
 
+test('검사6: 동기화 클라이언트 임시 파일(.tmp.driveupload 등)은 새 항목으로 세지 않는다', async () => {
+  // 2026-09-18 실사용: 바탕화면이 Google Drive 동기화 폴더인 PC 에서 IRIS.lnk 를 올리는 동안
+  // `.tmp.driveupload` 가 생겨 검사 6 이 실패 → 설치가 "setup-incomplete" 로 멈췄다.
+  const root = newRoot('desktop-sync');
+  const desktop = path.join(tmp, `desk-sync-${seq}`);
+  fs.mkdirSync(desktop, { recursive: true });
+  write(path.join(desktop, 'IRIS.lnk'), 'shortcut');
+  write(path.join(desktop, '.tmp.driveupload'), '');
+  write(path.join(desktop, '~$보고서.docx'), 'lock');
+  write(path.join(desktop, 'Thumbs.db'), 'cache');
+  write(path.join(desktop, '설치기가 흘린 파일.txt'), 'oops');
+
+  const ctx = ctxFor(root, {
+    desktopDir: desktop,
+    receipt: { schema: 2, setup: { unpack: { startedAt: new Date(Date.now() - 60000).toISOString() } } },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'fail');
+  assert.deepEqual(c.strays.map((s) => s.name), ['설치기가 흘린 파일.txt'], '동기화 임시 파일 셋은 빠지고 진짜 흘린 파일만 남는다');
+});
+
 test('검사6: 단계 기록에 루트 밖 경로가 있으면 실패', async () => {
   const root = newRoot('outside');
   const ctx = ctxFor(root, {

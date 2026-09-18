@@ -556,6 +556,13 @@ export function installStartedAt(receipt) {
   return Math.min(...times);
 }
 
+// 동기화 클라이언트가 바탕화면에 잠깐 만드는 임시 파일 — 우리가 만든 것이 아니다.
+// 2026-09-18 실사용: 바탕화면이 Google Drive 로 동기화되는 PC 에서 우리가 놓은
+// IRIS.lnk 를 Drive 가 올리는 동안 `.tmp.driveupload` 가 생겨 검사 6 이 실패했다.
+// Drive(.tmp.driveupload/.tmp.drivedownload) · OneDrive/Office 잠금(~$…, *.tmp, *.partial)
+// · LibreOffice(.~lock.*) · 탐색기 캐시(Thumbs.db) · macOS 동기화 잔재(.DS_Store).
+export const SYNC_SCRATCH_RE = /^(\.tmp\.drive(upload|download)|~\$.*|.*\.tmp|.*\.partial|\.~lock\..*|thumbs\.db|\.ds_store)$/i;
+
 export async function checkDesktop(ctx, opts = {}) {
   const fs = fsOf(ctx);
   const root = ctx.root;
@@ -568,6 +575,7 @@ export async function checkDesktop(ctx, opts = {}) {
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
     for (const e of entries) {
       if (allowed.some((a) => a.toLowerCase() === e.name.toLowerCase())) continue;
+      if (SYNC_SCRATCH_RE.test(e.name)) continue;
       const full = path.join(dir, e.name);
       let st;
       try { st = fs.statSync(full); } catch { continue; }
