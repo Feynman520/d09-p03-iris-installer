@@ -407,7 +407,7 @@ export function scenarioPlan(id, opts) {
     ? { user: opts.accountName ?? ACCOUNT_NAMES[s.account.fixture], password: opts.password }
     : g;
   const steps = [];
-  const add = (phase, args) => steps.push({ phase, args });
+  const add = (phase, args, extra) => steps.push(extra ? { phase, args, ...extra } : { phase, args });
 
   // 스냅샷 되돌리기는 **꺼진 VM 에서만** 된다. 앞 시나리오가 `--keep-running`
   // 으로 켜 둔 채 끝났거나 사람이 열어 봤으면 여기서 막힌다 -- 그래서 먼저
@@ -462,11 +462,14 @@ export function scenarioPlan(id, opts) {
     }));
     add('reboot', guestRunCmd(vm, { ...g, command: 'shutdown /r /t 0' }));
     // ④ 그 계정으로 준비(HKCU 탐침 한 줄 + S04 는 바탕화면을 OneDrive 한글 경로로 옮김).
+    // 재부팅 직후 자동 로그온이 아직 프로필을 만드는 중이면 손님 제어는 응답해도 그 계정의
+    // PowerShell 이 도중에 닫힌다("Runspace 상태 'Closed'", 2026-09-18 11:55 S04 실측 —
+    // 같은 단계가 S03 에선 통과). 세 번까지 45초 간격으로 다시 시도한다.
     add('prep-guest', guestRunPsFile(vm, {
       ...gu,
       file: `${PUBLIC_DIR}\\${USER_PREP}`,
       args: s.account.redirect ? ['-Redirect'] : [],
-    }));
+    }), { retry: 3 });
   }
   if (buildingLegacy) {
     // ① 1.4.5 를 풀어 **로그인 직전까지** 돌린다(운전기의 --legacy 갈래).
@@ -707,7 +710,7 @@ export async function main(argv = process.argv.slice(2), { vbox = null, env = pr
       ? opts.installTimeoutMs
       : (step.phase === 'prep-guest' ? 20 * 60 * 1000 : 10 * 60 * 1000);
     let r;
-    if (step.phase.startsWith('copy')) {
+    if (step.phase.startsWith('copy') || step.retry) {
       // 손님이 부팅 직후 디스크로 바쁘면(첫 부팅 작업·Defender) 383MB zip 의 copyto 가
       // 64KB 쓰기에서 VERR_TIMEOUT 으로 넘어진다(2026-09-16 실측, 손님 제어 응답 2분 뒤).
       // 복사 단계는 세 번까지 다시 시도한다. 오류 문구에 비밀번호가 든 전체 인자를
