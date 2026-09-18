@@ -432,7 +432,7 @@ export function scenarioPlan(id, opts) {
         script: `${PUBLIC_DIR}\\${SAC_SCRIPT}`,
         argumentLine: `-Enable -Out "${ELEVATE_OUT}"`,
       }),
-    }));
+    }), { retry: 3 });
     add('reboot', guestRunCmd(vm, { ...g, command: 'shutdown /r /t 0' }));
   }
   if (s.account) {
@@ -459,7 +459,11 @@ export function scenarioPlan(id, opts) {
         script: `${PUBLIC_DIR}\\${ACCOUNT_PREP}`,
         argumentLine: `-Fixture ${s.account.fixture} -Password "${opts.password}" -AutoLogon -Out "${ELEVATE_OUT}"`,
       }),
-    }));
+    // 2026-09-18 19:15 S04 실측: 탐색기가 떠 있는데도 RunAs 가 "대화형 윈도우 스테이션 필요" 로
+    // 15회(5분) 내리 거절돼 판정 없이 끝남 — 같은 날 11:49 S03 은 3분 만에 통과. 손님 제어
+    // 세션이 자동 로그온보다 먼저 만들어지면 그 세션이 비대화형으로 남는 시간 경쟁이라,
+    // 프로세스를 새로 띄우는 재시도(3회·45초)가 답이다.
+    }), { retry: 3 });
     add('reboot', guestRunCmd(vm, { ...g, command: 'shutdown /r /t 0' }));
     // ④ 그 계정으로 준비(HKCU 탐침 한 줄 + S04 는 바탕화면을 OneDrive 한글 경로로 옮김).
     // 재부팅 직후 자동 로그온이 아직 프로필을 만드는 중이면 손님 제어는 응답해도 그 계정의
