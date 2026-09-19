@@ -31,6 +31,7 @@
 - **순서 가드**: 영혼 폴더에 쓰는 모든 POST(`/api/structure`·`/api/summary/confirm`·`/api/setup/*`·`/api/online/*`·`/api/open-face`)는 `POST /api/locate` 가 그 폴더를 받아들인 뒤에만 동작한다. 아니면 409 `{ ok:false, reason:"no_soul"|"no_locate" }` 이고 아무것도 쓰지 않는다. `mode:"foreign"` 판정은 앞서 받은 확인을 **취소**한다.
 - `POST /api/log/path` → `{ ok, path }` (화면 「로그 경로 복사」용)
 - `POST /api/report/send` 본문 `{ memo?, contact?, preview? }` → 「개발자에게 신고하기」(2026-09-19). `preview:true` 면 보내지 않고 `{ ok, preview:true, id, bytes, payload }`(화면 미리 보기용); 아니면 묶음(화면 상태·`diagnostics.json`·로그 꼬리, 사용자 이름 `<user>` 가림)을 개발자 접수 양식(구글 폼, `lib/report-send.mjs REPORT_FORM_URL`)에 POST 하고 `{ ok, id, status, error, bytes, savedTo }` — 사본은 `<root>\_agent\setup\신고-<id>.json`(영혼이 없으면 설치기 로그 폴더). 순서 가드 밖(영혼이 없어도 됨). 자동 전송 없음 — 사람이 단추를 눌렀을 때만.
+- 업데이트 모드(`--auto`, 2.0.21): 세팅 엔진이 끝난 뒤 영수증에 온라인(계정 연결)이 끝나 있으면 중계기를 띄우고(`onlineRunner.startRelay`) 같은 재측정을 한다 — 진행 방송 `part:"relay-recheck"`(96~97%), 결과는 `online.recheck` + 영수증 갈아 끼움. 업데이트는 `checks` 단계를 건너뛰므로 이것이 없으면 이미 설치된 PC 는 「업데이트」로 CA 번들을 얻지 못한다.
 - `online.recheck` (2026-09-19): `POST /api/online/relay` 가 성공하면 검사 12·13(중계기 경유)을 다시 재어 `{ at, items:[{id,num,label,status,detail}], error? }` 로 싣고, 영수증 `setup.checks.recorded.items` 의 같은 id 를 갈아 끼운다(신규 설치의 ⑥ 시점 "대기"가 ⑦ 뒤 "통과"로 바뀌고 CA 번들이 그때 만들어진다).
 
 ## 재실행·모드

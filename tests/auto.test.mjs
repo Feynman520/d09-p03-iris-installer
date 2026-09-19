@@ -265,6 +265,9 @@ test('auto: 업데이트는 v2 세팅 엔진을 돌린다 — 진짜 잠금표 3
   const engine = fakeSetupRunner();
 
   const { url, close } = await startServer({
+    // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -361,6 +364,9 @@ test('auto: 파이썬 판이 바뀐 꾸러미면 venv 도 되돌린 채로 엔�
   const engine = fakeSetupRunner();
 
   const { url, close } = await startServer({
+    // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -392,6 +398,9 @@ test('auto: requested on a PC with no receipt falls back to the ordinary wizard'
   const zipRoot = makeZipRoot('zip-auto-fresh');
   const engine = fakeSetupRunner();
   const { url, close } = await startServer({
+    // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -433,6 +442,9 @@ test('auto: requested on a PC with no receipt falls back to the ordinary wizard'
 test('auto: without the flag nothing is automatic, even over an existing install', async () => {
   const zipRoot = makeZipRoot('zip-auto-off');
   const { url, close } = await startServer({
+    // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -468,6 +480,9 @@ test('auto: the soul to update comes from IRIS_INSTALLER_SOUL_NAME, not from a h
   let server;
   try {
     server = await startServer({
+    // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
       port: 0,
       precheckFn: async () => OK_PRECHECK,
       zipRoot,
@@ -524,6 +539,9 @@ test('auto: a previous update left step=done + autoResult -- the update still st
   const store = receiptStore(priorReceipt());
   const engine = fakeSetupRunner();
   const { url, close } = await startServer({
+    // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -580,6 +598,9 @@ test('auto: a first install that failed long ago left installError -- the update
   const store = receiptStore(priorReceipt());
   const engine = fakeSetupRunner();
   const { url, close } = await startServer({
+    // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -623,6 +644,9 @@ test('auto: without the flag a leftover step/installError is still restored (the
   writeStaleState(stateFile, { step: 'install', installError: 'payload-missing' });
 
   const { url, close } = await startServer({
+    // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -652,6 +676,9 @@ test('auto: 엔진이 멈추면 그 단계 이름으로 멈춤을 적고, 창은
     failed: { id: 'unpack', code: 'E-UNPACK', message: '부품 "face" 을(를) 푸는 중 문제가 생겼습니다.' },
   });
   const { url, close } = await startServer({
+    // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -700,6 +727,41 @@ test('auto: 엔진이 멈추면 그 단계 이름으로 멈춤을 적고, 창은
     const relaunchFrame = frames.filter((f) => f.part === 'relaunch');
     assert.equal(relaunchFrame.length, 1);
     assert.equal(relaunchFrame[0].status, 'done');
+  } finally {
+    await close();
+  }
+});
+
+test('auto(2.0.21): 계정 연결이 끝난 PC 의 업데이트는 중계기를 띄우고 검사 12·13 을 다시 재어 영수증의 대기 항목을 갈아 끼운다', async () => {
+  const zipRoot = makeZipRoot('zip-auto-recheck');
+  const prior = priorReceipt({ version: '2.0.19' });
+  prior.setup.checks.recorded = { checks: { pass: 1, pending: 1, fail: 0 }, items: [
+    { id: 'exe', num: 1, label: '실행 파일', status: 'pass', detail: 'ok' },
+    { id: 'relayCodex', num: 13, label: '중계기 경유(코덱스)', status: 'pending', detail: '중계기가 응답하지 않음' },
+  ] };
+  const store = receiptStore(prior);
+  const engine = fakeSetupRunner();
+  const relayCalls = [];
+  let recheckRoot = null;
+  const { url, close } = await startServer({
+    onlineRunner: { startRelay: async (a) => { relayCalls.push(a); return { ok: true, state: 'done', accounts: 1 }; } },
+    relayRecheckFn: async (root) => { recheckRoot = root; return { at: 't', items: [{ id: 'relayCodex', num: 13, label: '중계기 경유(코덱스)', status: 'pass', detail: 'CA 번들 갱신' }] }; },
+    port: 0, precheckFn: async () => OK_PRECHECK, zipRoot, nodeDir: path.join(tmp, 'node'),
+    stateFile: path.join(tmp, 'state-auto-recheck.json'), soulName: SOUL, auto: true,
+    readReceiptFn: store.readReceiptFn, writeReceiptFn: store.writeReceiptFn, setupRunner: engine.runner,
+    relaunchFaceFn: () => ({ ok: true, how: 'wscript', pid: 1 }), finishFn: () => ({ ok: true }), onQuit: () => {},
+  });
+  try {
+    await fetch(`${url}/api/auto`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const end = await waitForStep(url, 'done');
+    assert.equal(end.autoResult.ok, true);
+    assert.equal(relayCalls.length, 1, '중계기를 한 번 띄운다(살아 있으면 무접촉)');
+    assert.ok(recheckRoot, '재측정이 돌았다');
+    const rec = store.state.receipt.setup.checks.recorded;
+    assert.equal(rec.items.find((c) => c.id === 'relayCodex').status, 'pass');
+    assert.deepEqual(rec.checks, { pass: 2, pending: 0, fail: 0 });
+    assert.equal(store.state.receipt.online.recheck.items.length, 1);
+    assert.equal((await (await fetch(`${url}/api/state`)).json()).online.recheck.items[0].status, 'pass');
   } finally {
     await close();
   }

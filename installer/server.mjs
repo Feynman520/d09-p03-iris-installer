@@ -1366,10 +1366,50 @@ export function startServer({
       state.setup.percent = 100;
       state.setup.pending = result.pending ?? [];
 
+      // 업데이트 경로도 검사 12·13 을 다시 잰다(2.0.21, 2026-09-19). 업데이트는 `checks` 단계를 건너뛰고(KEEP_DONE)
+      // 온라인 단계도 없으므로, 2.0.20 의 "⑦ 뒤 재측정"만으로는 이미 설치된 PC 가 「업데이트」를 눌러도
+      // 코덱스 CA 번들이 끝내 만들어지지 않는다. 계정 연결이 끝난 PC 에서만: 중계기를 띄우고(살아 있으면 무접촉)
+      // 다시 재어 결과를 상태·영수증에 싣는다. 실패해도 업데이트는 끝난다(기록만).
+      let updateRecheck = null;
+      if (priorReceipt?.online?.completed === true || priorReceipt?.steps?.online === 'done') {
+        try {
+          forward({ part: 'relay-recheck', pct: 96, status: 'running' });
+          const relay = await onlineRunner.startRelay({ root, nodeDir: state.nodeDir, log });
+          if (relay?.ok) {
+            updateRecheck = await (relayRecheckFn ?? defaultRelayRecheck)(root);
+            log(`auto recheck: ${updateRecheck.items.map((c) => `${c.id}=${c.status}`).join(' ')}`);
+          } else {
+            updateRecheck = { at: new Date().toISOString(), items: [], error: relay?.message ?? '중계기를 시작하지 못했습니다' };
+            log(`auto recheck skipped: relay not up (${updateRecheck.error})`);
+          }
+          forward({ part: 'relay-recheck', pct: 97, status: updateRecheck.error ? 'error' : 'done' });
+        } catch (err) {
+          updateRecheck = { at: new Date().toISOString(), items: [], error: String(err?.message ?? err) };
+          log(`auto recheck failed: ${String(err?.stack ?? err)}`);
+          forward({ part: 'relay-recheck', pct: 97, status: 'error' });
+        }
+        state.online = { ...(state.online ?? {}), recheck: updateRecheck };
+      }
+
       // 새 판을 실제로 놓았으니 영수증의 판 표시도 새 것으로. 엔진이 방금
       // 영수증을 여러 번 고쳐 썼으므로 디스크에서 다시 읽어서 고친다.
       try {
         const after = ensureV2Fields(readReceiptFn(root) ?? priorReceipt);
+        if (updateRecheck && Array.isArray(updateRecheck.items) && updateRecheck.items.length) {
+          const rec = after.setup?.checks?.recorded;
+          if (rec && Array.isArray(rec.items)) {
+            for (const it of updateRecheck.items) {
+              const i = rec.items.findIndex((x) => x && x.id === it.id);
+              if (i >= 0) rec.items[i] = it; else rec.items.push(it);
+            }
+            rec.checks = {
+              pass: rec.items.filter((c) => c.status === 'pass').length,
+              pending: rec.items.filter((c) => c.status === 'pending').length,
+              fail: rec.items.filter((c) => c.status === 'fail').length,
+            };
+          }
+          after.online = { ...(after.online ?? {}), recheck: updateRecheck };
+        }
         const pkg = manifest?.package ?? {};
         after.package = {
           ...(after.package ?? {}),
