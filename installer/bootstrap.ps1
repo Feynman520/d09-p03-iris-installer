@@ -160,7 +160,10 @@ if ($alreadyRunning) {
     exit 0
   }
   Log "Setup server already running (pid $existingPid) is version '$theirs' but this package is '$ours' (auto=$($Auto.IsPresent)). Asking it to quit."
-  try { Invoke-WebRequest "http://127.0.0.1:$Port/api/quit" -Method Post -UseBasicParsing -TimeoutSec 5 | Out-Null } catch {}
+  # The server's CSRF guard answers 415 unsupported_media_type to any POST
+  # without a JSON body (2.0.24, home-desktop 2026-09-19 -- the bare POST in
+  # 2.0.23 was refused and the old server stayed up).
+  try { Invoke-WebRequest "http://127.0.0.1:$Port/api/quit" -Method Post -ContentType 'application/json' -Body '{}' -UseBasicParsing -TimeoutSec 5 | Out-Null } catch {}
   $freed = $false
   for ($i = 0; $i -lt 40; $i++) {
     Start-Sleep -Milliseconds 250

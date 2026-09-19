@@ -189,7 +189,7 @@ test('bootstrap.ps1 writes a run separator and rotates the log past 512KB', () =
 test('bootstrap.ps1 reuses a running server only when it is the same version; otherwise asks it to quit (never kills by name)', () => {
   assert.match(ps1Text, /lockJson\.package\.version/, 'must read this package version from lock.json');
   assert.match(ps1Text, /probeBody\.version/, 'must read the running server version from /api/health');
-  assert.match(ps1Text, /\/api\/quit/, 'must ask the old server to quit through its own /api/quit');
+  assert.match(ps1Text, /\/api\/quit"\s+-Method Post\s+-ContentType 'application\/json'\s+-Body '\{\}'/, 'the quit POST must carry a JSON body or the CSRF guard answers 415 (2.0.24)');
   assert.match(ps1Text, /\$Auto\.IsPresent -or/, '--auto must always run its own package');
   assert.doesNotMatch(ps1Text, /Stop-Process[^\n]*-Name/i);
 });
