@@ -142,9 +142,36 @@ if ($alreadyRunning) {
   if (Test-Path -LiteralPath $pidFile) {
     try { $existingPid = (Get-Content -LiteralPath $pidFile -Raw -Encoding UTF8).Trim() } catch {}
   }
-  Log "Setup server already running (pid $existingPid). Reusing it."
-  Open-Browser "http://127.0.0.1:$Port/"
-  exit 0
+  # 2.0.23 (2026-09-19, home-desktop): a leftover server of an OLDER package
+  # (e.g. a hidden --auto run that never got its browser click) was reused
+  # by every later run, so a 2.0.21 zip kept showing "2.0.19". Reuse only the
+  # SAME version; a different version (or any --auto run, which must run its
+  # own package) is asked to quit via its own /api/quit, then we start fresh.
+  $ours = $null
+  try {
+    $lockJson = Get-Content -LiteralPath (Join-Path $ZipRoot 'lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $ours = [string]$lockJson.package.version
+  } catch {}
+  $theirs = [string]$probeBody.version
+  $replace = $Auto.IsPresent -or ($ours -and $theirs -and ($ours -ne $theirs))
+  if (-not $replace) {
+    Log "Setup server already running (pid $existingPid, version $theirs). Reusing it."
+    Open-Browser "http://127.0.0.1:$Port/"
+    exit 0
+  }
+  Log "Setup server already running (pid $existingPid) is version '$theirs' but this package is '$ours' (auto=$($Auto.IsPresent)). Asking it to quit."
+  try { Invoke-WebRequest "http://127.0.0.1:$Port/api/quit" -Method Post -UseBasicParsing -TimeoutSec 5 | Out-Null } catch {}
+  $freed = $false
+  for ($i = 0; $i -lt 40; $i++) {
+    Start-Sleep -Milliseconds 250
+    try { Invoke-WebRequest "http://127.0.0.1:$Port/api/health" -UseBasicParsing -TimeoutSec 1 | Out-Null } catch { $freed = $true; break }
+  }
+  if ($freed) {
+    Log "Old server quit; port $Port is free. Starting this package's server."
+    if (Test-Path -LiteralPath $pidFile) { try { Remove-Item -LiteralPath $pidFile -Force } catch {} }
+  } else {
+    Log "Old server did not quit within 10 s. Falling through to the recorded-pid check."
+  }
 }
 
 if (Test-Path -LiteralPath $pidFile) {

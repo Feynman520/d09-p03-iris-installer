@@ -183,3 +183,13 @@ test('bootstrap.ps1 writes a run separator and rotates the log past 512KB', () =
   assert.match(ps1Text, /524288/, 'missing the 512KB (524288 byte) rotation threshold');
   assert.match(ps1Text, /bootstrap\.log\.1/, 'missing the bootstrap.log.1 rotation target');
 });
+
+// 2.0.23 (2026-09-19 home-desktop): a leftover server of an OLDER package must
+// not be reused -- every later zip kept opening the stale "2.0.19" screen.
+test('bootstrap.ps1 reuses a running server only when it is the same version; otherwise asks it to quit (never kills by name)', () => {
+  assert.match(ps1Text, /lockJson\.package\.version/, 'must read this package version from lock.json');
+  assert.match(ps1Text, /probeBody\.version/, 'must read the running server version from /api/health');
+  assert.match(ps1Text, /\/api\/quit/, 'must ask the old server to quit through its own /api/quit');
+  assert.match(ps1Text, /\$Auto\.IsPresent -or/, '--auto must always run its own package');
+  assert.doesNotMatch(ps1Text, /Stop-Process[^\n]*-Name/i);
+});
