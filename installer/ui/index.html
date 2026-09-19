@@ -145,7 +145,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
       <p class="hint" id="auto-hint">새 판으로 바꾸는 중입니다. 이미 있는 것은 지우지 않고 <code>.prev</code>로 옆에 남기며, 자료·설정·기억은 건드리지 않습니다.</p>
       <div class="rows" id="auto-rows"></div>
       <div id="auto-note"></div>
-      <div class="acts"><button class="go" id="btn-auto-retry" hidden>다시 시도</button></div>
+      <div class="acts"><button class="go" id="btn-auto-retry" hidden>다시 시도</button><span class="spacer"></span><button class="ghost" id="btn-report-auto" hidden>개발자에게 신고하기</button></div>
     </div>
   </section>
 
@@ -182,6 +182,21 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
       <div class="acts">
         <button class="ghost" id="btn-locate" hidden>다시 확인</button>
         <button class="go" id="btn-locate-next" hidden>다음</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 옛 판 위에서 손으로 실행한 설치기(2.0.22): 완료 요약 대신 업데이트를 제안한다. 시작하면 card-auto 와 같은 길. -->
+  <section class="card" id="card-update" hidden>
+    <div class="card-head"><span class="mark">↻</span><h2>새 판으로 업데이트</h2><span class="badge" id="badge-update">준비</span></div>
+    <div class="card-body">
+      <p class="hint" id="update-hint">이 컴퓨터에는 IRIS가 이미 설치되어 있습니다. 새 판으로 바꿉니다.</p>
+      <p class="sub">자료·설정·기억·로그인은 그대로 둡니다. 바뀐 부품만 갈아 끼우고 옛것은 <code>.prev</code>로 옆에 남깁니다. 끝나면 IRIS 창이 저절로 열립니다. 진행 중에는 IRIS 창을 닫아 두세요.</p>
+      <div id="update-note"></div>
+      <div class="acts">
+        <button class="go" id="btn-update-start">업데이트 시작</button>
+        <span class="spacer"></span>
+        <button class="ghost" id="btn-report-update">개발자에게 신고하기</button>
       </div>
     </div>
   </section>
@@ -299,6 +314,8 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
       <div id="done-note"></div>
       <div class="acts">
         <button class="go" id="btn-open-face">IRIS 열기</button>
+        <span class="spacer"></span>
+        <button class="ghost" id="btn-report-done">개발자에게 신고하기</button>
       </div>
     </div>
   </section>
@@ -450,7 +467,7 @@ function bar20(pct) {
   return '<div class="mini">[<span class="bar-fill">' + '█'.repeat(filled) + '</span>' + '░'.repeat(BAR_CELLS - filled) + '] ' + p + '%</div>';
 }
 
-const ALL_CARDS = ['auto', 'reinstall'].concat(STEPS);
+const ALL_CARDS = ['auto', 'reinstall', 'update', 'report'].concat(STEPS);
 function show(next) {
   if (next) step = next;
   // 보이지 않는 카드의 되묻기는 멈춘다(그 카드를 떠났으면 더 물을 까닭이 없다).
@@ -511,6 +528,9 @@ async function openReportCard() {
 function wireReportOpen(btnId) { const b = $(btnId); if (b) b.onclick = openReportCard; }
 wireReportOpen('btn-report-setup');
 wireReportOpen('btn-report-online');
+wireReportOpen('btn-report-done');
+wireReportOpen('btn-report-auto');
+wireReportOpen('btn-report-update');
 $('btn-report-close').onclick = () => { $('card-report').hidden = true; };
 $('btn-report-send').onclick = async () => {
   if (reportSending) return;
@@ -624,6 +644,10 @@ async function runLocate() {
       note('locate-note', where + (LOCATE_TEXT[mode] || esc(body.message || '이 자리를 쓸 수 없습니다.')), 'bad');
       $('btn-locate').hidden = false;
       $('btn-locate-next').hidden = true;
+    } else if (body.update) {
+      // 옛 판이 이미 설치된 자리(2.0.22): 완료 요약이 아니라 업데이트를 제안한다.
+      badge('locate', '통과', 'done');
+      enterUpdateOffer(body.update);
     } else {
       badge('locate', '통과', 'done');
       note('locate-note', where + (LOCATE_TEXT[mode] || esc(body.message || '')), 'ok');
@@ -1479,6 +1503,7 @@ function autoFail(message) {
   note('auto-note', message, 'bad');
   $('btn-auto-retry').hidden = false;
   $('btn-auto-retry').disabled = false;
+  $('btn-report-auto').hidden = false;
 }
 
 function watchAuto() {
@@ -1533,6 +1558,18 @@ function enterAutoMode() {
   startAuto();
 }
 
+// 옛 판 위에서 손으로 실행한 설치기(2.0.22): 「업데이트 시작」을 누르면 --auto 와 같은 길(card-auto)로 간다.
+function enterUpdateOffer(u) {
+  $('bar-wrap').hidden = true;
+  for (const c of ALL_CARDS) { const el = $('card-' + c); if (el) el.hidden = true; }
+  $('card-update').hidden = false;
+  const from = u && u.from ? 'v' + u.from : '옛 판', to = u && u.to ? 'v' + u.to : '이 판';
+  $('update-hint').innerHTML = '이 컴퓨터에는 <b>IRIS ' + esc(from) + '</b>이 설치되어 있습니다. <b>' + esc(to) + '</b>으로 바꿉니다.';
+  $('lead').innerHTML = '<b>이미 설치된 IRIS를 새 판으로 바꿉니다.</b> 「업데이트 시작」을 누르면 바뀐 부품만 갈아 끼웁니다.';
+  window.scrollTo(0, 0);
+}
+$('btn-update-start').onclick = () => { $('btn-update-start').disabled = true; enterAutoMode(); };
+
 function enterReinstallMode() {
   $('bar-wrap').hidden = true;
   for (const c of ALL_CARDS) { const el = $('card-' + c); if (el) el.hidden = true; }
@@ -1567,6 +1604,7 @@ async function restore() {
 
   if (st.step === 'reinstall-required') { enterReinstallMode(); return; }
   if (st.step === 'auto') { enterAutoMode(); return; }
+  if (st.step === 'update') { enterUpdateOffer(st.auto || null); return; }
 
   if (st.choice && Array.isArray(st.choice.subscriptions) && st.choice.subscriptions.length) {
     chosenSubs = st.choice.subscriptions;

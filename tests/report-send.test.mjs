@@ -120,5 +120,5 @@ test('report: 사본은 영혼 안 _agent\\setup 에, 영혼이 없으면 대체
 test('report: 접수번호는 시각+난수, pickState 는 정해진 키만', () => {
   assert.equal(newReportId(new Date(2026, 0, 2, 3, 4), 'abcd'), 'R-20260102-0304-abcd');
   const k = Object.keys(pickState({ step: 'x', foo: 1 })).sort();
-  assert.deepEqual(k, ['auto', 'choice', 'online', 'packageVersion', 'precheck', 'setup', 'soul', 'step']);
+  assert.deepEqual(k, ['auto', 'autoResult', 'choice', 'installError', 'online', 'packageVersion', 'precheck', 'setup', 'soul', 'step']);
 });

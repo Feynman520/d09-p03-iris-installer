@@ -1238,3 +1238,38 @@ test('online: 다시 재기가 던져도 설치 완료는 막지 않는다(기�
     await s.close();
   }
 });
+
+test('update-offer(2.0.22): finished older install -> step "update" with auto eligibility; same version -> "done"', async () => {
+  const doneReceipt = (version) => {
+    const setup = {};
+    for (const id of SETUP_STAGE_IDS) setup[id] = { status: 'done' };
+    return {
+      schema: 2, package: { name: 'IRIS', version }, choice: { subscriptions: ['chatgpt'], leadAgent: 'codex' },
+      setup, online: { completed: true },
+      steps: { precheck: 'done', locate: 'done', choice: 'done', structure: 'done', summary: 'done', setup: 'done', online: 'done' },
+    };
+  };
+  const older = await start({ readReceiptFn: () => doneReceipt('1.9.0') });
+  try {
+    const st = await getJson(older.url, '/api/state');
+    assert.equal(st.step, 'update');
+    assert.equal(st.auto.eligible, true);
+    assert.equal(st.auto.viaWizard, true);
+    assert.equal(st.auto.from, '1.9.0');
+    assert.equal(st.auto.to, '2.0.0');
+    const loc = await (await post(older.url, '/api/locate')).json();
+    assert.equal(loc.ok, true);
+    assert.deepEqual(loc.update, { from: '1.9.0', to: '2.0.0' });
+    assert.equal((await getJson(older.url, '/api/state')).step, 'update');
+  } finally {
+    await older.close();
+  }
+  const same = await start({ readReceiptFn: () => doneReceipt('2.0.0') });
+  try {
+    assert.equal((await getJson(same.url, '/api/state')).step, 'done');
+    const loc = await (await post(same.url, '/api/locate')).json();
+    assert.equal(loc.update, undefined);
+  } finally {
+    await same.close();
+  }
+});

@@ -268,6 +268,7 @@ test('auto: 업데이트는 v2 세팅 엔진을 돌린다 — 진짜 잠금표 3
     // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -367,6 +368,7 @@ test('auto: 파이썬 판이 바뀐 꾸러미면 venv 도 되돌린 채로 엔�
     // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -401,6 +403,7 @@ test('auto: requested on a PC with no receipt falls back to the ordinary wizard'
     // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -445,6 +448,7 @@ test('auto: without the flag nothing is automatic, even over an existing install
     // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -455,15 +459,37 @@ test('auto: without the flag nothing is automatic, even over an existing install
     readReceiptFn: () => priorReceipt(),
   });
   try {
+    // 2.0.22: 옛 판(1.9.0) 위라 화면에 「업데이트」를 *제안*한다 — 사람이 단추를 누르기 전엔 아무것도 돌지 않는다.
     const st = await (await fetch(`${url}/api/state`)).json();
+    assert.equal(st.step, 'update');
+    assert.equal(st.auto.requested, false);
+    assert.equal(st.auto.viaWizard, true);
+    assert.equal(st.auto.eligible, true);
+    assert.equal(st.autoResult, null);
+    assert.equal(st.setup?.percent ?? 0, 0, '자동으로 시작된 것이 없다');
+  } finally {
+    await close();
+  }
+  // 같은 판이 이미 깔려 있으면 제안도 없고 /api/auto 는 거절한다.
+  const same = await startServer({
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    port: 0, precheckFn: async () => OK_PRECHECK, zipRoot: makeZipRoot('zip-auto-off-same'),
+    nodeDir: path.join(tmp, 'node'), stateFile: path.join(tmp, 'state-off-same.json'), soulName: SOUL, auto: false,
+    readReceiptFn: () => priorReceipt({ version: '2.0.0' }),
+  });
+  try {
+    const st = await (await fetch(`${same.url}/api/state`)).json();
     assert.deepEqual(st.auto, { requested: false, eligible: false, reason: 'not_requested' });
-    const refused = await fetch(`${url}/api/auto`, {
+    assert.equal(st.step, 'done');
+    const refused = await fetch(`${same.url}/api/auto`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     });
     assert.equal(refused.status, 409);
     assert.deepEqual(await refused.json(), { ok: false, reason: 'not_requested' });
   } finally {
-    await close();
+    await same.close();
   }
 });
 
@@ -483,6 +509,7 @@ test('auto: the soul to update comes from IRIS_INSTALLER_SOUL_NAME, not from a h
     // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
       port: 0,
       precheckFn: async () => OK_PRECHECK,
       zipRoot,
@@ -542,6 +569,7 @@ test('auto: a previous update left step=done + autoResult -- the update still st
     // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -601,6 +629,7 @@ test('auto: a first install that failed long ago left installError -- the update
     // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -647,6 +676,7 @@ test('auto: without the flag a leftover step/installError is still restored (the
     // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -679,6 +709,7 @@ test('auto: 엔진이 멈추면 그 단계 이름으로 멈춤을 적고, 창은
     // 2.0.21: 업데이트 경로의 중계기 재측정 이음새 — 실제 중계기에 닿지 않게
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
+    autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -762,6 +793,31 @@ test('auto(2.0.21): 계정 연결이 끝난 PC 의 업데이트는 중계기를 
     assert.deepEqual(rec.checks, { pass: 2, pending: 0, fail: 0 });
     assert.equal(store.state.receipt.online.recheck.items.length, 1);
     assert.equal((await (await fetch(`${url}/api/state`)).json()).online.recheck.items[0].status, 'pass');
+  } finally {
+    await close();
+  }
+});
+
+test('auto(2.0.22): with --auto the server starts the update by itself -- no browser page needed', async () => {
+  const zipRoot = makeZipRoot('zip-auto-self');
+  const store = receiptStore(priorReceipt({ version: '1.9.0' }));
+  const engine = fakeSetupRunner();
+  const relaunchCalls = [];
+  const { url, close } = await startServer({
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: 't', items: [] }),
+    autoSelfStart: true,
+    port: 0, precheckFn: async () => OK_PRECHECK, zipRoot, nodeDir: path.join(tmp, 'node'),
+    stateFile: path.join(tmp, 'state-auto-self.json'), soulName: SOUL, auto: true,
+    readReceiptFn: store.readReceiptFn, writeReceiptFn: store.writeReceiptFn, setupRunner: engine.runner,
+    relaunchFaceFn: (o) => { relaunchCalls.push(o); return { ok: true, how: 'wscript', pid: 5 }; }, finishFn: () => ({ ok: true }), onQuit: () => {},
+  });
+  try {
+    const end = await waitForStep(url, 'done', 400);
+    assert.equal(end.autoResult.ok, true);
+    assert.equal(engine.calls.length, 1, 'the engine ran exactly once without any POST');
+    assert.equal(relaunchCalls.length, 1);
+    assert.equal(store.state.receipt.package.version, '2.0.0');
   } finally {
     await close();
   }

@@ -42,7 +42,7 @@ test('ui/index.html: 카드 8장 + 업데이트 2장이 모두 있다', () => {
   for (const mark of ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧']) {
     assert.ok(src.includes(mark), `카드 표시 ${mark} 없음`);
   }
-  for (const id of ['precheck', 'locate', 'choice', 'structure', 'summary', 'setup', 'online', 'done', 'auto', 'reinstall']) {
+  for (const id of ['precheck', 'locate', 'choice', 'structure', 'summary', 'setup', 'online', 'done', 'auto', 'reinstall', 'update', 'report']) {
     assert.ok(src.includes('card-' + id), `카드 id card-${id} 없음`);
   }
   // 계약의 step 순서

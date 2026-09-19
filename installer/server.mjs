@@ -383,6 +383,10 @@ export function startServer({
   auto = process.env.IRIS_INSTALLER_AUTO === '1',
   // Face 「설치 이어하기」: IRIS-설치.cmd --resume. Forces the receipt verdict.
   resume = process.env.IRIS_INSTALLER_RESUME === '1',
+  // --auto 자가 시작(2.0.22): 자격이 있으면 화면(브라우저 탭)이 POST /api/auto 를 누르기를 기다리지 않고
+  // 서버가 스스로 시작한다 — 적용기가 띄운 숨은 설치기에서 브라우저가 안 열리면 업데이트가 영원히
+  // 대기했다(2026-09-19 데스크탑 실측 후보). 시험은 false 로 두고 직접 누른다.
+  autoSelfStart = process.env.IRIS_INSTALLER_AUTO_SELFSTART !== '0',
 } = {}) {
   const uiDir = path.join(HERE, 'ui');
   const version = readPackageVersion(zipRoot);
@@ -522,6 +526,27 @@ export function startServer({
   }
   state.auto = autoEligibility();
 
+  // 손으로 실행한 설치기가 옛 판 위에 있을 때의 「업데이트」 제안(2.0.22). --auto 와 같은 자격
+  // (v2 영수증 · 세팅·온라인 끝남 · 영수증 판 < 이 zip 판)이면 state.auto 를 채워 `POST /api/auto` 가
+  // 그대로 돌게 하고 화면에는 `update` 카드를 보인다. 같은 판이거나 더 새 판이 깔려 있으면 null(완료 요약).
+  const cmpVer = (a, b) => {
+    const pa = String(a ?? '').split('.').map((n) => Number(n)), pb = String(b ?? '').split('.').map((n) => Number(n));
+    if (pa.length !== 3 || pb.length !== 3 || [...pa, ...pb].some((n) => !Number.isFinite(n))) return 0;
+    for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] - pb[i];
+    return 0;
+  };
+  function wizardUpdateOffer() {
+    if (auto || !soulValidation.ok || !soulRoot) return null;
+    const prior = readReceiptFn(soulRoot);
+    if (!prior || isLegacyReceipt(prior)) return null;
+    if (!setupAllDone(prior) || !onlineDone(prior)) return null;
+    const from = prior.package?.version ?? null;
+    if (!from || cmpVer(from, version) >= 0) return null;
+    state.auto = { requested: false, eligible: true, viaWizard: true, name: soulName, root: soulRoot, from, to: version, choice: prior.choice ?? null };
+    state.autoResult = null;
+    return { from, to: version };
+  }
+
   // A previous run's leftovers must never decide this one. state.json lives in
   // %LOCALAPPDATA%\IRIS-Installer and survives forever, so an automatic update
   // could open on a `step:'done'` left by the *last* update. The verdict is
@@ -549,6 +574,8 @@ export function startServer({
       soulConfirmed = true;
       state.step = verdict.step;
       state.resume = { ...verdict, forced: resume };
+      // 전부 끝난 옛 판 위라면 "완료 요약" 대신 「업데이트」 제안(2.0.22).
+      if (verdict.step === 'done' && wizardUpdateOffer()) state.step = 'update';
       if (verdict.step === 'summary' || verdict.step === 'setup') {
         state.decisions = state.decisions ?? readDecisions(soulRoot);
       }
@@ -627,10 +654,15 @@ export function startServer({
     // pointed the installer at a folder, been refused, and must not then be
     // able to write into it by skipping ahead.
     soulConfirmed = ok;
-    if (ok && (state.step === 'precheck' || state.step === 'locate')) state.step = 'choice';
+    // 이미 설치된(옛 판) IRIS 위에서 새 설치기를 손으로 실행한 경우(2.0.22, 2026-09-19 실제 사용자 실측:
+    // "21 을 받아 실행해도 곧바로 설치 완료") — 완료 화면 대신 「업데이트」를 내민다(--auto 와 같은 길).
+    const offer = ok ? wizardUpdateOffer() : null;
+    if (offer) {
+      state.step = 'update';
+    } else if (ok && (state.step === 'precheck' || state.step === 'locate')) state.step = 'choice';
     save();
-    log(`locate root=${soul.root} mode=${soul.mode}`);
-    sendJson(res, 200, { ok, root: soul.root, mode: soul.mode, message: SOUL_MESSAGE[soul.mode] });
+    log(`locate root=${soul.root} mode=${soul.mode}${offer ? ` update=${offer.from}->${offer.to}` : ''}`);
+    sendJson(res, 200, { ok, root: soul.root, mode: soul.mode, message: SOUL_MESSAGE[soul.mode], ...(offer ? { update: offer } : {}) });
   }));
 
   // --- ③ 구독 -------------------------------------------------------------
@@ -1463,22 +1495,14 @@ export function startServer({
     }
   }
 
-  routes.set('POST /api/auto', withBody(async (body, req, res) => {
+  // 업데이트 시작(화면의 POST /api/auto 와 --auto 자가 시작이 같은 함수를 쓴다). → { status, body }
+  function beginAuto() {
     const info = state.auto?.eligible ? state.auto : autoEligibility();
-    if (!info.eligible) {
-      sendJson(res, 409, { ok: false, reason: info.reason ?? 'not_eligible' });
-      return;
-    }
-    if (autoRunning) {
-      sendJson(res, 202, { ok: true, running: true });
-      return;
-    }
+    if (!info.eligible) return { status: 409, body: { ok: false, reason: info.reason ?? 'not_eligible' } };
+    if (autoRunning) return { status: 202, body: { ok: true, running: true } };
     const manifest = readPayloadManifest(state.zipRoot);
     const lock = readLock(state.zipRoot);
-    if (!manifest || !lock) {
-      sendJson(res, 500, { ok: false, reason: 'payload_unreadable' });
-      return;
-    }
+    if (!manifest || !lock) return { status: 500, body: { ok: false, reason: 'payload_unreadable' } };
 
     autoRunning = true;
     soulConfirmed = true; // a v2 receipt is proof the folder is ours
@@ -1489,9 +1513,13 @@ export function startServer({
     state.autoResult = null;
     state.userEnvSkipped = userEnvSkipped;
     save();
-    sendJson(res, 202, { ok: true, from: info.from, to: info.to });
-
     runAuto(info, manifest, lock);
+    return { status: 202, body: { ok: true, from: info.from, to: info.to } };
+  }
+
+  routes.set('POST /api/auto', withBody(async (body, req, res) => {
+    const r = beginAuto();
+    sendJson(res, r.status, r.body);
   }));
 
   routes.set('POST /api/quit', async (req, res) => {
@@ -1549,6 +1577,12 @@ export function startServer({
     server.on('error', reject);
     server.listen(port, '127.0.0.1', () => {
       const actualPort = server.address().port;
+      if (auto && autoSelfStart && state.auto?.eligible) {
+        setTimeout(() => {
+          try { const r = beginAuto(); log(`auto self-start: ${r.status} ${JSON.stringify(r.body)}`); }
+          catch (err) { log(`auto self-start failed: ${String(err?.stack ?? err)}`); }
+        }, 800);
+      }
       resolve({
         server,
         port: actualPort,

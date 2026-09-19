@@ -62,7 +62,9 @@ export function pickState(state = {}) {
       : (state.precheck ? { blockers: state.precheck.blockers ?? [], warnings: state.precheck.warnings ?? [] } : null),
     setup: { stage: setup.stage ?? null, percent: setup.percent ?? null, error: setup.error ?? null, stages: setup.stages ?? null, pending: setup.pending ?? null, live: setup.live ?? null },
     online: { stage: online.stage ?? null, net: online.net ?? null, claude: online.claude ?? null, documentSkills: online.documentSkills ?? null, logins: online.logins ?? null, relay: online.relay ?? null, error: online.error ?? null, recheck: online.recheck ?? null },
-    auto: state.auto ? { mode: state.auto.mode ?? null, part: state.auto.part ?? null, status: state.auto.status ?? null, error: state.auto.error ?? null } : null,
+    auto: state.auto ? { eligible: state.auto.eligible ?? null, reason: state.auto.reason ?? null, from: state.auto.from ?? null, to: state.auto.to ?? null, viaWizard: state.auto.viaWizard ?? null } : null,
+    autoResult: state.autoResult ?? null,
+    installError: state.installError ?? null,
   };
 }
 
@@ -104,6 +106,19 @@ export function buildReportPayload({ state = {}, root = null, logs = {}, memo = 
   }
   const bootstrap = logs.server ? readSafe(fs, path.join(path.dirname(logs.server), 'bootstrap.log')) : null;
   if (bootstrap != null) logParts.push(`=== bootstrap.log 마지막 60줄 ===\n${mask(tailLines(bootstrap, 60))}`);
+  // IRIS 창 쪽(2.0.22): 창의 「업데이트」가 왜 안 됐는지는 창 데몬 로그·적용기 결과에만 남는다.
+  if (root) {
+    const faceState = path.join(root, '_agent', 'shared', 'tools', 'face', 'state');
+    for (const [name, file, n] of [
+      ['IRIS 창 데몬 로그', path.join(faceState, 'daemon.log'), 120],
+      ['IRIS 창 실행기 로그', path.join(faceState, 'launch.log'), 40],
+      ['업데이트 적용 결과', path.join(root, '_agent', 'setup', 'update-result.json'), 80],
+    ]) {
+      const t = readSafe(fs, file);
+      if (t == null) continue;
+      logParts.push(`=== ${name} (${mask(file)}) 마지막 ${n}줄 ===\n${mask(tailLines(t, n))}`);
+    }
+  }
   return {
     id: newReportId(now),
     version: String(picked.packageVersion ?? 'unknown'),
