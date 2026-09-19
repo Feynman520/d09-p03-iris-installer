@@ -1054,6 +1054,13 @@ function writeCodexConfig(ctx, specs, { fs, root, log }) {
     topLines.push(`web_search = ${tomlString('live')}`);
     added.push('web_search');
   }
+  // 코덱스 0.154+ 는 hooks.json 이 새로 생기거나 바뀌면 첫 실행에 "Hooks need review"(신뢰 물음)를 띄운다.
+  // 이 훅은 설치기가 직접 쓴 것이고 IRIS 세션은 최대 권한(approval never · danger-full-access)이 사용자 결정이므로
+  // 같은 결정의 연장으로 훅 신뢰 물음도 건너뛴다(2026-09-19 데스크탑 실측, 2.0.25). `-c bypass_hook_trust=true` 와 같은 키.
+  if (!hasTopKey(text, 'bypass_hook_trust')) {
+    topLines.push('bypass_hook_trust = true');
+    added.push('bypass_hook_trust');
+  }
   if (topLines.length) {
     const block = `${topLines.join('\n')}\n`;
     text = text.length === 0 ? block : `${block}${text.startsWith('\n') ? text : `\n${text}`}`;

@@ -188,7 +188,10 @@ export function buildHandoff(ctx, {
   const root = ctx.root;
   const receipt = ctx.receipt ?? {};
   const subscriptions = Array.isArray(ctx?.choice?.subscriptions) ? ctx.choice.subscriptions.slice() : [];
-  const leadAgent = ctx?.choice?.leadAgent ?? (subscriptions.includes('claude') ? 'claude' : (subscriptions[0] ?? null));
+  // 창(Face)은 'claude' | 'codex' 만 안다 — 구독 id 'chatgpt' 가 그대로 넘어가 코덱스만 고른 설치의 첫 세션이
+  // 클로드로 열렸다(2026-09-19 데스크탑 실측, 2.0.25). 여기서 에이전트 이름으로 바꿔 적는다.
+  const rawLead = ctx?.choice?.leadAgent ?? (subscriptions.includes('claude') ? 'claude' : (subscriptions[0] ?? null));
+  const leadAgent = rawLead === 'chatgpt' ? 'codex' : rawLead;
 
   const summary = setupSummary(receipt, { assumeDone });
   const setupFailed = forcedFailed ?? summary.failed;

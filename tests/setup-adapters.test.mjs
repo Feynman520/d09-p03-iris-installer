@@ -225,7 +225,7 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   const toml = fs.readFileSync(agentFile(root, 'codex', 'config.toml'), 'utf8');
   const firstTable = toml.search(/^\s*\[/m);
   const top = toml.slice(0, firstTable);
-  for (const key of ['approval_policy', 'sandbox_mode', 'project_root_markers', 'web_search']) {
+  for (const key of ['approval_policy', 'sandbox_mode', 'project_root_markers', 'web_search', 'bypass_hook_trust']) {
     assert.ok(new RegExp(`^${key} = `, 'm').test(top), `최상위 키가 첫 [table] 위에 없음: ${key}`);
   }
   assert.match(top, /project_root_markers = \["soul-state\.json"\]/);
