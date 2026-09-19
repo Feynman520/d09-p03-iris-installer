@@ -14,6 +14,7 @@
 //   node build/mirror-upload.mjs --file <경로> [--key <이름>] [--content-type <형식>]
 //   --check <이름>   공개 주소가 200 을 돌려주는지만 본다(업로드 없음)
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -104,6 +105,42 @@ export async function checkPublic(key) {
   return { ok: r.status === 200, status: r.status, length: Number(r.headers.get('content-length') ?? 0) };
 }
 
+// latest.json (2026-09-19): IRIS 창의 업데이트기가 GitHub API 를 못 읽을 때(403 rate limit·차단 — 데스크탑 실측
+// "update check: … HTTP 403" 으로 새 판을 끝내 못 봄) 대신 읽는 최신 판 표. 부품별 항목 { version, tag, asset, url,
+// size, sha256Url, sigUrl, publishedAt } — Face `update.mjs fetchLatest()` 가 GitHub 응답과 같은 모양으로 쓴다.
+export async function readLatest() {
+  try {
+    const r = await fetch(`${PUBLIC_BASE}/latest.json`, { cache: 'no-store' });
+    if (!r.ok) return {};
+    const j = await r.json();
+    return j && typeof j === 'object' ? j : {};
+  } catch { return {}; }
+}
+export function latestEntryFor({ part, version, asset, size, publishedAt = new Date().toISOString() }) {
+  const tagPrefix = { package: 'iris-installer--v', face: 'iris-face--v', messenger: 'iris-messenger--v' }[part] ?? `${part}--v`;
+  return {
+    version, tag: `${tagPrefix}${version}`, asset, size,
+    url: `${PUBLIC_BASE}/${asset}`, sha256Url: `${PUBLIC_BASE}/${asset}.sha256`, sigUrl: `${PUBLIC_BASE}/${asset}.sha256.sig`,
+    publishedAt,
+  };
+}
+export async function updateLatest({ part, entry, log = console.log }) {
+  const data = await readLatest();
+  data[part] = entry;
+  data.updatedAt = new Date().toISOString();
+  const tmp = path.join(os.tmpdir(), `iris-latest-${process.pid}.json`);
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  try {
+    const r = await uploadFile({ file: tmp, key: 'latest.json', contentType: 'application/json', log });
+    const c = await checkPublic('latest.json');
+    if (!c.ok) throw new Error(`latest.json public check failed: HTTP ${c.status}`);
+    log(`mirror: latest.json ${part} -> ${entry.version}`);
+    return { ok: true, key: r.key, data };
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+  }
+}
+
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.check) {
@@ -126,6 +163,12 @@ async function main() {
   }
   console.log('mirror: OK');
   console.log(`homepage: add to CONFIG.mirror.assets -> ${results.filter((r) => r.key.endsWith('.zip')).map((r) => `'${r.key}'`).join(', ')}`);
+  // 설치 패키지 zip 을 올렸으면 latest.json 의 package 항목도 갱신한다(창 업데이트기의 GitHub 불통 폴백).
+  const zip = results.find((r) => /^IRIS-Setup_v\d+\.\d+\.\d+_.*\.zip$/.test(r.key));
+  if (zip) {
+    const version = /^IRIS-Setup_v(\d+\.\d+\.\d+)_/.exec(zip.key)[1];
+    await updateLatest({ part: 'package', entry: latestEntryFor({ part: 'package', version, asset: zip.key, size: zip.size }) });
+  }
 }
 
 // 직접 실행일 때만 main() — Windows 경로는 fileURLToPath 로 비교한다(URL pathname 비교는 드라이브 문자에서 어긋난다, 2026-09-17 실측).

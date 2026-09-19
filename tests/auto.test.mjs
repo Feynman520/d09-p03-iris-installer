@@ -269,6 +269,7 @@ test('auto: 업데이트는 v2 세팅 엔진을 돌린다 — 진짜 잠금표 3
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -369,6 +370,7 @@ test('auto: 파이썬 판이 바뀐 꾸러미면 venv 도 되돌린 채로 엔�
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -404,6 +406,7 @@ test('auto: requested on a PC with no receipt falls back to the ordinary wizard'
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -449,6 +452,7 @@ test('auto: without the flag nothing is automatic, even over an existing install
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -475,6 +479,7 @@ test('auto: without the flag nothing is automatic, even over an existing install
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0, precheckFn: async () => OK_PRECHECK, zipRoot: makeZipRoot('zip-auto-off-same'),
     nodeDir: path.join(tmp, 'node'), stateFile: path.join(tmp, 'state-off-same.json'), soulName: SOUL, auto: false,
     readReceiptFn: () => priorReceipt({ version: '2.0.0' }),
@@ -510,6 +515,7 @@ test('auto: the soul to update comes from IRIS_INSTALLER_SOUL_NAME, not from a h
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
       port: 0,
       precheckFn: async () => OK_PRECHECK,
       zipRoot,
@@ -570,6 +576,7 @@ test('auto: a previous update left step=done + autoResult -- the update still st
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -630,6 +637,7 @@ test('auto: a first install that failed long ago left installError -- the update
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -677,6 +685,7 @@ test('auto: without the flag a leftover step/installError is still restored (the
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,
@@ -710,6 +719,7 @@ test('auto: 엔진이 멈추면 그 단계 이름으로 멈춤을 적고, 창은
     onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
     relayRecheckFn: async () => ({ at: '2026-09-19T00:00:00.000Z', items: [] }),
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0,
     precheckFn: async () => OK_PRECHECK,
     zipRoot,

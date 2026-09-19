@@ -137,20 +137,44 @@ export function encodeForm(payload, fields = FORM_FIELDS) {
   return p.toString();
 }
 
+// 구글 폼은 요청 본문이 대략 32 KB 를 넘으면 413 으로 거절한다(2026-09-19 실측: 30 KB 통과 · 40 KB 거절 — 데스크탑
+// 실제 신고가 이것에 막혔다). 한글은 URL 인코딩 뒤 글자당 9바이트라 글자 수가 아니라 **인코딩된 바이트**로 맞춘다:
+// 로그 → 진단 → 요약 순으로 30% 씩 줄이며(로그는 꼬리, 나머지는 머리를 남김) 상한 아래로 들어올 때까지 반복한다.
+export const FORM_MAX_BYTES = 28_000;
+export function fitForm(payload, { maxBytes = FORM_MAX_BYTES, fields = FORM_FIELDS } = {}) {
+  const out = { ...payload };
+  const order = ['logs', 'diagnostics', 'summary', 'memo'];
+  let bytes = encodeForm(out, fields).length;
+  let rounds = 0;
+  while (bytes > maxBytes && rounds < 40) {
+    const key = order.find((k) => String(out[k] ?? '').length > 400) ?? null;
+    if (!key) break;
+    const s = String(out[key]);
+    const keep = Math.max(200, Math.floor(s.length * 0.7));
+    out[key] = key === 'logs'
+      ? `…[크기 제한으로 앞 ${s.length - keep}자 더 잘림]\n${s.slice(s.length - keep)}`
+      : `${s.slice(0, keep)}\n…[크기 제한으로 뒤 ${s.length - keep}자 더 잘림]`;
+    bytes = encodeForm(out, fields).length;
+    rounds += 1;
+  }
+  return { payload: out, bytes, trimmed: rounds > 0 };
+}
+
 /** POST 한 번. 구글 폼은 접수되면 200(HTML) 을 준다. 실패는 4xx/5xx 또는 예외. → { ok, status, error? } */
 export async function sendReport(payload, { fetchImpl = globalThis.fetch, url = REPORT_FORM_URL, timeoutMs = 20_000 } = {}) {
   if (typeof fetchImpl !== 'function') return { ok: false, status: null, error: 'fetch 없음' };
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
+    const fit = fitForm(payload);
     const r = await fetchImpl(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-      body: encodeForm(payload),
+      body: encodeForm(fit.payload),
       redirect: 'follow',
       signal: ac.signal,
     });
-    return { ok: r.status >= 200 && r.status < 300, status: r.status };
+    return { ok: r.status >= 200 && r.status < 300, status: r.status, bytes: fit.bytes, trimmed: fit.trimmed };
   } catch (e) {
     return { ok: false, status: null, error: e?.name === 'AbortError' ? `응답 없음(${timeoutMs / 1000}초)` : String(e?.message ?? e) };
   } finally {
@@ -172,4 +196,4 @@ export function saveReportCopy({ root = null, fallbackDir = null, payload, fs = 
   }
 }
 
-export default { buildReportPayload, sendReport, saveReportCopy, encodeForm, newReportId, tailLines, clip, pickState, REPORT_FORM_URL, FORM_FIELDS, LIMITS };
+export default { buildReportPayload, sendReport, saveReportCopy, encodeForm, fitForm, newReportId, tailLines, clip, pickState, REPORT_FORM_URL, FORM_FIELDS, LIMITS, FORM_MAX_BYTES };

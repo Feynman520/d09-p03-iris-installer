@@ -1496,13 +1496,27 @@ export function startServer({
   }
 
   // 업데이트 시작(화면의 POST /api/auto 와 --auto 자가 시작이 같은 함수를 쓴다). → { status, body }
-  function beginAuto() {
+  async function beginAuto() {
     const info = state.auto?.eligible ? state.auto : autoEligibility();
     if (!info.eligible) return { status: 409, body: { ok: false, reason: info.reason ?? 'not_eligible' } };
     if (autoRunning) return { status: 202, body: { ok: true, running: true } };
     const manifest = readPayloadManifest(state.zipRoot);
     const lock = readLock(state.zipRoot);
     if (!manifest || !lock) return { status: 500, body: { ok: false, reason: 'payload_unreadable' } };
+
+    // 업데이트는 설치 폴더의 IRIS 프로그램(창·데몬·중계기·대시보드·메신저 모듈)이 부품을 쥐고 있으면 풀기에서 멈춘다
+    // (2026-09-19 데스크탑 실측: E-UNPACK "IRIS 프로그램 8개가 아직 실행 중", 2.0.26). 창 「업데이트」 길은 적용기가
+    // 데몬만 끄고 나머지는 두며, 손 실행 길은 아무것도 끄지 않았다. 여기서 **우리 프로그램만 PID 로** 닫고 시작한다
+    // (⑥ 의 「IRIS 프로그램 닫고 다시 시도」와 같은 holdersFn — 이름·포트 일괄 종료 없음). 끝나면 relaunch 가 창을 다시 연다.
+    try {
+      const hs = await holdersFn.list(info.root ?? soulRoot);
+      if (Array.isArray(hs) && hs.length) {
+        const r = await holdersFn.stop(info.root ?? soulRoot, hs);
+        log(`auto: closed ${hs.length} IRIS program(s) before unpack (${hs.map((h) => `${h.name}:${h.pid}`).join(',')}) -> ${JSON.stringify(r?.stopped ?? r ?? null).slice(0, 200)}`);
+      }
+    } catch (err) {
+      log(`auto: closing IRIS programs failed (continuing, unpack will report holders): ${String(err?.message ?? err)}`);
+    }
 
     autoRunning = true;
     soulConfirmed = true; // a v2 receipt is proof the folder is ours
@@ -1518,7 +1532,7 @@ export function startServer({
   }
 
   routes.set('POST /api/auto', withBody(async (body, req, res) => {
-    const r = beginAuto();
+    const r = await beginAuto();
     sendJson(res, r.status, r.body);
   }));
 
@@ -1579,8 +1593,8 @@ export function startServer({
       const actualPort = server.address().port;
       if (auto && autoSelfStart && state.auto?.eligible) {
         setTimeout(() => {
-          try { const r = beginAuto(); log(`auto self-start: ${r.status} ${JSON.stringify(r.body)}`); }
-          catch (err) { log(`auto self-start failed: ${String(err?.stack ?? err)}`); }
+          beginAuto().then((r) => log(`auto self-start: ${r.status} ${JSON.stringify(r.body)}`))
+            .catch((err) => log(`auto self-start failed: ${String(err?.stack ?? err)}`));
         }, 800);
       }
       resolve({
