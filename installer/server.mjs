@@ -357,7 +357,11 @@ export function startServer({
   openFaceFn,
   // update-mode (POST /api/auto) seams. The install itself is `setupRunner`
   // (the same v2 engine as the wizard) -- there is no v1 install seam any more.
-  relaunchFaceFn = defaultRelaunchFace,
+  // IRIS_INSTALLER_NO_FACE_RELAUNCH=1: 업데이트 뒤 IRIS 창을 되살리지 않는다 — verify/upgrade.mjs 가 연습용
+  // 루트(C:\IRIS-upg)에서 쓰는 손잡이. 진짜 설치에서는 쓰지 않는다(창이 안 돌아온다).
+  relaunchFaceFn = process.env.IRIS_INSTALLER_NO_FACE_RELAUNCH === '1'
+    ? (() => ({ ok: false, reason: 'IRIS_INSTALLER_NO_FACE_RELAUNCH=1' }))
+    : defaultRelaunchFace,
   finishFn = defaultFinish,
   // 「개발자에게 신고하기」(lib/report-send.mjs) — 시험은 가짜 fetch 를 넣는다.
   reportFetchFn = globalThis.fetch,
@@ -830,17 +834,25 @@ export function startServer({
   async function defaultRelayRecheck(root) {
     const { runChecks } = await import('./setup/checks.mjs');
     const { normalizeContext } = await import('./setup/engine.mjs');
+    // 중계기 설정 손질 뒤 살아 있는 중계기에 다시 읽게 한다(재시작 없음, 4초 안에 답 없으면 포기).
+    const reloadRelay = async () => {
+      const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 4000);
+      await fetch('http://127.0.0.1:3456/teamclaude/reload', { method: 'POST', signal: ac.signal }).catch(() => {}).finally(() => clearTimeout(t));
+    };
     // 코덱스 계정 표시 이름(2.0.30): importFrom 항목에 이메일 displayName 을 채우고 중계기에 다시 읽게 한다 — 옛 판이 남긴
     // 'codex' 이름표가 대시보드에 "CODEX" 로만 보이던 것. 실패해도 재측정은 계속.
     try {
       const { refreshCodexDisplayName, resolveTeamclaudeConfigPath } = await import('./lib/login.mjs');
       const r = refreshCodexDisplayName({ root, teamclaudeConfigPath: resolveTeamclaudeConfigPath({ root }) });
-      if (r.changed) {
-        log(`codex displayName -> ${r.email}`);
-        const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 4000);
-        await fetch('http://127.0.0.1:3456/teamclaude/reload', { method: 'POST', signal: ac.signal }).catch(() => {}).finally(() => clearTimeout(t));
-      }
+      if (r.changed) { log(`codex displayName -> ${r.email}`); await reloadRelay(); }
     } catch (err) { log(`codex displayName refresh skipped: ${String(err?.message ?? err)}`); }
+    // 전환 임계점 기본 100%(2.0.31): 옛 설치가 남긴 0.98 을 1 로 올린다(빠진 칸 채우기와 같은 함수, 계정·토큰 무접촉).
+    // 「업데이트」는 relay 단계를 건너뛰므로(KEEP_DONE) 여기서 해야 이미 설치된 PC 에도 닿는다.
+    try {
+      const { ensureRelayConfigDefaults, resolveTeamclaudeConfigPath } = await import('./lib/login.mjs');
+      const { patched } = ensureRelayConfigDefaults(resolveTeamclaudeConfigPath({ root }));
+      if (patched.length) { log(`relay config patched: ${patched.join(', ')}`); await reloadRelay(); }
+    } catch (err) { log(`relay config defaults skipped: ${String(err?.message ?? err)}`); }
     const ctx = normalizeContext({ ...buildSetupContext(root), offline: false });
     const rc = await runChecks(ctx, { only: ['relay', 'relayCodex'] });
     return {

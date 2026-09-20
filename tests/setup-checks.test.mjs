@@ -451,6 +451,25 @@ test('검사6: 꾸러미(zip) 안 원본 경로는 "루트 밖 쓰기"로 세지
   assert.equal(c.outside.length, 0);
 });
 
+test('검사6 (2.0.31): 업데이트가 물려받은 옛 설치 기록의 바퀴 원본(옛 zip 자리)은 잠금표 부품 파일이면 루트 밖 쓰기가 아니다', async () => {
+  // verify/upgrade.mjs 실측: ①(옛 zip)의 venv 가 적은 pyyamlWheel 은 ②(새 zip) 의 zipRoot 밖 → 검사를 다시 도는
+  // 업데이트에서 "IRIS 폴더 밖 쓰기 1건"으로 실패. 실제 사용자는 Downloads 의 옛 zip 이 그 자리다.
+  const root = newRoot('pkg-source-old-zip');
+  const oldZip = path.join(tmp, `zip-old-${seq}`);
+  const newZip = path.join(tmp, `zip-new-${seq}`);
+  const wheel = path.join(oldZip, 'payload', 'runtime', 'PyYAML-6.0.3-cp312-cp312-win_amd64.whl');
+  write(wheel, 'wheel');
+  const lock = { parts: { pyyaml: { file: 'runtime/PyYAML-6.0.3-cp312-cp312-win_amd64.whl' } } };
+  const receipt = { schema: 2, setup: { venv: { startedAt: new Date().toISOString(), recorded: { paths: { pyyamlWheel: wheel } } } } };
+  const c = await checkDesktop(ctxFor(root, { desktopDir: null, payloadDir: path.join(newZip, 'payload'), lock, receipt }));
+  assert.equal(c.status, 'pass', c.detail);
+  // 잠금표에 없는 이름은 여전히 잡는다(진짜 루트 밖 쓰기).
+  const stray = path.join(oldZip, 'payload', 'runtime', 'something-else.txt');
+  const receipt2 = { schema: 2, setup: { venv: { startedAt: new Date().toISOString(), recorded: { paths: { pyyamlWheel: stray } } } } };
+  const c2 = await checkDesktop(ctxFor(root, { desktopDir: null, payloadDir: path.join(newZip, 'payload'), lock, receipt: receipt2 }));
+  assert.equal(c2.status, 'fail');
+});
+
 test('검사6: 영혼 이름이 IRIS 가 아니어도 그 이름의 바로가기는 통과한다(연습 소울)', async () => {
   // handoff.mjs writeFaceLauncher 는 바로가기를 "<name>.lnk"로 만들고, name 은
   // ctx.name ?? receipt.soul.name ?? path.basename(root) 순으로 정해진다. 이
@@ -910,4 +929,24 @@ test('검사12: 중계기가 안 떠 있으면 대기(⑦ 뒤에 다시), 살아
   const c429 = await checkRelayRoute(ctxFor(root, { receipt, fetch: r429.fetchImpl }));
   assert.equal(c429.status, 'fail');
   assert.match(c429.detail, /429: no account can serve/);
+});
+
+test('검사12·13 (2.0.31): IRIS_INSTALLER_OFFLINE=1 이면 살아 있는 중계기(3456)를 두드리지 않고 pending 으로 둔다', async () => {
+  // 이 개발 PC 처럼 진짜 중계기가 떠 있을 때 연습용 루트의 검사가 남의 중계기를 재고 CA 를 만들라 해서 '실패'로
+  // 굴렀다(verify/upgrade.mjs 첫 실행). 연습·검사 실행에서는 fetch 자체를 쓰지 않아야 한다.
+  const prev = process.env.IRIS_INSTALLER_OFFLINE;
+  process.env.IRIS_INSTALLER_OFFLINE = '1';
+  try {
+    const { root, receipt, dir } = codexRoot('codex-offline-env');
+    const relay = fakeRelay({ accounts: [{ name: 'c', provider: 'codex' }] });
+    let fetched = 0;
+    const spy = async (...a) => { fetched += 1; return relay.fetchImpl(...a); };
+    const c13 = await checkRelayCodex(ctxFor(root, { receipt, fetch: spy, mitmProbe: fakeMitm(dir).impl, choice: { subscriptions: ['codex'] } }));
+    assert.equal(c13.status, 'pending', c13.detail);
+    const c12 = await checkRelayRoute(ctxFor(root, { receipt, fetch: spy }));
+    assert.notEqual(c12.status, 'fail', c12.detail);
+    assert.equal(fetched, 0, '오프라인 연습에서는 중계기에 요청을 보내지 않는다');
+  } finally {
+    if (prev === undefined) delete process.env.IRIS_INSTALLER_OFFLINE; else process.env.IRIS_INSTALLER_OFFLINE = prev;
+  }
 });

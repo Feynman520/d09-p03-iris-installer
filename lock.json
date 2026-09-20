@@ -8,7 +8,7 @@
     "dest 는 영혼 루트 기준 '폴더' 경로다(POSIX 구분자). '/' 는 영혼 루트 자체."
   ],
   "schema": 2,
-  "package": { "version": "2.0.30" },
+  "package": { "version": "2.0.31" },
   "parts": {
     "node": {
       "kind": "url",
@@ -162,7 +162,7 @@
     "dash": {
       "kind": "dir",
       "source": "C:/IRIS/_agent/claude/tools/teamclaude-dash",
-      "exclude": ["design", "AGENTS.md", "CLAUDE.md"],
+      "exclude": ["design", "tests", "AGENTS.md", "CLAUDE.md"],
       "redact": [
         {
           "file": "dashboard.html",

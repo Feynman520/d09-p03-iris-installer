@@ -607,7 +607,14 @@ export async function checkDesktop(ctx, opts = {}) {
   const zipRoots = [ctx.zipRoot, ctx.payloadDir, ctx.payloadDir ? path.dirname(ctx.payloadDir) : null]
     .filter(Boolean)
     .map((p) => path.resolve(p).toLowerCase());
-  const fromPackage = (abs) => zipRoots.some((z) => abs.toLowerCase().startsWith(z));
+  // 2026-09-20(2.0.31, verify/upgrade.mjs 실측): 「업데이트」는 옛 설치의 단계 기록을 그대로 물려받는데, venv 가
+  // 적어 둔 바퀴 원본(`pyyamlWheel`)은 **옛 zip 이 있던 자리**(보통 Downloads)라 이번 zipRoot 밖이다 → 검사를
+  // 다시 돌리는 업데이트에서 "IRIS 폴더 밖 쓰기"로 오판. 잠금표 부품의 파일 이름(어느 판 zip 에서 왔든 같은
+  // 이름)과 일치하면 읽은 곳으로 본다.
+  const partFiles = new Set(Object.values(ctx.lock?.parts ?? {})
+    .map((p) => (typeof p?.file === 'string' ? path.basename(p.file).toLowerCase() : null)).filter(Boolean));
+  const fromPackage = (abs) => zipRoots.some((z) => abs.toLowerCase().startsWith(z))
+    || (partFiles.size > 0 && partFiles.has(path.basename(abs).toLowerCase()));
   // 2026-09-17 VM S06 실측: relay 단계가 기록한 바탕화면 바로가기(`..\Users\<계정>\Desktop\IRIS.lnk`)가
   // "IRIS 폴더 밖 쓰기 2건"으로 잡혀 검사 6이 실패했다. 바탕화면의 IRIS 바로가기는 이 검사가
   // 위에서 이미 **허용한** 바로 그 파일이다 — 단, **이 사용자의** 바탕화면(찾아낸 바탕화면 폴더,
@@ -839,7 +846,10 @@ function accountsByProvider(status) {
 }
 
 export async function checkRelayRoute(ctx, {
-  fetchImpl = ctx?.fetch ?? globalThis.fetch,
+  // IRIS_INSTALLER_OFFLINE=1(연습·검사 실행)에서는 127.0.0.1:3456 도 두드리지 않는다 — 이 개발 PC 처럼 진짜
+  // 중계기가 살아 있으면 연습용 루트의 검사가 남의 중계기를 재고 CA 를 만들라 해서 '실패'로 굴렀다(2.0.31,
+  // verify/upgrade.mjs 도입 때 실측). 진짜 설치에서는 그대로(중계기가 없으면 pending, ⑦ 뒤 재측정).
+  fetchImpl = process.env.IRIS_INSTALLER_OFFLINE === '1' ? null : (ctx?.fetch ?? globalThis.fetch),
   readUserEnvFn = ctx?.readUserEnv ?? readUserEnv,
   baseUrl = RELAY_ROUTE_URL,
   timeoutMs = 4000,
@@ -981,7 +991,8 @@ export async function checkRelayRoute(ctx, {
 export const RELAY_MITM_TEST_HOST = MITM_TEST_HOST;
 
 export async function checkRelayCodex(ctx, {
-  fetchImpl = ctx?.fetch ?? globalThis.fetch,
+  // 검사 12 와 같은 이유(IRIS_INSTALLER_OFFLINE=1 이면 살아 있는 중계기를 두드리지 않는다, 2.0.31).
+  fetchImpl = process.env.IRIS_INSTALLER_OFFLINE === '1' ? null : (ctx?.fetch ?? globalThis.fetch),
   mitmProbeImpl = ctx?.mitmProbe ?? mitmProbe,
   writeBundleImpl = ctx?.writeCaBundle ?? writeCaBundle,
   baseUrl = RELAY_ROUTE_URL,

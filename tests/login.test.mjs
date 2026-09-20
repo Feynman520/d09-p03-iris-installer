@@ -106,6 +106,26 @@ test('ensureRelayConfigDefaults: 빠진 칸만 채우고 있는 값은 그대로
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('switchThreshold (2.0.31): 기본 1(100%), 옛 설치가 남긴 0.98 은 1 로 올리고 사용자가 정한 다른 값은 둔다', async () => {
+  const { ensureRelayConfigDefaults, defaultRelayConfig } = await import('../installer/lib/login.mjs');
+  assert.equal(defaultRelayConfig().switchThreshold, 1);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-relaythr-'));
+  const cfg = path.join(dir, 'teamclaude.json');
+  const acct = [{ name: 'a', provider: 'anthropic', refreshToken: 'KEEP' }];
+  // 2.0.30 이하 설치기가 만든 파일: 0.98 → 1, 계정·토큰은 한 글자도 안 바뀐다
+  fs.writeFileSync(cfg, JSON.stringify({ ...defaultRelayConfig(), switchThreshold: 0.98, accounts: acct }), 'utf8');
+  assert.deepEqual(ensureRelayConfigDefaults(cfg), { patched: ['switchThreshold'] });
+  const after = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+  assert.equal(after.switchThreshold, 1);
+  assert.deepEqual(after.accounts, acct);
+  assert.deepEqual(ensureRelayConfigDefaults(cfg), { patched: [] });
+  // 사용자가 직접 정한 값(0.9)은 존중
+  fs.writeFileSync(cfg, JSON.stringify({ ...defaultRelayConfig(), switchThreshold: 0.9 }), 'utf8');
+  assert.deepEqual(ensureRelayConfigDefaults(cfg), { patched: [] });
+  assert.equal(JSON.parse(fs.readFileSync(cfg, 'utf8')).switchThreshold, 0.9);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('ensureProxy: dead, start fails, probe still false -> started:true, alive:false', async () => {
   const result = await ensureProxy({
     root: 'C:\\FAKE-ROOT',

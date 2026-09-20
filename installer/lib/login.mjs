@@ -399,7 +399,9 @@ export function defaultRelayConfig({ randomBytes = crypto.randomBytes } = {}) {
   return {
     proxy: { port: RELAY_PORT_DEFAULT, apiKey: `tc-${randomBytes(24).toString('base64url')}` },
     upstream: 'https://api.anthropic.com',
-    switchThreshold: 0.98,
+    // 전환 임계점 = 100%(2.0.31, 2026-09-20 사용자 결정). 중계기 자체 기본값 0.98 은 98% 에서 다음 계정으로
+    // 넘어가 마지막 2% 를 버린다. 옛 설치가 남긴 0.98 은 ensureRelayConfigDefaults 가 1 로 올린다.
+    switchThreshold: 1,
     holdSeconds: 0,
     distributeSessions: false,
     sessionTitles: { enabled: false, width: 18 },
@@ -434,6 +436,9 @@ export function ensureRelayConfigDefaults(configPath, { fs: fsImpl = fs, randomB
   }
   if (!config.proxy.apiKey) { config.proxy.apiKey = defaults.proxy.apiKey; patched.push('proxy.apiKey'); }
   if (!Array.isArray(config.accounts)) { config.accounts = []; if (!patched.includes('accounts')) patched.push('accounts'); }
+  // 전환 임계점(2.0.31): 0.98 은 설치기 ≤2.0.30 과 중계기 자체가 쓰던 "손대지 않은 기본값"이라 1(100%) 로
+  // 올린다. 다른 값은 사용자가 정한 것이므로 그대로 둔다. 계정·토큰은 여전히 무접촉.
+  if (config.switchThreshold === 0.98) { config.switchThreshold = 1; patched.push('switchThreshold'); }
   if (patched.length === 0) return { patched };
   const tmp = `${configPath}.tmp`;
   fsImpl.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, 'utf8');

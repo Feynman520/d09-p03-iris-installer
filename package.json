@@ -7,7 +7,7 @@
   "scripts": {
     "test": "node --test tests/**/*.test.mjs",
     "build": "node build/build.mjs",
-    "verify": "node verify/static.mjs && node verify/reproduce.mjs && node verify/extract-matrix.mjs && node verify/offline.mjs --build && node verify/offline.mjs && node verify/e2e.mjs"
+    "verify": "node verify/static.mjs && node verify/reproduce.mjs && node verify/extract-matrix.mjs && node verify/offline.mjs --build && node verify/offline.mjs && node verify/e2e.mjs && node verify/upgrade.mjs"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.1134.0",
