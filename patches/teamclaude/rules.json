@@ -147,6 +147,10 @@
           "find": "    process.on('exit', () => aStream.end());\n  }\n\n  // Expose reload to the proxy's control endpoint (works with or without TUI).\n  hooks.reload = reloadAccounts;\n  hooks.getStatusExtra = () => ({\n    // Read live from the shared config (not a startup snapshot) so the TUI's\n    // blocklist editor shows up in `status` immediately, the same way the\n    // per-request gate in server.js picks it up.",
           "with": "    process.on('exit', () => aStream.end());\n  }\n\n  // The status view shares request metadata in every server mode. Preserve the\n  // TUI and optional file-log callbacks above, and never alter routing state.\n  const activity = new ActivityTracker();\n  accountManager.lastRoutedAccounts = activity.lastRoutedAccounts;\n  hooks = withActivityHooks(hooks, activity);\n\n  // Expose reload to the proxy's control endpoint (works with or without TUI).\n  hooks.reload = reloadAccounts;\n  hooks.getStatusExtra = () => ({\n    activity: activity.snapshot(),\n    // Read live from the shared config (not a startup snapshot) so the TUI's\n    // blocklist editor shows up in `status` immediately, the same way the\n    // per-request gate in server.js picks it up.",
           "count": 1
+        },
+        {
+          "find": "  await saveConfig(config);\n  console.log(`Saved to ${getConfigPath()}`);\n}\n\nasync function loginCommand() {",
+          "with": "  await saveConfig(config);\n  console.log(`Saved to ${getConfigPath()}`);\n  // local patch 2026-09-20 IRIS: the Claude OAuth path notifies the running relay from\n  // upsertOAuthAccount(), but this Codex path only saved the config -- a running relay kept\n  // showing zero Codex accounts until a restart (home-desktop dashboard: Claude appears at\n  // once after login, Codex does not). Ask the running server to re-sync, same as Claude.\n  await notifyRunningServer(config);\n}\n\nasync function loginCommand() {"
         }
       ]
     },
