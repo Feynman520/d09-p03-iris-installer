@@ -830,6 +830,17 @@ export function startServer({
   async function defaultRelayRecheck(root) {
     const { runChecks } = await import('./setup/checks.mjs');
     const { normalizeContext } = await import('./setup/engine.mjs');
+    // 코덱스 계정 표시 이름(2.0.30): importFrom 항목에 이메일 displayName 을 채우고 중계기에 다시 읽게 한다 — 옛 판이 남긴
+    // 'codex' 이름표가 대시보드에 "CODEX" 로만 보이던 것. 실패해도 재측정은 계속.
+    try {
+      const { refreshCodexDisplayName, resolveTeamclaudeConfigPath } = await import('./lib/login.mjs');
+      const r = refreshCodexDisplayName({ root, teamclaudeConfigPath: resolveTeamclaudeConfigPath({ root }) });
+      if (r.changed) {
+        log(`codex displayName -> ${r.email}`);
+        const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 4000);
+        await fetch('http://127.0.0.1:3456/teamclaude/reload', { method: 'POST', signal: ac.signal }).catch(() => {}).finally(() => clearTimeout(t));
+      }
+    } catch (err) { log(`codex displayName refresh skipped: ${String(err?.message ?? err)}`); }
     const ctx = normalizeContext({ ...buildSetupContext(root), offline: false });
     const rc = await runChecks(ctx, { only: ['relay', 'relayCodex'] });
     return {

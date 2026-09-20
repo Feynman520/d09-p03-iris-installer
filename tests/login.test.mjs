@@ -604,3 +604,25 @@ test('ensureProxy: the manage-script spawn carries TEAMCLAUDE_CONFIG', async () 
   });
   assert.equal(manageOpts.env.TEAMCLAUDE_CONFIG, FAKE_PORTABLE_CONFIG);
 });
+
+test('codex identity (2.0.30): the import entry is named by the id_token email and carries displayName; existing entries keep their name but get displayName', async () => {
+  const { codexIdentityFromAuth, refreshCodexDisplayName, decodeJwtClaims } = await import('../installer/lib/login.mjs');
+  const root = tmpRoot('codex-identity');
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const idToken = `${b64({ alg: 'none' })}.${b64({ email: 'someone@localhost', 'https://api.openai.com/auth': { chatgpt_account_id: 'acct_1', chatgpt_plan_type: 'plus' } })}.sig`;
+  fs.mkdirSync(path.join(root, '_agent', 'codex'), { recursive: true });
+  fs.writeFileSync(path.join(root, '_agent', 'codex', 'auth.json'), JSON.stringify({ tokens: { id_token: idToken, access_token: 'a', refresh_token: 'r', account_id: 'acct_1' } }), 'utf8');
+  assert.deepEqual(decodeJwtClaims('x'), null);
+  assert.deepEqual(codexIdentityFromAuth(root), { email: 'someone@localhost', accountId: 'acct_1', planType: 'plus' });
+  assert.deepEqual(codexIdentityFromAuth(tmpRoot('codex-identity-none')), { email: null, accountId: null, planType: null });
+
+  const configPath = path.join(root, 'teamclaude.json');
+  fs.writeFileSync(configPath, JSON.stringify({ accounts: [{ name: 'codex', type: 'oauth', provider: 'codex', importFrom: path.join(root, '_agent', 'codex', 'auth.json') }] }), 'utf8');
+  const r = refreshCodexDisplayName({ root, teamclaudeConfigPath: configPath });
+  assert.deepEqual(r, { ok: true, changed: true, email: 'someone@localhost' });
+  const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert.equal(cfg.accounts[0].name, 'codex', 'existing name untouched');
+  assert.equal(cfg.accounts[0].displayName, 'someone@localhost');
+  assert.deepEqual(refreshCodexDisplayName({ root, teamclaudeConfigPath: configPath }), { ok: true, changed: false, email: 'someone@localhost' });
+  fs.rmSync(root, { recursive: true, force: true });
+});

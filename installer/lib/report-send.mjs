@@ -113,6 +113,9 @@ export function buildReportPayload({ state = {}, root = null, logs = {}, memo = 
       ['IRIS 창 데몬 로그', path.join(faceState, 'daemon.log'), 120],
       ['IRIS 창 실행기 로그', path.join(faceState, 'launch.log'), 40],
       ['업데이트 적용 결과', path.join(root, '_agent', 'setup', 'update-result.json'), 80],
+      // 중계기(2.0.30, 2026-09-20 "프록시에 연결할 수 없음" 실측): 왜 안 떴는지는 이 두 파일에만 남는다.
+      ['중계기 시작 기록', path.join(root, '_agent', 'shared', 'tools', 'teamclaude-dash', 'teamclaude-manage.last.log'), 40],
+      ['중계기 비정상 종료 기록', path.join(root, '_agent', 'shared', 'portable-state', 'teamclaude', 'teamclaude-crash.log'), 40],
     ]) {
       const t = readSafe(fs, file);
       if (t == null) continue;

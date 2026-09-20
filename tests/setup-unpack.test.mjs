@@ -626,3 +626,24 @@ test('unpack: 진짜 lock.json 의 부품이 전부 배치표에 있다(뼈대·
     assert.equal(lock.parts[p].kind, 'file');
   }
 });
+
+test('unpack (2.0.30): a file part living inside another part\'s folder (manage in teamclaude/) is re-placed when that folder was replaced', async () => {
+  // 2026-09-20 home desktop: 2.0.29 was the first update that changed the teamclaude part; the folder was set aside and
+  // re-extracted, but `manage` (teamclaude-manage.ps1, unchanged) was skipped because "the folder exists" -- the relay
+  // could not be started afterwards ("cannot connect to the proxy"). Simulate the folder replacement: the file is gone,
+  // the folder is there, the part identity is unchanged.
+  const v1 = await makePayload('manage-refill-v1');
+  const ctx = makeCtx('manage-refill', { built: v1 });
+  ctx.verifiers = passAll(v1.lock);
+  await unpack.run(ctx);
+  const managePs1 = path.join(ctx.root, '_agent', 'shared', 'tools', 'teamclaude', 'teamclaude-manage.ps1');
+  assert.ok(fs.existsSync(managePs1), 'fresh install places the manage script');
+  fs.rmSync(managePs1);
+
+  const ctx2 = makeCtx('manage-refill', { built: v1, root: ctx.root });
+  ctx2.verifiers = passAll(v1.lock);
+  const { recorded } = await unpack.run(ctx2);
+  assert.ok(!recorded.skipped.includes('manage'), 'manage must not be skipped when its file is missing (folder only)');
+  assert.ok(recorded.placed.includes('manage'));
+  assert.ok(fs.existsSync(managePs1), 'the relay start script is back');
+});

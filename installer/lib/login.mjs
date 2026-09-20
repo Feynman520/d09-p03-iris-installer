@@ -222,7 +222,48 @@ function writeJsonFileAtomic(filePath, data) {
 // and the window is kept minimal (read happens immediately before write,
 // synchronously, with no I/O or await in between) to shrink, not eliminate,
 // that race.
-function writeCodexImportEntry({ root, teamclaudeConfigPath, name = 'codex' }) {
+// 코덱스 계정의 사람 이름(2026-09-20, 2.0.30): 코덱스 CLI 의 auth.json 이 든 id_token(JWT) 의 `email` 클레임.
+// TeamClaude 자체 로그인(login --codex)은 이 이메일로 계정 이름을 짓는데, 설치기의 importFrom 항목은 'codex' 로
+// 고정돼 대시보드에 "CODEX" 로만 보였다(데스크탑 실측). 서명은 검증하지 않는다 — 이름표일 뿐이다.
+export function decodeJwtClaims(token) {
+  try {
+    const part = String(token ?? '').split('.')[1];
+    if (!part) return null;
+    const json = Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const o = JSON.parse(json);
+    return o && typeof o === 'object' ? o : null;
+  } catch { return null; }
+}
+export function codexIdentityFromAuth(root, { fs: fsImpl = fs } = {}) {
+  try {
+    const raw = JSON.parse(fsImpl.readFileSync(credentialPath('chatgpt', root), 'utf8'));
+    const tokens = raw?.tokens ?? {};
+    const claims = decodeJwtClaims(tokens.id_token) ?? {};
+    const auth = claims['https://api.openai.com/auth'] ?? {};
+    const email = typeof claims.email === 'string' && claims.email.includes('@') ? claims.email : null;
+    return { email, accountId: auth.chatgpt_account_id ?? tokens.account_id ?? null, planType: auth.chatgpt_plan_type ?? null };
+  } catch { return { email: null, accountId: null, planType: null }; }
+}
+
+/** 이미 있는 importFrom 항목에 displayName(이메일)만 채운다 — name 은 바꾸지 않는다(실행 중 중계기가 다른 계정으로 오인하지 않게;
+ *  displayName 은 reload 때 그대로 반영된다). → { ok, changed, email } */
+export function refreshCodexDisplayName({ root, teamclaudeConfigPath, fs: fsImpl = fs } = {}) {
+  const { email } = codexIdentityFromAuth(root, { fs: fsImpl });
+  if (!email) return { ok: true, changed: false, email: null };
+  let config;
+  try { config = JSON.parse(fsImpl.readFileSync(teamclaudeConfigPath, 'utf8')); } catch { return { ok: false, changed: false, email }; }
+  const importFrom = credentialPath('chatgpt', root);
+  let changed = false;
+  for (const a of Array.isArray(config.accounts) ? config.accounts : []) {
+    if (a.provider === 'codex' && a.importFrom === importFrom && a.displayName !== email) { a.displayName = email; changed = true; }
+  }
+  if (changed) {
+    try { writeJsonFileAtomic(teamclaudeConfigPath, config); } catch { return { ok: false, changed: false, email }; }
+  }
+  return { ok: true, changed, email };
+}
+
+function writeCodexImportEntry({ root, teamclaudeConfigPath, name = null }) {
   let config;
   try {
     config = readJsonFile(teamclaudeConfigPath);
@@ -236,9 +277,11 @@ function writeCodexImportEntry({ root, teamclaudeConfigPath, name = 'codex' }) {
   config.accounts = Array.isArray(config.accounts) ? config.accounts : [];
   const importFrom = credentialPath('chatgpt', root);
   const idx = config.accounts.findIndex((a) => a.provider === 'codex' && a.importFrom === importFrom);
-  const entry = { name, type: 'oauth', provider: 'codex', importFrom };
+  const identity = codexIdentityFromAuth(root);
+  const entry = { name: name ?? identity.email ?? 'codex', type: 'oauth', provider: 'codex', importFrom, ...(identity.email ? { displayName: identity.email } : {}) };
   if (idx >= 0) {
-    config.accounts[idx] = { ...config.accounts[idx], ...entry };
+    // 있는 항목은 이름을 지키고(실행 중 중계기의 계정 정체성) 표시 이름만 갱신한다.
+    config.accounts[idx] = { ...config.accounts[idx], ...entry, name: config.accounts[idx].name };
   } else {
     config.accounts.push(entry);
   }

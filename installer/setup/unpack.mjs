@@ -512,7 +512,13 @@ export async function run(ctx) {
 
     const identity = partIdentity(ctx, partId);
     const prior = state.parts[partId];
-    if (prior?.verified && sameIdentity(prior.identity, identity) && fs.existsSync(slot)) {
+    // 낱개 파일 부품(manage 등)은 폴더가 아니라 **그 파일**이 있어야 건너뛴다(2.0.30). 같은 폴더를 쓰는 다른 부품(teamclaude)이
+    // 이번 업데이트에서 폴더째 새로 놓이면 파일은 사라졌는데 폴더만 보고 건너뛰어, 중계기 시작 스크립트 없이 남았다
+    // (2026-09-20 데스크탑: 2.0.29 = 중계기 부품이 바뀐 첫 업데이트 → 그 뒤 대시보드 "프록시에 연결할 수 없음").
+    const presence = layout.kind === 'file'
+      ? path.join(dest, path.basename(String(lockField(ctx, partId, 'file') ?? '')))
+      : slot;
+    if (prior?.verified && sameIdentity(prior.identity, identity) && fs.existsSync(presence)) {
       recorded.skipped.push(partId);
       recorded.parts[partId] = { ...prior, skipped: true };
       progress({ done: i + 1, total: parts.length, label: partId });
