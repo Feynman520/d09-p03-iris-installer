@@ -1483,6 +1483,19 @@ export function startServer({
         };
         markReceiptStep(after, 'setup', 'done');
         writeReceiptFn(root, after);
+        // 인수 문서의 판 표시도 함께(2.0.32, verify/upgrade.mjs 31→32 실측): 깨끗한 업데이트는 checks 단계를 건너뛰어
+        // handoff.json 을 다시 쓰지 않으므로 packageVersion 이 옛 판으로 남았다. 그 자리 하나만 고쳐 쓴다(state 등은 무접촉).
+        try {
+          const { readHandoff, handoffPath } = await import('./setup/handoff.mjs');
+          const h = readHandoff(root);
+          if (h && typeof h === 'object' && after.package?.version && h.packageVersion !== after.package.version) {
+            h.packageVersion = after.package.version;
+            const file = handoffPath(root);
+            fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(h, null, 2)}\n`, 'utf8');
+            fs.renameSync(`${file}.tmp`, file);
+            log(`handoff packageVersion -> ${after.package.version}`);
+          }
+        } catch (err) { log(`handoff version refresh skipped: ${String(err?.message ?? err)}`); }
       } catch (err) {
         // 판 표시를 못 고쳐도 설치 자체는 끝났다 — 기록만 남기고 계속한다.
         log(`auto receipt version refresh failed: ${String(err?.message ?? err)}`);
