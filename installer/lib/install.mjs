@@ -777,7 +777,10 @@ export async function install({
     }
 
     // --- replace, never delete -------------------------------------------
-    const moved = preserveAside(slot);
+    // 2.0.34: 'module' parts are NOT moved aside -- Face's installZip replaces the folder itself and carries
+    // the old `state` (login, keys) over. Moving it left `modules\<name>.prev` behind, which Face listed as a
+    // second, incompatible, undeletable module (2026-09-21 field report).
+    const moved = layout.kind === 'module' ? null : preserveAside(slot);
 
     try {
       if (layout.kind === 'archive') {
@@ -883,7 +886,8 @@ export async function install({
       // The part never got far enough to produce a usable copy (payload
       // missing, extraction died, npm unreachable): put the previous install
       // back so a failed re-install leaves the soul exactly as it was.
-      const restore = restorePart(slot, moved);
+      // 'module': installZip already put the old copy back on failure; restorePart(slot, null) would delete it.
+      const restore = layout.kind === 'module' ? { clearedPartial: false, restored: false } : restorePart(slot, moved);
       const code = err instanceof InstallError ? err.code : 'install-failed';
       const detail = err instanceof InstallError ? (err.detail ?? null) : String(err?.message ?? err);
 

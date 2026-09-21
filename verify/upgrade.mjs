@@ -372,6 +372,12 @@ async function main() {
     const changedIds = list.filter((p) => identityChanged(prevManifest, prevLock, p.id, p.identity)).map((p) => p.id);
     check(`③ⓓ 바뀐 부품(${changedIds.length}개)이 업데이트 때 다시 놓였다`, stale.length === 0, stale.length ? `옛 시각 그대로: ${stale.join(', ')}` : changedIds.join(', ') || '(바뀐 부품 없음)');
     check('③ⓒ 잠금표 판 = 새 판', nextLock?.package?.version === nextVersion);
+    // 2.0.34(2026-09-21 실측): 모듈 부품을 slot 처럼 옆으로 옮겨 `face\modules\messenger.prev` 가 남았고 Face 가 두 번째 모듈로 보였다.
+    // modules\ 안에는 이름 규칙 안 폴더만 있어야 하고, 잠금표의 모듈 부품(messenger)은 정확히 하나여야 한다.
+    const modsDir = path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'face', 'modules');
+    const modEntries = fs.existsSync(modsDir) ? fs.readdirSync(modsDir).filter((n) => { try { return fs.statSync(path.join(modsDir, n)).isDirectory(); } catch { return false; } }) : [];
+    const strayMods = modEntries.filter((n) => !/^[a-z][a-z0-9-]{1,31}$/.test(n));
+    check('③ⓗ face\\modules 에 이름 규칙 밖 폴더(.prev 등)가 없다', strayMods.length === 0, strayMods.length ? `남은 것: ${strayMods.join(', ')}` : modEntries.join(', ') || '(비어 있음)');
 
     // ③ⓔ 실행 파일 문법 -- 옛 판이 남긴 파일과 새 파일이 섞여도 "켜지는가"
     const manage = path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'teamclaude', 'teamclaude-manage.ps1');

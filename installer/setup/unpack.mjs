@@ -572,7 +572,12 @@ export async function run(ctx) {
         );
       }
     };
-    if (layout.mode !== 'merge') moved = await setAside(slot);
+    // 2.0.34(2026-09-21 사용자 실측 "메신저 모듈이 2개·삭제 불가·헤더 느낌표"): 'module' 부품은 옆으로 옮기지 않는다.
+    // Face 의 installZip 이 스스로 교체하며 옛 사본의 state(로그인·열쇠)를 새 사본으로 옮긴다. 여기서 옮겨 두면
+    // `face\modules\messenger.prev` 가 modules\ 안에 남아 Face 가 두 번째 모듈(맞지 않음, 이름 규칙 밖이라 제거도 안 됨)로
+    // 보이고, 새 사본은 state 없이 시작해 로그인이 날아갔다(2.0.x 업데이트마다 .prev-N 이 하나씩 늘었다).
+    if (layout.kind === 'module') moved = null;
+    else if (layout.mode !== 'merge') moved = await setAside(slot);
     else if (layout.kind === 'file') {
       // 낱개 파일은 그 파일만 옮긴다(폴더가 아니라).
       const target = path.join(dest, path.basename(source));
@@ -627,7 +632,8 @@ export async function run(ctx) {
       if (err instanceof StageError) throw err;
       // 쓸 만한 사본이 나오지도 못했다(압축이 깨졌거나 Face 모듈 설치기가
       // 거절했거나). 옛 사본을 제 이름으로 되돌려 두고 멈춘다.
-      const restore = layout.mode === 'merge' ? { restored: false } : restorePart(slot, moved);
+      // 'module' 은 installZip 이 실패 때 옛 사본을 스스로 되돌린다 — 여기서 restorePart 를 부르면(moved=null) 멀쩡한 옛 모듈을 지운다.
+      const restore = (layout.mode === 'merge' || layout.kind === 'module') ? { restored: false } : restorePart(slot, moved);
       state.parts[partId] = {
         identity, dest: rel(dest), verified: false,
         detail: String(err?.message ?? err),
@@ -698,12 +704,53 @@ async function placePart(ctx, { partId, layout, source, dest, fs, log }) {
     const { installZip } = await import(pathToFileURL(modinstall).href);
     const modulesDir = path.dirname(dest);
     ensureDir(modulesDir, { fs });
+    // 옛 판(≤2.0.33)이 남긴 `<name>.prev(-N)` 을 거둔다 — state 는 물려주고 폴더는 modules\ 밖으로(무삭제).
+    const salvaged = salvageModulePrev(fs, modulesDir, layout.moduleName);
+    if (salvaged.moved.length) log(`[unpack] ${partId} 옛 .prev 폴더 ${salvaged.moved.length}개 → modules-prev\\ (state ${salvaged.stateRestored ? '물려줌' : '그대로'})`);
     const r = installZip(fs.readFileSync(source), { modulesDir, faceVersion });
     if (r.name !== layout.moduleName) throw new Error(`zip 이 "${r.name}" 모듈을 설치한다(기대: "${layout.moduleName}")`);
     log(`[unpack] ${partId} 모듈 ${r.name} v${r.version} official=${r.official}`);
     return;
   }
   throw new Error(`알 수 없는 배치 종류 ${layout.kind}`);
+}
+
+/**
+ * 2.0.34: ≤2.0.33 업데이트가 `face\modules\<name>.prev(-N)` 을 남겼다(모듈 부품을 slot 처럼 옆으로 옮긴 뒤 installZip 이 새로 놓음).
+ * Face 는 modules\ 의 모든 하위 폴더를 모듈로 읽으므로 그것이 "두 번째 모듈(맞지 않음·제거 불가)"로 보였고, 새 사본은 state 없이 시작했다.
+ *  ① 현재 `<name>\state` 가 없고 가장 최근 .prev 에 state 가 있으면 그 state 를 현재 사본으로 옮긴다(로그인·열쇠 복구; 이어지는 installZip 이 새 사본으로 다시 옮긴다).
+ *  ② .prev 폴더들은 `face\modules-prev\` 로 옮긴다 — 지우지 않는다(무삭제). Face 는 modules\ 바깥을 보지 않는다.
+ * @returns {{ moved: string[], stateRestored: boolean }}
+ */
+export function salvageModulePrev(fs, modulesDir, name) {
+  const out = { moved: [], stateRestored: false };
+  let entries = [];
+  try { entries = fs.readdirSync(modulesDir); } catch { return out; }
+  const re = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.prev(-\\d+)?$`);
+  const prevs = entries.filter((e) => re.test(e)).map((e) => {
+    const p = path.join(modulesDir, e);
+    let mtime = 0; try { mtime = fs.statSync(p).mtimeMs; } catch {}
+    return { name: e, path: p, mtime };
+  }).filter((x) => { try { return fs.statSync(x.path).isDirectory(); } catch { return false; } })
+    .sort((a, b) => b.mtime - a.mtime);
+  if (!prevs.length) return out;
+  const cur = path.join(modulesDir, name);
+  const curState = path.join(cur, 'state');
+  const prevState = path.join(prevs[0].path, 'state');
+  if (fs.existsSync(cur) && !fs.existsSync(curState) && fs.existsSync(prevState)) {
+    try { fs.renameSync(prevState, curState); out.stateRestored = true; } catch { /* 못 옮기면 .prev 안에 그대로 남는다(무삭제) */ }
+  }
+  const archive = path.join(path.dirname(modulesDir), 'modules-prev');
+  for (const p of prevs) {
+    try {
+      fs.mkdirSync(archive, { recursive: true });
+      let target = path.join(archive, p.name);
+      for (let n = 2; fs.existsSync(target); n++) target = path.join(archive, `${p.name}-${n}`);
+      fs.renameSync(p.path, target);
+      out.moved.push(p.name);
+    } catch { /* 붙잡혀 있으면 다음 업데이트 때 다시 시도된다 */ }
+  }
+  return out;
 }
 
 // 바퀴(.whl) 안 `<이름>.data\scripts\*.exe` 를 dest 바로 밑으로 한 벌 더 놓는다.
