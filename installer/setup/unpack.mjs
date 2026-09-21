@@ -905,6 +905,18 @@ export async function runEnv(ctx) {
         const r = await userpath.setUserEnv(key, value);
         if (r?.previous != null) recorded.userEnv.previous[key] = r.previous;
       }
+      // 2.0.35: 로그온 자동 시작 — 중계기(3456)가 IRIS 창을 열지 않아도 떠 있게(어느 터미널에서나 claude/codex 가 되게).
+      // 실패는 설치를 막지 않는다(기록만). 심 자체도 실행 때 중계기를 확인·기동하므로 이것은 두 번째 안전망이다.
+      if (typeof userpath.setRunKey === 'function') {
+        const vbs = path.join(dir, 'relay-autostart.vbs');
+        try {
+          const r = await userpath.setRunKey('IRIS relay', `wscript.exe //nologo "${vbs}"`);
+          recorded.userEnv.autostart = { name: 'IRIS relay', changed: !!r?.changed, ...(r?.previous ? { previous: r.previous } : {}) };
+        } catch (err) {
+          recorded.userEnv.autostart = { name: 'IRIS relay', changed: false, error: String(err?.message ?? err) };
+          log(`[env] 로그온 자동 시작 등록 실패(계속 진행): ${String(err?.message ?? err)}`);
+        }
+      }
       recorded.userEnv.applied = userpath?.recording !== true;
       if (!recorded.userEnv.applied) recorded.userEnv.skippedReason = userpath?.skippedReason ?? 'recording';
     } catch (err) {

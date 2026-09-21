@@ -681,9 +681,19 @@ export function startServer({
     }
     const leadAgent = subs.includes('claude') ? 'claude' : 'chatgpt';
     state.choice = { subscriptions: subs, leadAgent };
-    if (state.step === 'choice') state.step = 'structure';
+    // 2.0.35(2026-09-21 사용자 결정): 설치기는 폴더 구조를 묻지 않는다 — ④ 화면을 건너뛰고 인터뷰 결정
+    // (`interview:true`, 만들 폴더 0개)을 스스로 적는다. R/D/P 는 설치 뒤 첫 세션이 인터뷰로 만든다.
+    // `POST /api/structure` 는 호환(시험·연습 루트)용으로 남아 이 결정을 덮어쓸 수 있다.
+    if (state.step === 'choice' || state.step === 'structure') {
+      if (!state.decisions || state.decisions.interview !== true) {
+        const decisions = buildDecisions({ interview: true });
+        try { state.decisionsPath = writeDecisions(state.soul.root, decisions); } catch (err) { log(`decisions(interview) write failed: ${String(err?.message ?? err)}`); }
+        state.decisions = decisions;
+      }
+      state.step = 'summary';
+    }
     save();
-    sendJson(res, 200, { ok: true, leadAgent });
+    sendJson(res, 200, { ok: true, leadAgent, structure: 'interview' });
   }));
 
   // --- ④ 작업 폴더 구성 -----------------------------------------------------

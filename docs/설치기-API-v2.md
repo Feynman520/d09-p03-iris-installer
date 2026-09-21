@@ -19,8 +19,8 @@
 ## 단계 진행
 - `POST /api/precheck` → `{ ok, result:<precheck 형태>, canProceed }` (blockers 0이면 canProceed)
 - `POST /api/locate` → `{ ok, root, mode, message }` (`mode:"foreign"`이면 ok:false, message = "이 폴더에 IRIS가 아닌 자료가 있습니다…")
-- `POST /api/choice` 본문 `{ subscriptions:[…] }` → `{ ok, leadAgent }` (빈 배열 → ok:false)
-- `POST /api/structure` 본문 `{ nodes:[{ id, parentId, level:"R"|"D"|"P", nameKo, nameEn|null, order }], later:boolean }` → 성공 `{ ok, decisions }` / 실패 `{ ok:false, errors:[{ nodeId, code, message }] }`
+- `POST /api/choice` 본문 `{ subscriptions:[…] }` → `{ ok, leadAgent, structure:"interview" }` (빈 배열 → ok:false). **2.0.35(2026-09-21 사용자 결정):** 설치기는 폴더 구조를 묻지 않는다 — 이 창구가 `decisions.json` 을 `{ interview:true, nodes:[] }` 로 스스로 적고 `step` 을 곧장 `summary` 로 옮긴다(④ 화면 생략). 설치는 IRIS 폴더(+`_`도구 폴더)만 만들고, R/D/P 는 첫 세션이 `_agent\setup\interview.md` 대본으로 인터뷰해 만든다(인수 문서 `structure.mode:"interview"`, `firstMessage` 가 대본을 가리킴). 이미 R 폴더가 있는 PC(업데이트)는 `structure.mode:"preset"` 이고 첫 인사가 바뀌지 않는다.
+- `POST /api/structure` (호환 창구 — 화면은 더 부르지 않는다; 시험·연습 루트가 옛 프리셋 경로를 밟을 때만) 본문 `{ nodes:[{ id, parentId, level:"R"|"D"|"P", nameKo, nameEn|null, order }], later:boolean }` → 성공 `{ ok, decisions }` / 실패 `{ ok:false, errors:[{ nodeId, code, message }] }`
   - 서버 검증: R ≥1(later면 `R01-나(Me)` 자동), 부모 없는 자식 금지, 같은 부모 아래 nameKo 중복 금지, 윈도 금지 문자 `<>:"/\|?*`·끝 점/공백 금지, 자리표시자 이름(기타·임시·테스트·test·temp·misc) 금지, nameEn은 비울 수 있음(영문·숫자·공백·하이픈만), 번호는 서버가 같은 부모 아래 order 순으로 `01`부터 부여
   - 저장 `decisions.json`: `{ schema:1, createdAt, later, nodes:[{ …입력, code:"R01", folderName:"R01-교사(Teacher)" }], deferred:["S","T","tags", …], nameEnMissing:[folderName…] }`
 - `GET /api/presets` → `installer/ui/presets.json` 내용(화면이 직접 fetch 해도 됨)

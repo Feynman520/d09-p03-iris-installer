@@ -531,6 +531,14 @@ async function phaseFirstRun(zipInfo) {
         'reportPath/diagnosticsPath/resume 에 드라이브 문자 없음');
       check('①', 'handoff.firstMessage 있음', typeof handoff.firstMessage === 'string' && handoff.firstMessage.length > 10,
         `${String(handoff.firstMessage).slice(0, 48)}...`);
+      // 2.0.35: 새 설치는 폴더를 묻지 않는다 — R/D/P 0개, 인수 문서 structure.mode=interview, 첫 인사 = 인터뷰 대본, 대본 파일 존재.
+      if (process.env.IRIS_E2E_PRESET !== '1') {
+        const roles = fs.readdirSync(SOUL_ROOT).filter((n) => /^R\d{2}-/.test(n));
+        check('①', '새 설치는 작업 폴더(R##-)를 만들지 않는다', roles.length === 0, roles.join(', ') || '0개');
+        check('①', 'handoff.structure.mode = interview', handoff.structure?.mode === 'interview', JSON.stringify(handoff.structure));
+        check('①', 'firstMessage 가 인터뷰 대본을 가리킨다', String(handoff.firstMessage).includes('interview.md'), '');
+        check('①', '_agent\\setup\\interview.md 가 있다', fs.existsSync(path.join(SOUL_ROOT, '_agent', 'setup', 'interview.md')), '');
+      }
       check('①', 'handoff 에 사용자 이름 없음', !containsIdentity(handoffRaw), '사용자 이름·프로필 경로 0건');
     }
 

@@ -198,13 +198,18 @@ export async function driveInstall(url) {
   const choice = await (await post(url, '/api/choice', { subscriptions: ['claude', 'chatgpt'] })).json();
   if (!choice.ok) throw new Error(`choice failed: ${JSON.stringify(choice)}`);
 
-  const presets = await getJson(url, '/api/presets');
-  const teacher = (presets.presets ?? []).find((p) => p.id === 'teacher');
-  if (!teacher) throw new Error('presets.json has no "teacher" preset');
-  const nodes = flattenPresetTree(teacher.tree);
-
-  const st = await (await post(url, '/api/structure', { nodes, later: false })).json();
-  if (!st.ok) throw new Error(`structure(teacher preset) rejected: ${JSON.stringify(st)}`);
+  // 2.0.35: 기본 흐름은 폴더를 묻지 않는다(choice 가 interview 결정을 스스로 적음). 옛 프리셋 경로는
+  // `IRIS_E2E_PRESET=1` 로만 밟는다(업그레이드 게이트가 "기존 R/D/P 무접촉" 을 재려고 쓴다).
+  if (process.env.IRIS_E2E_PRESET === '1') {
+    const presets = await getJson(url, '/api/presets');
+    const teacher = (presets.presets ?? []).find((p) => p.id === 'teacher');
+    if (!teacher) throw new Error('presets.json has no "teacher" preset');
+    const nodes = flattenPresetTree(teacher.tree);
+    const st = await (await post(url, '/api/structure', { nodes, later: false })).json();
+    if (!st.ok) throw new Error(`structure(teacher preset) rejected: ${JSON.stringify(st)}`);
+  } else if (choice.structure !== 'interview') {
+    throw new Error(`choice did not switch to interview mode: ${JSON.stringify(choice)}`);
+  }
 
   const confirm = await (await post(url, '/api/summary/confirm')).json();
   if (!confirm.ok) throw new Error(`summary/confirm failed: ${JSON.stringify(confirm)}`);

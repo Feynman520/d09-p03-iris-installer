@@ -49,7 +49,14 @@ export function decisionsPath(root) {
  * 검증을 통과한 항목들을 `decisions.json` 내용으로 만든다.
  * @param {{nodes?:Array, later?:boolean, now?:Date}} input
  */
-export function buildDecisions({ nodes = [], later = false, now = new Date() } = {}) {
+export const DEFERRED_INTERVIEW = ['R', 'D', 'P', 'S', 'T', 'tags'];
+
+export function buildDecisions({ nodes = [], later = false, interview = false, now = new Date() } = {}) {
+  // 2.0.35(2026-09-21 사용자 결정): 설치기는 폴더 구조를 묻지 않는다. 설치는 IRIS 폴더(+도구 폴더)만 만들고,
+  // R/D/P 는 첫 세션이 인터뷰(`_agent\setup\interview.md`)로 사용자와 함께 만든다. 그 결정이 `interview:true` 다.
+  if (interview) {
+    return { schema: 1, createdAt: now.toISOString(), later: false, interview: true, nodes: [], deferred: [...DEFERRED_INTERVIEW], nameEnMissing: [] };
+  }
   const source = later ? laterNodes() : (Array.isArray(nodes) ? nodes.filter(Boolean) : []);
   const coded = assignCodes(source).map((n) => ({
     id: n.id ?? null,

@@ -52,6 +52,17 @@ export async function run(ctx) {
 
   const decisions = ctx?.decisions ?? {};
   let nodes = Array.isArray(decisions.nodes) ? decisions.nodes.slice() : [];
+  // 2.0.35: 인터뷰 결정 — 이 단계는 아무 R/D/P 도 만들지 않는다. 첫 세션이 사용자와 인터뷰해 만든다(handoff firstMessage).
+  if (decisions.interview === true) {
+    log('[structure] 인터뷰 방식 — 설치기는 작업 폴더를 만들지 않는다(첫 세션이 사용자와 함께 만든다)');
+    return {
+      recorded: {
+        interview: true, created: [], skipped: [], conflicts: [], nameEnMissing: [],
+        deferred: Array.isArray(decisions.deferred) ? decisions.deferred.slice() : ['R', 'D', 'P', 'S', 'T', 'tags'],
+        guides: { created: 0, kept: 0 }, later: false,
+      },
+    };
+  }
   if (nodes.length === 0) {
     if (!decisions.later) {
       throw new StageError(

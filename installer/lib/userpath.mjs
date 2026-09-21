@@ -43,12 +43,37 @@ const BROADCAST_PS = [
   '[void]$t::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$r)',
 ].join(' ');
 
+// 2.0.35: 로그온 자동 시작(HKCU Run 키) — 중계기가 IRIS 창 없이도 떠 있게.
+export const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+
 export const defaultRegDeps = {
   regQuery: (name) => run(REG, ['query', KEY, '/v', name], { timeoutMs: 20000 }),
   regAdd: (name, type, value) => run(REG, ['add', KEY, '/v', name, '/t', type, '/d', value, '/f'], { timeoutMs: 20000 }),
   regDelete: (name) => run(REG, ['delete', KEY, '/v', name, '/f'], { timeoutMs: 20000 }),
   notify: () => run(PS, ['-NoProfile', '-NonInteractive', '-Command', BROADCAST_PS], { timeoutMs: 30000 }),
+  runQuery: (name) => run(REG, ['query', RUN_KEY, '/v', name], { timeoutMs: 20000 }),
+  runAdd: (name, value) => run(REG, ['add', RUN_KEY, '/v', name, '/t', 'REG_SZ', '/d', value, '/f'], { timeoutMs: 20000 }),
+  runDelete: (name) => run(REG, ['delete', RUN_KEY, '/v', name, '/f'], { timeoutMs: 20000 }),
 };
+
+/** HKCU Run 키에 `name = command` 를 둔다(이미 같으면 변경 없음). 관리자 권한 불필요. → { changed, previous } */
+export async function setRunKey(name, command, deps = defaultRegDeps) {
+  const q = await deps.runQuery(name);
+  let previous = null;
+  if (q.code === 0) {
+    const m = new RegExp(`^\\s*${escapeRegExp(name)}\\s+REG_(?:SZ|EXPAND_SZ)\\s+(.*)$`, 'm').exec(q.out ?? '');
+    previous = m ? m[1].trimEnd() : null;
+  }
+  if (previous === command) return { changed: false, previous };
+  const r = await deps.runAdd(name, command);
+  if (r.code !== 0) throw new Error(`reg add Run\\${name} failed: ${r.err || r.out}`);
+  return { changed: true, previous };
+}
+
+export async function removeRunKey(name, deps = defaultRegDeps) {
+  const r = await deps.runDelete(name);
+  return { removed: r.code === 0 };
+}
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

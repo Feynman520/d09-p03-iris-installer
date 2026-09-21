@@ -150,7 +150,7 @@ test('install: unpacks parts, writes shims/soul-state/receipt, then skips on re-
   // sees the pinned bundled versions before anything on the system PATH)
   const shimDir = path.join(root, '_agent', 'shared', 'shims');
   const shims = fs.readdirSync(shimDir).sort();
-  assert.deepEqual(shims, ['claude.cmd', 'git.cmd', 'node.cmd', 'py.cmd', 'python.cmd']);
+  assert.deepEqual(shims, ['claude.cmd', 'git.cmd', 'node.cmd', 'py.cmd', 'python.cmd', 'relay-autostart.vbs', 'relay-ensure.cmd', 'relay-ensure.mjs']);
   const claudeShim = fs.readFileSync(path.join(shimDir, 'claude.cmd'), 'utf8');
   assert.ok(claudeShim.includes('ANTHROPIC_BASE_URL=http://127.0.0.1:3456'));
   assert.ok(claudeShim.includes('CLAUDE_CONFIG_DIR=%~dp0..\\..\\claude'));
@@ -522,7 +522,7 @@ test('install: a throwing onProgress listener cannot take the install down', asy
 test('writeShims: no agent chosen -> runtime shims only; both -> plus two agent shims', () => {
   const root = path.join(tmp, 'shims-none');
   writeShims(root, []);
-  assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'shared', 'shims')).sort(), ['git.cmd', 'node.cmd', 'py.cmd', 'python.cmd']);
+  assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'shared', 'shims')).sort(), ['git.cmd', 'node.cmd', 'py.cmd', 'python.cmd', 'relay-autostart.vbs', 'relay-ensure.cmd', 'relay-ensure.mjs']);
   for (const f of ['git.cmd', 'python.cmd', 'py.cmd']) {
     const text = fs.readFileSync(path.join(root, '_agent', 'shared', 'shims', f), 'utf8');
     assert.ok(/^[\x00-\x7F]*$/.test(text) && /\r\n$/.test(text) && !/[^\r]\n/.test(text), `${f} must be ASCII + CRLF`);
@@ -534,7 +534,7 @@ test('writeShims: no agent chosen -> runtime shims only; both -> plus two agent 
   writeShims(root2, ['claude', 'codex']);
   assert.deepEqual(
     fs.readdirSync(path.join(root2, '_agent', 'shared', 'shims')).sort(),
-    ['claude.cmd', 'codex.cmd', 'git.cmd', 'node.cmd', 'py.cmd', 'python.cmd'],
+    ['claude.cmd', 'codex.cmd', 'git.cmd', 'node.cmd', 'py.cmd', 'python.cmd', 'relay-autostart.vbs', 'relay-ensure.cmd', 'relay-ensure.mjs'],
   );
   const codex = fs.readFileSync(path.join(root2, '_agent', 'shared', 'shims', 'codex.cmd'), 'utf8');
   assert.ok(codex.includes('CODEX_HOME=%~dp0..\\..\\codex'));

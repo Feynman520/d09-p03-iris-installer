@@ -111,6 +111,19 @@ export async function run(ctx) {
   recorded.rootAgentsKept = safe('AGENTS.md', () => fs.existsSync(at('AGENTS.md'))) === true;
   place(policyPath(ctx, 'root-AGENTS.md', { fs }), ['AGENTS.md'], '루트 AGENTS.md');
   place(policyPath(ctx, 'CLAUDE.md', { fs }), ['CLAUDE.md'], '루트 CLAUDE.md');
+  // 2.0.35: 첫 세션 폴더 구조 인터뷰 대본. 꾸러미 소유 문서라(사용자가 고칠 것이 아님) 내용이 다르면 새로 쓴다 —
+  // "두 번째 실행은 아무것도 바꾸지 않는다"(검사 8)는 바이트 비교로 지킨다. 사용자 자료가 아니므로 무삭제 원칙과 충돌하지 않는다.
+  safe('_agent\\setup\\interview.md', () => {
+    const src = policyPath(ctx, 'interview.md', { fs });
+    const dst = at('_agent', 'setup', 'interview.md');
+    const body = readText(fs, src);
+    if (body == null) { recorded.missing.push({ what: '_agent\\setup\\interview.md', from: src ? rel(src) : null }); log('[skeleton] 꾸러미에 interview.md 가 없어 건너뜀'); return; }
+    ensureDir(path.dirname(dst), { fs });
+    let cur = null; try { cur = fs.readFileSync(dst, 'utf8'); } catch { cur = null; }
+    if (cur === body) { recorded.files.kept.push(rel(dst)); return; }
+    fs.writeFileSync(dst, body, 'utf8');
+    recorded.files.created.push(rel(dst));
+  });
 
   // ── 3. 폴더 ───────────────────────────────────────────────────────────
   mkdir('_agent');

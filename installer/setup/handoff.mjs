@@ -56,7 +56,15 @@ function atomicWriteJson(fs, file, data) {
 // 그래서 문구가 여기 한 곳에만 있다. 선택형 질문 도구(AskUserQuestion)를 막는
 // 한 줄은 실측에서 나온 것이다 — 첫 화면에 노란 카드가 뜨면 사용자가 무엇을
 // 하는 건지 모른 채 멈춘다.
-export function firstMessageText({ nameEnMissing = [] } = {}) {
+export function firstMessageText({ nameEnMissing = [], interview = false } = {}) {
+  // 2.0.35(2026-09-21 사용자 결정): 설치기가 폴더를 만들지 않은 PC(interview) 에서는 "무엇부터 할까요" 대신
+  // 첫 세션이 **의무적으로** 폴더 구조 인터뷰(대본 = `_agent/setup/interview.md`)를 시작한다. R(역할)부터 자세히.
+  if (interview) {
+    return '세팅이 끝났다. 이 PC에는 아직 작업 폴더(R/D/P)가 하나도 없다 — 설치기가 일부러 만들지 않았다. '
+      + '`_agent/setup/interview.md`(인터뷰 대본)를 먼저 끝까지 읽고, 그 대본대로 사용자와 폴더 구조 인터뷰를 지금 바로 시작해. '
+      + '인사는 두 줄만 하고 곧장 첫 질문(역할)으로 들어가. 선택형 질문 도구는 쓰지 말고 번호 목록으로, 한 번에 한 질문씩 물어봐. '
+      + '인터뷰가 끝나 사용자가 확정하기 전에는 폴더를 만들지 마.';
+  }
   const n = Array.isArray(nameEnMissing) ? nameEnMissing.length : 0;
   const nameLine = n > 0
     ? `영어 이름이 비어 있는 폴더가 ${n}개 있으니 채우기를 제안해.`
@@ -145,6 +153,11 @@ function structureRecorded(receipt) {
   return receipt?.setup?.structure?.recorded ?? {};
 }
 
+/** 루트 바로 아래에 역할 폴더(`R##-…`)가 하나라도 있는가. 읽기만 한다. */
+export function rootHasRoles(root, fs = nodeFs) {
+  try { return fs.readdirSync(root).some((n) => /^R\d{2}-/.test(n)); } catch { return false; }
+}
+
 function messengerBlock(ctx, receipt, { fs }) {
   const prior = receipt?.handoff?.messenger;
   if (prior && typeof prior.installed === 'boolean') return { ...prior };
@@ -204,6 +217,9 @@ export function buildHandoff(ctx, {
     .filter(Boolean);
   const nameEnMissing = (structure.nameEnMissing ?? []).slice();
   const deferred = (structure.deferred ?? []).slice();
+  // 2.0.35: 인터뷰 방식인가 — 폴더 단계가 interview 로 끝났고 루트에 R 폴더가 정말 하나도 없을 때만.
+  // (업데이트 PC 는 옛 구조 기록(created)이 남아 있고 R 폴더도 있으므로 지금 문장 그대로 — 인터뷰를 다시 하지 않는다.)
+  const interview = structure.interview === true && !rootHasRoles(root, fs);
 
   const state = forcedState ?? handoffState({ setup, login, subscriptions });
 
@@ -218,6 +234,8 @@ export function buildHandoff(ctx, {
     relay: relayBlock(receipt),
     setup: { allDone: setup.allDone, failed: setup.failed },
     folders,
+    // 2.0.35: 첫 세션이 볼 구조 상태. interview = 설치기가 R/D/P 를 만들지 않았고 첫 세션이 인터뷰로 만든다.
+    structure: { mode: interview ? 'interview' : 'preset', folders: folders.length, script: interview ? '_agent\\setup\\interview.md' : null },
     nameEnMissing,
     deferred,
     pendingCapabilities: (pending ?? []).map((p) => ({
@@ -232,7 +250,7 @@ export function buildHandoff(ctx, {
     },
     reportPath: relOf(root, reportPath),
     diagnosticsPath: relOf(root, diagnosticsPath),
-    firstMessage: firstMessageText({ nameEnMissing }),
+    firstMessage: firstMessageText({ nameEnMissing, interview }),
     messenger: messengerBlock(ctx, receipt, { fs }),
     resume: { installerPath: RESUME_INSTALLER_PATH, args: [...RESUME_ARGS] },
     setupCompletedAt: setup.allDone ? now.toISOString() : null,

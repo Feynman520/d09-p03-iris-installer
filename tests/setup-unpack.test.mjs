@@ -417,7 +417,8 @@ test('env: 심 내용은 ASCII·CRLF 이고 전부 %~dp0 상대다', async () =>
 
   // node·git·python·py 는 늘, codex 는 늘, claude 는 아직(⑥-2 뒤)
   const names = fs.readdirSync(shims).sort();
-  assert.deepEqual(names, ['codex.cmd', 'git.cmd', 'node.cmd', 'py.cmd', 'python.cmd', 'uv.cmd']);
+  // 2.0.35: 중계기 자가 기동 3종(relay-ensure.cmd/.mjs·relay-autostart.vbs)이 함께 놓인다
+  assert.deepEqual(names, ['codex.cmd', 'git.cmd', 'node.cmd', 'py.cmd', 'python.cmd', 'relay-autostart.vbs', 'relay-ensure.cmd', 'relay-ensure.mjs', 'uv.cmd']);
   assert.ok(pending.some((p) => /Claude Code/.test(p.capability)), 'claude 심은 온라인 단계로 미뤄진다');
   assert.equal(recorded.claudeShim.written, false);
 
@@ -425,10 +426,11 @@ test('env: 심 내용은 ASCII·CRLF 이고 전부 %~dp0 상대다', async () =>
     const buf = fs.readFileSync(path.join(shims, f));
     assert.ok(buf.every((b) => b < 0x80), `${f} 에 ASCII 아닌 바이트가 있다`);
     const text = buf.toString('ascii');
+    assert.ok(!/[A-Za-z]:\\/.test(text), `${f} 에 절대경로가 박혀 있다`);
+    if (!f.endsWith('.cmd')) continue; // .mjs 는 LF·import.meta.url 상대, .vbs 는 ScriptFullName 상대 — cmd 규칙(CRLF·%~dp0)은 .cmd 만
     assert.ok(text.includes('\r\n'), `${f} 는 CRLF 여야 한다`);
     assert.ok(!/\n(?<!\r\n)/.test(text.replace(/\r\n/g, '')), `${f} 에 홀로 있는 LF 가 있다`);
     assert.ok(text.includes('%~dp0'), `${f} 는 %~dp0 상대경로여야 한다`);
-    assert.ok(!/[A-Za-z]:\\/.test(text), `${f} 에 절대경로가 박혀 있다`);
   }
 
   // uv 심은 잠금표 dest 의 판 폴더를 가리킨다

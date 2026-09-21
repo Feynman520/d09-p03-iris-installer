@@ -31,7 +31,7 @@ function makePayload(label) {
     return p;
   };
   fs.mkdirSync(path.join(dir, 'policy'), { recursive: true });
-  for (const f of ['root-AGENTS.md', 'CLAUDE.md', 'mini-AGENTS.md', 'mini-AGENTS-util.md', 'ontology-registry-template.yml']) {
+  for (const f of ['root-AGENTS.md', 'CLAUDE.md', 'mini-AGENTS.md', 'mini-AGENTS-util.md', 'ontology-registry-template.yml', 'interview.md']) {
     fs.copyFileSync(path.join(POLICY_SRC, f), path.join(dir, 'policy', f));
   }
   put(path.join('policy', '_cosmos.ico'), Buffer.from([0, 0, 1, 0, 1, 0, 16, 16]));

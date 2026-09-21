@@ -301,6 +301,9 @@ async function main() {
     log(`① installing ${prevVersion} into ${SOUL_ROOT} (offline)`);
     server = await startInstaller(ZIP_PREV, { auto: false, freshState: true });
     const t1 = Date.now();
+    // 2.0.35: ① 은 일부러 옛 프리셋 경로(R/D/P 를 만드는 설치)로 깐다 — 업데이트가 기존 폴더를 건드리지 않고
+    // 인터뷰를 다시 시키지 않는지(③ⓘ) 재기 위해서다. 옛 판 서버는 interview 응답이 없으므로 이 스위치가 필수다.
+    process.env.IRIS_E2E_PRESET = '1';
     const progress = await driveInstall(server.url);
     await server.stop(); server = null;
     log(`① done in ${Math.round((Date.now() - t1) / 1000)}s`);
@@ -321,6 +324,7 @@ async function main() {
     const receiptBefore = readJson(receiptFile());
     const handoffBefore = fs.existsSync(handoffFile()) ? readJson(handoffFile()) : null;
     check('① 영수증 판 = 옛 판', receiptBefore?.package?.version === prevVersion, `${receiptBefore?.package?.version}`);
+    const rolesBefore = fs.readdirSync(SOUL_ROOT).filter((n) => /^R\d{2}-/.test(n)).sort();
     // 사용자 자료 표식(업데이트가 사용자 폴더를 건드리지 않는지)
     fs.mkdirSync(path.dirname(MARKER), { recursive: true });
     fs.writeFileSync(MARKER, `keep me ${prevVersion} -> ${nextVersion}\n`, 'utf8');
@@ -408,6 +412,10 @@ async function main() {
     const rb = RANK[handoffBefore?.state] ?? 0; const ra = RANK[handoffAfter?.state] ?? 0;
     check('③ⓕ 인수 문서 state 가 나빠지지 않았다(setup-incomplete 아님)', ra >= rb && handoffAfter?.state !== 'setup-incomplete', `${handoffBefore?.state} -> ${handoffAfter?.state}`);
     check('③ⓕ 인수 문서 packageVersion = 새 판', handoffAfter?.packageVersion === nextVersion, `${handoffAfter?.packageVersion}`);
+    // 2.0.35: 업데이트는 기존 R/D/P 를 건드리지 않고, 첫 인사가 인터뷰로 바뀌지 않는다(인터뷰는 폴더가 하나도 없는 새 설치만).
+    const rolesNow = fs.readdirSync(SOUL_ROOT).filter((n) => /^R\d{2}-/.test(n)).sort();
+    check('③ⓘ 기존 역할 폴더(R##-) 그대로', rolesNow.length > 0 && rolesNow.join('|') === rolesBefore.join('|'), `${rolesBefore.length} -> ${rolesNow.length}`);
+    check('③ⓘ 업데이트 PC 는 인터뷰를 다시 하지 않는다', handoffAfter?.structure?.mode !== 'interview' && !String(handoffAfter?.firstMessage || '').includes('interview.md'), `structure.mode=${handoffAfter?.structure?.mode ?? '(없음: 옛 인수 문서)'}`);
 
     // ③ⓖ 사용자 자료 ----------------------------------------------------------
     check('③ⓖ 사용자 자료 표식 파일이 그대로다', fs.existsSync(MARKER) && fs.readFileSync(MARKER, 'utf8') === markerBefore);

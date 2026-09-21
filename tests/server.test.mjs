@@ -188,13 +188,15 @@ test('happy path: precheck → locate → choice → structure → summary → s
 
     // ③ 구독 -- 옛 guideEdition 은 폐지
     const choice = await (await post(url, '/api/choice', { subscriptions: ['claude', 'chatgpt'] })).json();
-    assert.deepEqual(choice, { ok: true, leadAgent: 'claude' });
+    assert.deepEqual(choice, { ok: true, leadAgent: 'claude', structure: 'interview' });
     const afterChoice = await getJson(url, '/api/state');
     assert.deepEqual(afterChoice.choice, { subscriptions: ['claude', 'chatgpt'], leadAgent: 'claude' });
     assert.ok(!('guideEdition' in afterChoice.choice), 'guideEdition 은 v2 에 없다');
-    assert.equal(afterChoice.step, 'structure');
+    // 2.0.35: 설치기는 폴더를 묻지 않는다 — choice 가 interview 결정을 적고 곧장 요약으로 간다
+    assert.equal(afterChoice.step, 'summary');
+    assert.equal(readDecisions(s.soulRoot)?.interview, true, 'choice 뒤 decisions.json 은 interview 결정');
 
-    // ④ 작업 폴더 구성 -- 서버가 번호를 매기고 decisions.json 을 원자 저장한다
+    // ④ 작업 폴더 구성(호환 창구) -- 서버가 번호를 매기고 decisions.json 을 원자 저장한다
     const st = await (await post(url, '/api/structure', { nodes: TREE, later: false })).json();
     assert.equal(st.ok, true);
     const byId = Object.fromEntries(st.decisions.nodes.map((n) => [n.id, n]));
@@ -318,9 +320,9 @@ test('POST /api/structure: 검증 오류 6종 (R 없음·부모 없음·중복·
     assert.ok((await codes([{ ...R, nameKo: '기타' }])).includes('placeholder'));
     assert.ok((await codes([{ ...R, nameEn: '교사!!' }])).includes('bad-name-en'));
 
-    // 거절된 제출은 아무것도 저장하지 않는다
-    assert.equal(readDecisions(s.soulRoot), null);
-    assert.equal((await getJson(s.url, '/api/state')).step, 'structure');
+    // 거절된 제출은 interview 결정을 건드리지 않는다(2.0.35: choice 가 적어 둔 것이 그대로)
+    assert.equal(readDecisions(s.soulRoot)?.interview, true);
+    assert.equal((await getJson(s.url, '/api/state')).step, 'summary');
   } finally {
     await s.close();
   }
@@ -339,9 +341,11 @@ test('순서 가드: 구독·구성 없이 요약을 확정할 수 없다', asyn
     assert.equal((await noChoice.json()).reason, 'no_choice');
 
     await post(s.url, '/api/choice', { subscriptions: ['chatgpt'] });
-    const noDecisions = await post(s.url, '/api/summary/confirm');
-    assert.equal(noDecisions.status, 409);
-    assert.equal((await noDecisions.json()).reason, 'no_decisions');
+    // 2.0.35: 구독을 고르면 폴더 결정은 interview 로 자동 — 요약 확정을 막지 않는다
+    const withInterview = await post(s.url, '/api/summary/confirm');
+    assert.equal(withInterview.status, 200);
+    assert.equal((await withInterview.json()).ok, true);
+    assert.equal(readDecisions(s.soulRoot)?.interview, true);
 
     // ChatGPT 만 고르면 주도 에이전트는 codex 쪽이다
     assert.deepEqual((await getJson(s.url, '/api/state')).choice, { subscriptions: ['chatgpt'], leadAgent: 'chatgpt' });
@@ -928,7 +932,7 @@ test('본문 크기 경계: BODY_LIMIT 초과는 413 JSON 이고 서버는 계�
       method: 'POST', headers: JSON_HDR, body: JSON.stringify({ subscriptions: ['claude'], pad: 'a'.repeat(BODY_LIMIT - 1000) }),
     });
     assert.equal(under.status, 200);
-    assert.deepEqual(await under.json(), { ok: true, leadAgent: 'claude' });
+    assert.deepEqual(await under.json(), { ok: true, leadAgent: 'claude', structure: 'interview' });
   } finally {
     await s.close();
   }

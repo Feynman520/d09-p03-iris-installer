@@ -111,8 +111,60 @@ export function agentShim(agent) {
     ...(agent === 'codex' ? CODEX_PROXY_LINES : []),
     `set "${envName}=%~dp0..\\..\\${envDir}"`,
     'set "PATH=%~dp0..\\tools\\node;%PATH%"',
+    'if exist "%~dp0relay-ensure.cmd" call "%~dp0relay-ensure.cmd"',
     `call "%~dp0..\\tools\\${tool}\\${tool}.cmd" %*`,
     'exit /b %errorlevel%',
+  ]);
+}
+
+// 2.0.35(2026-09-21 사용자 실측 "IRIS 밖 폴더 터미널에서 claude/codex 가 안 됨"): 원인은 폴더가 아니라 중계기(3456)가
+// IRIS 창을 열기 전엔 떠 있지 않은 것. 심이 실행될 때 3456 이 응답하지 않으면 관리 스크립트로 중계기를 띄우고
+// 최대 8초 기다린다(이미 떠 있으면 0.4초 확인만). 실패해도 막지 않는다 — 한 줄 알리고 그대로 진행.
+// 로그온 자동 시작(HKCU\…\Run → relay-autostart.vbs → relay-ensure.cmd, 창 없음)도 같은 파일을 쓴다. 전부 ASCII.
+export function relayEnsureCmd() {
+  return crlf([
+    '@echo off',
+    'rem IRIS: make sure the TeamClaude relay (127.0.0.1:3456) is up before an agent starts. Quiet when it already is.',
+    'setlocal',
+    'if exist "%~dp0..\\tools\\node\\node.exe" "%~dp0..\\tools\\node\\node.exe" "%~dp0relay-ensure.mjs"',
+    'exit /b 0',
+  ]);
+}
+export function relayEnsureMjs() {
+  return [
+    '// IRIS relay-ensure: if nothing answers on 127.0.0.1:3456, start the TeamClaude relay through its manage script and wait (max 8 s). Always exits 0.',
+    "import net from 'node:net';",
+    "import path from 'node:path';",
+    "import fs from 'node:fs';",
+    "import { spawn } from 'node:child_process';",
+    "import { fileURLToPath } from 'node:url';",
+    'const here = path.dirname(fileURLToPath(import.meta.url));   // <root>/_agent/shared/shims',
+    'const shared = path.dirname(here);                            // <root>/_agent/shared',
+    'const port = Number(process.env.IRIS_RELAY_PORT || 3456);',
+    'const waitMs = Number(process.env.IRIS_RELAY_WAIT_MS || 8000);',
+    "const probe = () => new Promise((res) => { const s = net.connect({ host: '127.0.0.1', port }); const done = (v) => { try { s.destroy(); } catch {} res(v); }; s.setTimeout(400, () => done(false)); s.once('connect', () => done(true)); s.once('error', () => done(false)); });",
+    'if (await probe()) process.exit(0);',
+    "const manage = process.env.IRIS_RELAY_MANAGE || path.join(shared, 'tools', 'teamclaude', 'teamclaude-manage.ps1');",
+    "const node = path.join(shared, 'tools', 'node', 'node.exe');",
+    "const entry = path.join(shared, 'tools', 'teamclaude', 'node_modules', '@karpeleslab', 'teamclaude', 'src', 'index.js');",
+    "if (!fs.existsSync(manage)) { process.stderr.write('[IRIS] relay helper missing - open the IRIS window once to start the relay\\n'); process.exit(0); }",
+    'const env = { ...process.env };',
+    "if (!env.TEAMCLAUDE_CONFIG) env.TEAMCLAUDE_CONFIG = path.join(shared, 'portable-state', 'teamclaude', 'teamclaude.json');",
+    "try { const c = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', manage, 'start', '-NodePath', node, '-EntryPath', entry], { env, windowsHide: true, stdio: 'ignore', detached: true }); c.unref(); } catch { process.exit(0); }",
+    'const t0 = Date.now();',
+    'while (Date.now() - t0 < waitMs) { await new Promise((r) => setTimeout(r, 250)); if (await probe()) process.exit(0); }',
+    "process.stderr.write('[IRIS] relay did not answer on 127.0.0.1:' + port + ' in time - open the IRIS window once, then retry\\n');",
+    'process.exit(0);',
+    '',
+  ].join('\n');
+}
+export function relayAutostartVbs() {
+  return crlf([
+    "' IRIS: start the TeamClaude relay at logon without a console window (HKCU Run key points here).",
+    'Set sh = CreateObject("WScript.Shell")',
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    'dir = fso.GetParentFolderName(WScript.ScriptFullName)',
+    'sh.Run """" & dir & "\\relay-ensure.cmd""", 0, False',
   ]);
 }
 
@@ -147,6 +199,7 @@ export function writeShims(root, activeAgents = []) {
 
   for (const [name, text] of [
     ['node.cmd', nodeShim()], ['git.cmd', gitShim()], ['python.cmd', pythonShim()], ['py.cmd', pyShim()],
+    ['relay-ensure.cmd', relayEnsureCmd()], ['relay-ensure.mjs', relayEnsureMjs()], ['relay-autostart.vbs', relayAutostartVbs()],
   ]) {
     const file = path.join(dir, name);
     if (writeIfChanged(file, text)) changed.push(file);
