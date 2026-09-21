@@ -8,7 +8,7 @@
     "dest 는 영혼 루트 기준 '폴더' 경로다(POSIX 구분자). '/' 는 영혼 루트 자체."
   ],
   "schema": 2,
-  "package": { "version": "2.0.32" },
+  "package": { "version": "2.0.33" },
   "parts": {
     "node": {
       "kind": "url",
@@ -141,7 +141,7 @@
     "face": {
       "kind": "dir",
       "source": "../P02-아이리스 페이스(IRIS-Face) 〖Local App〗",
-      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "modules", "daemon/__pycache__", ".stack"],
+      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "modules", "daemon/__pycache__", ".stack", "out"],
       "npmCi": true,
       "file": "face/iris-face.zip",
       "dest": "_agent/shared/tools/face",
