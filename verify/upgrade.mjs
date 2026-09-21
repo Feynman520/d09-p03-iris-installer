@@ -324,11 +324,12 @@ async function main() {
     const receiptBefore = readJson(receiptFile());
     const handoffBefore = fs.existsSync(handoffFile()) ? readJson(handoffFile()) : null;
     check('① 영수증 판 = 옛 판', receiptBefore?.package?.version === prevVersion, `${receiptBefore?.package?.version}`);
-    const rolesBefore = fs.readdirSync(SOUL_ROOT).filter((n) => /^R\d{2}-/.test(n)).sort();
     // 사용자 자료 표식(업데이트가 사용자 폴더를 건드리지 않는지)
     fs.mkdirSync(path.dirname(MARKER), { recursive: true });
     fs.writeFileSync(MARKER, `keep me ${prevVersion} -> ${nextVersion}\n`, 'utf8');
     const markerBefore = fs.readFileSync(MARKER, 'utf8');
+    // ③ⓘ 기준점(2.0.35): 표식 폴더(R01-연습)를 만든 **뒤**의 역할 폴더 목록 — 업데이트가 여기에 무엇도 더하거나 빼면 안 된다.
+    const rolesBefore = fs.readdirSync(SOUL_ROOT).filter((n) => /^R\d{2}-/.test(n)).sort();
 
     // ② 새 판 --auto -----------------------------------------------------------
     log(`② updating to ${nextVersion} with --auto`);
