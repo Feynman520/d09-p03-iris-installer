@@ -1094,6 +1094,9 @@ export function startServer({
             cli: st.cli ?? entry.cli,
             relay: st.relay ?? entry.relay,
             reason: st.reason ?? null,
+            // 2.0.33: 파이프 로그인이 알아낸 자동 복귀 주소(화면의 "브라우저가 안 열렸으면 여기" 링크). 수동 코드 주소는 절대 아니다.
+            mode: entry.mode ?? null,
+            url: st.url ?? entry.url ?? null,
           };
         }
       } catch { /* a polling route must never throw */ }
@@ -1124,6 +1127,8 @@ export function startServer({
       cli: started?.cli ?? 'pending',
       relay: started?.relay ?? 'pending',
       reason: started?.reason ?? null,
+      mode: started?.mode ?? null,
+      url: null,
     };
     state.online.stage = 'login';
     save();
@@ -1138,6 +1143,47 @@ export function startServer({
 
   routes.set('POST /api/online/login', withBody(async (body, req, res) => doLogin(body, res, { retry: false })));
   routes.set('POST /api/online/login/retry', withBody(async (body, req, res) => doLogin(body, res, { retry: true })));
+
+  // 2.0.33 — 로그인 단계에서 구독 다시 고르기(설계 조각 ①, 2026-09-21 사용자 결정).
+  // 친구 PC 실측: 클로드 로그인이 막히자 완료도 못 하고 뒤로도 못 갔다. 여기서 빼면 그 상자는 not-needed 가 되어
+  // 남은 구독만 끝나면 넘어가고, 더하면 상자가 생기며(끝난 로그인은 done 그대로) 그 구독에 필요한 온라인 단계
+  // (클로드 = Claude Code 내려받기·문서 스킬)가 다시 돈다. "빼기"는 이번 설치에서 안 쓰는 것일 뿐, 이미 연결된
+  // 계정을 끊지 않는다. 둘 다 빼는 것은 거절한다(비서가 일할 수 없음).
+  routes.set('POST /api/online/choice', withBody(async (body, req, res) => {
+    if (!requireLocated(res)) return;
+    const subs = Array.isArray(body?.subscriptions)
+      ? [...new Set(body.subscriptions.filter((s) => s === 'claude' || s === 'chatgpt'))]
+      : [];
+    if (subs.length === 0) {
+      sendJson(res, 200, { ok: false, reason: 'empty', message: '구독을 적어도 하나는 남겨 주세요. 비서는 유료 구독 하나가 있어야 일합니다.' });
+      return;
+    }
+    const before = state.choice?.subscriptions ?? [];
+    const leadAgent = subs.includes('claude') ? 'claude' : 'chatgpt';
+    state.choice = { subscriptions: subs, leadAgent };
+    const logins = state.online.logins ?? (state.online.logins = {});
+    for (const p of ['claude', 'chatgpt']) {
+      const cur = logins[p];
+      if (!subs.includes(p)) { logins[p] = { ...(cur ?? {}), state: 'not-needed', reason: null }; continue; }
+      if (!cur || cur.state === 'not-needed') logins[p] = { state: 'waiting', cli: 'pending', relay: 'pending', reason: null, mode: null, url: null };
+    }
+    // 새로 더한 구독이 클로드이고 온라인 묶음이 이미 지나갔으면(claude 단계를 건너뜀) 그 단계를 다시 돌린다.
+    const added = subs.filter((p) => !before.includes(p));
+    let restarted = false;
+    if (added.includes('claude') && state.online.stage != null && state.online.claude?.state !== 'done' && !onlineRunning) {
+      restarted = true;
+      runOnlineStart();
+    }
+    // 영수증의 선택도 갱신 — 인수 문서(handoff)와 완료 보고가 새 선택을 보게.
+    try {
+      const root = state.soul?.root;
+      const receipt = root ? readReceiptFn(root) : null;
+      if (receipt && !isLegacyReceipt(receipt)) { receipt.choice = state.choice; writeReceiptFn(root, receipt); }
+    } catch { /* the receipt is the engine's; not fatal */ }
+    save();
+    log(`online choice -> ${subs.join(',')} lead=${leadAgent}${restarted ? ' (claude stage restarted)' : ''}`);
+    sendJson(res, 200, { ok: true, subscriptions: subs, leadAgent, restarted });
+  }));
 
   routes.set('POST /api/online/relay', withBody(async (body, req, res) => {
     if (!requireLocated(res)) return;

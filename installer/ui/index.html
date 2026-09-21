@@ -86,6 +86,11 @@ label.pick .sub { display: block; }
 .mini .bar-fill { color: var(--iris); }
 .login-box { border: 1px solid var(--line); border-radius: 8px; padding: 13px; margin-bottom: 10px; }
 .login-box h3 { margin: 0 0 8px; }
+.login-box .open-link { display: inline-block; margin: 4px 0 8px; font-size: 13px; }
+.login-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; border: 1px dashed var(--line-2); border-radius: 8px; padding: 10px 13px; margin: 10px 0; font-size: 13px; }
+.login-choice .lc-label { font-weight: 600; }
+.login-choice label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.login-choice .lc-note { flex-basis: 100%; color: var(--ink-2); font-size: 12px; }
 .stage { display: grid; grid-template-columns: 22px max-content minmax(0, 1fr); gap: 10px; font-size: 13.5px; padding: 3px 0; align-items: baseline; }
 .stage > span:nth-child(2) { white-space: nowrap; }
 .stage .dt { color: var(--ink-3); font-size: 12px; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; text-align: right; }
@@ -291,9 +296,16 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
   <section class="card" id="card-online" hidden>
     <div class="card-head"><span class="mark">⑦</span><h2>계정 연결</h2><span class="badge" id="badge-online">대기</span></div>
     <div class="card-body">
-      <p class="hint">여기부터는 인터넷이 필요합니다. 사람이 직접 하는 일은 <b>구독 로그인</b> 하나뿐입니다.</p>
+      <p class="hint">여기부터는 인터넷이 필요합니다. 사람이 직접 하는 일은 <b>구독 로그인</b> 하나뿐입니다. 로그인은 브라우저에서 하고, 끝나면 <b>저절로 돌아옵니다</b>(코드를 복사해 붙여넣는 일은 없습니다).</p>
       <div class="stage-rows" id="online-rows"></div>
       <p class="conn" id="online-conn" hidden>연결 확인 중…</p>
+      <div class="login-choice" id="login-choice" hidden>
+        <span class="lc-label">이번 설치에서 쓸 구독</span>
+        <label><input type="checkbox" id="chk-claude"> Claude</label>
+        <label><input type="checkbox" id="chk-chatgpt"> ChatGPT</label>
+        <button class="ghost" id="btn-choice-apply">바꾼 대로 적용</button>
+        <span class="lc-note" id="choice-note">한쪽 로그인이 잘 안 되면 체크를 풀고 적용하세요. 나중에 IRIS 안에서 다시 더할 수 있습니다.</span>
+      </div>
       <div id="login-boxes"></div>
       <div id="online-note"></div>
       <div class="acts">
@@ -1223,17 +1235,20 @@ const HOST_NAME = {
 const SOURCE_NAME = { npm: '프로그램 보관소(npm)', 'claude.ai': 'Claude 공식 설치기(claude.ai)' };
 const PROVIDER_LABEL = { claude: 'Claude 계정 로그인', chatgpt: 'ChatGPT 계정 로그인' };
 const LOGIN_REASON = {
-  'window-closed': '로그인 창이 닫혔습니다. 「다시 열기」를 누르면 다시 띄웁니다(누를 수 있게 되기까지 2분 기다립니다).',
+  'window-closed': '2분 안에 로그인이 끝나지 않았습니다. 「다시 로그인」을 누르면 처음부터 다시 시작합니다.',
+  'login-exited': '로그인이 끝나기 전에 멈췄습니다(브라우저에서 취소했거나 오류). 「다시 로그인」을 누르면 처음부터 다시 시작합니다.',
   'page-blocked': '이 인터넷 망이 로그인 페이지를 막고 있습니다. 집이나 휴대폰 테더링처럼 <b>다른 망</b>에서 설치기를 다시 열어 주세요. 여기까지 한 것은 그대로 남습니다.',
   'import-failed': '로그인은 됐는데 그 결과를 이 컴퓨터로 옮겨 담지 못했습니다. <b>자동으로 다시 시도합니다</b> — 잠시 기다려 주세요.',
 };
 const LOGIN_STATE_TEXT = {
   'not-needed': '고르지 않은 구독이라 건너뜁니다', pending: '아래 「로그인」을 누르면 시작합니다',
-  waiting: '아래 「로그인」을 누르고, 열리는 창에서 마치면 저절로 넘어갑니다',
+  waiting: '아래 「로그인」을 누르면 브라우저가 열립니다. 로그인하고 「허용」을 누르면 저절로 넘어옵니다',
   'cli-done': '로그인됐습니다. 이 컴퓨터에 옮겨 담는 중입니다', done: '끝났습니다', failed: '아직 끝나지 않았습니다',
 };
-const retryAt = {};   // provider → 「다시 열기」를 누를 수 있게 되는 시각
+// 2.0.33: 검은 창·코드 붙여넣기 없음. 로그인은 창 없이 돌고 브라우저가 스스로 돌아온다(설계 조각 ②). 「다시 로그인」은 기다림 없이 바로 누른다.
+const LOGIN_BOX_TEXT = '「로그인」을 누르면 브라우저에 로그인 화면이 뜹니다(검은 창은 열리지 않습니다). 평소 쓰는 계정으로 로그인하고 「허용(Authorize)」을 누르면 브라우저가 저절로 돌아오고 이 화면이 다음으로 넘어갑니다. 코드를 복사해 붙여넣는 일은 없습니다.';
 let loginBoxesFor = '';
+let choiceEditing = false;   // 사용자가 체크 상자를 만지는 동안은 서버 상태로 덮어쓰지 않는다
 
 function renderOnlineRows(on) {
   const o = on || {};
@@ -1307,17 +1322,26 @@ let relayNoteShown = false;
 function renderLoginBoxes(on) {
   const logins = (on && on.logins) || {};
   const providers = Object.keys(logins).filter((p) => (logins[p] || {}).state !== 'not-needed');
+  // 구독 다시 고르기(2.0.33, 조각 ①): 로그인 상자가 하나라도 그려지는 순간부터 보인다.
+  const choice = $('login-choice');
+  if (choice && Object.keys(logins).length) {
+    choice.hidden = false;
+    if (!choiceEditing) {
+      for (const p of ['claude', 'chatgpt']) { const c = $('chk-' + p); if (c) c.checked = providers.includes(p); }
+    }
+  }
   const key = providers.join(',');
   if (key !== loginBoxesFor) {
     loginBoxesFor = key;
     $('login-boxes').innerHTML = providers.map((p) =>
       '<div class="login-box" id="lb-' + esc(p) + '">' +
         '<h3>' + esc(PROVIDER_LABEL[p] || p) + '</h3>' +
-        '<p class="sub" id="ltext-' + esc(p) + '">「로그인」을 누르면 검은 창이 잠깐 열리고 곧 브라우저에 로그인 화면이 뜹니다. 평소 쓰는 계정으로 로그인하고 「허용(Authorize)」을 누르세요.</p>' +
+        '<p class="sub" id="ltext-' + esc(p) + '">' + esc(LOGIN_BOX_TEXT) + '</p>' +
+        '<a class="open-link" id="llink-' + esc(p) + '" target="_blank" rel="noopener" hidden>브라우저가 열리지 않았으면 여기를 누르세요 ↗</a>' +
         '<div class="stage" id="lrow-' + esc(p) + '"></div>' +
         '<div class="acts">' +
           '<button class="go" id="btn-login-' + esc(p) + '">로그인</button>' +
-          '<button class="ghost" id="btn-reopen-' + esc(p) + '" hidden>다시 열기</button>' +
+          '<button class="ghost" id="btn-reopen-' + esc(p) + '" hidden>다시 로그인</button>' +
         '</div>' +
       '</div>').join('');
     for (const p of providers) {
@@ -1336,28 +1360,38 @@ function renderLoginBoxes(on) {
     if (text) {
       if (s.reason && LOGIN_REASON[s.reason]) text.innerHTML = LOGIN_REASON[s.reason];
       else if (s.state === 'done') text.textContent = '이 구독은 끝났습니다.';
+      else text.textContent = LOGIN_BOX_TEXT;
+    }
+    // 자동 복귀 주소 링크 — 서버가 준 주소(url)만 쓴다. 로그인이 진행 중일 때만 보인다.
+    const link = $('llink-' + p);
+    if (link) {
+      const show = !!s.url && (s.state === 'waiting' || s.state === 'cli-done') && s.mode === 'piped';
+      link.hidden = !show;
+      if (show && link.getAttribute('href') !== s.url) link.setAttribute('href', s.url);
     }
     const loginBtn = $('btn-login-' + p);
-    // 'waiting'은 "아직 로그인하지 않음"이라 단추를 살려 둔다. 누른 뒤에는 startLogin이 잠근다.
+    const reopen = $('btn-reopen-' + p);
     if (loginBtn) {
       if (s.state === 'done' || s.state === 'cli-done') loginBtn.disabled = true;
-      // 실패했으면 다시 누를 수 있어야 한다(창을 닫은 경우만 「다시 열기」가 그 일을 맡는다).
-      else if (s.state === 'failed' && s.reason !== 'window-closed') loginBtn.disabled = false;
+      // 실패했으면 「로그인」 대신 「다시 로그인」이 그 자리를 맡는다(기다림 없음).
+      loginBtn.hidden = s.state === 'failed';
     }
+    if (reopen) { reopen.hidden = s.state !== 'failed'; reopen.disabled = false; }
     // 실패 까닭을 각 칸이 설명하고 있으면 아래 공용 안내는 지운다(서로 어긋나 보이지 않게).
     if (s.reason) note('online-note', '');
-    const reopen = $('btn-reopen-' + p);
-    if (reopen) {
-      const wantReopen = s.reason === 'window-closed' && s.state !== 'done';
-      reopen.hidden = !wantReopen;
-      if (wantReopen) {
-        if (!retryAt[p]) retryAt[p] = Date.now() + 120000;
-        const left = Math.ceil((retryAt[p] - Date.now()) / 1000);
-        reopen.disabled = left > 0;
-        reopen.textContent = left > 0 ? '다시 열기 (' + left + '초 뒤)' : '다시 열기';
-      } else { retryAt[p] = 0; }
-    }
   }
+}
+
+async function applyChoice() {
+  const subs = ['claude', 'chatgpt'].filter((p) => $('chk-' + p) && $('chk-' + p).checked);
+  const btn = $('btn-choice-apply'); if (btn) btn.disabled = true;
+  try {
+    const { body } = await api('/api/online/choice', { subscriptions: subs });
+    if (body && body.ok === false) { note('online-note', esc(body.message || '적용하지 못했습니다.'), 'bad'); return; }
+    loginBoxesFor = '';   // 상자를 다시 그린다
+    note('online-note', '적용했습니다. ' + (subs.length === 2 ? '두 구독 모두 로그인하면 넘어갑니다.' : (subs[0] === 'claude' ? 'Claude' : 'ChatGPT') + ' 로그인만 끝나면 넘어갑니다.') + (body && body.restarted ? ' Claude Code 를 먼저 내려받습니다.' : ''));
+  } catch { note('online-note', '적용하지 못했습니다. 잠시 뒤 다시 눌러 주세요.', 'bad'); }
+  finally { choiceEditing = false; if (btn) btn.disabled = false; watchOnline(); }
 }
 
 async function startOnline() {
@@ -1395,11 +1429,10 @@ function watchOnline() { onlinePoll.start(); }
 async function startLogin(provider) {
   const btn = $('btn-login-' + provider);
   if (btn) btn.disabled = true;
-  retryAt[provider] = 0;
-  note('online-note', '로그인 창에서 마치면 이 화면이 저절로 다음으로 넘어갑니다. 1초마다 확인합니다.');
+  note('online-note', '브라우저에서 로그인을 마치면 이 화면이 저절로 다음으로 넘어갑니다. 1초마다 확인합니다. 탭이 두 개 열렸으면 하나에서만 진행하세요.');
   const { body } = await api('/api/online/login', { provider });
   if (body && body.ok === false) {
-    note('online-note', esc(body.message || '로그인 창을 열지 못했습니다.'), 'bad');
+    note('online-note', esc(body.message || '로그인을 시작하지 못했습니다.'), 'bad');
     if (btn) btn.disabled = false;
   }
   watchOnline();
@@ -1408,12 +1441,14 @@ async function startLogin(provider) {
 async function reopenLogin(provider) {
   const btn = $('btn-reopen-' + provider);
   if (btn) btn.disabled = true;
-  retryAt[provider] = 0;
+  note('online-note', '처음부터 다시 시작합니다. 브라우저에서 로그인을 마치면 저절로 넘어갑니다.');
   const { body } = await api('/api/online/login/retry', { provider });
-  if (body && body.ok === false) note('online-note', esc(body.message || '다시 열지 못했습니다.'), 'bad');
+  if (body && body.ok === false) { note('online-note', esc(body.message || '다시 시작하지 못했습니다.'), 'bad'); if (btn) btn.disabled = false; }
   watchOnline();
 }
 
+for (const p of ['claude', 'chatgpt']) { const c = $('chk-' + p); if (c) c.onchange = () => { choiceEditing = true; }; }
+$('btn-choice-apply').onclick = applyChoice;
 $('btn-online-retry').onclick = () => { note('online-note', ''); startOnline(); };
 $('btn-relay-retry').onclick = async () => {
   $('btn-relay-retry').disabled = true;

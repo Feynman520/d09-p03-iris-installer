@@ -92,13 +92,19 @@ test('ui/index.html: 설치 9단계와 오류 코드가 한국어 설명과 함�
   assert.ok(/x\.sub && x\.sub\.total/.test(src), '풀기 단계에는 부품별 하위 막대가 있다');
 });
 
-test('ui/index.html: 로그인 실패 3종·2분 대기·완료 보고 5순서', () => {
+test('ui/index.html: 로그인 실패 4종·기다림 없는 다시 로그인·구독 다시 고르기·완료 보고 5순서', () => {
   const src = html();
-  for (const reason of ['window-closed', 'page-blocked', 'import-failed']) {
+  for (const reason of ['window-closed', 'login-exited', 'page-blocked', 'import-failed']) {
     assert.ok(src.includes("'" + reason + "'"), `로그인 실패 까닭 ${reason} 안내가 없다`);
   }
   assert.ok(src.includes('다른 망'), '차단된 망일 때의 안내');
-  assert.ok(/120000/.test(src), '「다시 열기」는 2분 뒤에 눌린다');
+  // 2.0.33(2026-09-21 사용자 결정 "로그인은 무조건 자동"): 검은 창·코드 붙여넣기·2분 대기 없음.
+  assert.ok(!/120000/.test(src) && !/retryAt/.test(src), '「다시 로그인」은 기다림 없이 바로 눌린다');
+  assert.ok(src.includes('다시 로그인') && !src.includes('다시 열기'), '실패 뒤 단추는 「다시 로그인」');
+  assert.ok(src.includes('검은 창은 열리지 않습니다') && !src.includes('검은 창이 잠깐 열리고'), '로그인 상자 문구에 검은 창이 없다');
+  assert.ok(src.includes('코드를 복사해 붙여넣는 일은 없습니다'), '수동 코드 붙여넣기가 없음을 밝힌다');
+  assert.ok(/llink-/.test(src) && /s\.url/.test(src) && /platform\.claude\.com/.test(src) === false, '자동 복귀 주소 링크만 그린다');
+  assert.ok(src.includes('id="login-choice"') && src.includes('/api/online/choice') && src.includes('chk-claude') && src.includes('chk-chatgpt'), '로그인 단계에서 구독을 다시 고르는 상자가 있다');
   for (const head of ['1. 하려던 일', '2. 기존 자료의 안전', '3. 결과', '4. 남은 일의 뜻', '5. 이제 하실 일']) {
     assert.ok(src.includes(head), `완료 보고 순서 「${head}」 없음`);
   }

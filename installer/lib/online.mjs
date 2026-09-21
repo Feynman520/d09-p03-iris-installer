@@ -39,7 +39,7 @@ import { isOffline, assertOnline } from '../../lib/net.mjs';
 import { assertInside } from './paths.mjs';
 import { defaultNpmInstall } from './install.mjs';
 import {
-  startCliLogin, cliLoginStatus, relayImport, relayStatus,
+  startPipedLogin, pipedLoginInfo, cliLoginStatus, relayImport, relayStatus,
   countProviderAccounts, resolveTeamclaudeConfigPath, ensureRelayConfigDefaults,
 } from './login.mjs';
 import { ensureProxy } from './proxy.mjs';
@@ -803,7 +803,8 @@ function loginHostFor(provider) {
  */
 export async function startLogin({
   provider, root, nodeDir, teamclaudeConfigPath, retry = false,
-  startCliLoginFn = startCliLogin,
+  // 2.0.33: 기본은 창 없는 파이프 로그인(login.mjs 머리말 "Stage 1'") — 검은 콘솔 창은 더 띄우지 않는다.
+  startCliLoginFn = startPipedLogin,
   cliLoginStatusFn = cliLoginStatus,
   countAccountsFn = countProviderAccounts,
   resolveConfigPathFn = resolveTeamclaudeConfigPath,
@@ -822,13 +823,15 @@ export async function startLogin({
   }
 
   try {
-    const started = startCliLoginFn({ provider, root, nodeDir, teamclaudeConfigPath: configPath });
+    const started = startCliLoginFn({ provider, root, nodeDir, teamclaudeConfigPath: configPath, log });
+    const mode = started?.mode ?? 'console';
     setLoginRecord(root, provider, {
       state: 'waiting', cli: false, relay: false, reused: false, reason: null,
       startedAt: now(), accountsBefore: accounts, relayAttempts: 0, relayMethod: null,
+      mode, pid: started?.pid ?? null,
     }, deps);
-    log(`login ${provider} console opened retry=${retry}`);
-    return { ok: true, state: 'waiting', cli: 'pending', relay: 'pending', reused: false, pid: started?.pid ?? null };
+    log(`login ${provider} ${mode === 'piped' ? 'piped process started' : 'console opened'} retry=${retry} pid=${started?.pid ?? '?'}`);
+    return { ok: true, state: 'waiting', cli: 'pending', relay: 'pending', reused: false, pid: started?.pid ?? null, mode };
   } catch (err) {
     const detail = String(err?.message ?? err);
     setLoginRecord(root, provider, { state: 'failed', cli: false, relay: false, reason: 'window-closed' }, deps);
@@ -859,6 +862,7 @@ export async function loginStatus({
   resolveConfigPathFn = resolveTeamclaudeConfigPath,
   probe = probeHost, fetchFn = fetch,
   readReceiptFn = readReceipt, writeReceiptFn = writeReceipt,
+  pipedInfoFn = pipedLoginInfo,
   now = () => Date.now(),
   windowMs = LOGIN_WINDOW_MS, relayGraceMs = RELAY_GRACE_MS,
   log = () => {},
@@ -867,6 +871,10 @@ export async function loginStatus({
   const rec = loginRecord(root, provider, readReceiptFn) ?? {};
   const configPath = teamclaudeConfigPath ?? resolveConfigPathFn({ root });
   const cli = cliLoginStatusFn({ provider, root });
+  // 2.0.33: 이 설치기 프로세스가 띄운 파이프 로그인의 요약(자동 복귀 주소·종료 여부). 다른 시작(pid 다름)의 기록은 무시.
+  const pipedRaw = pipedInfoFn ? pipedInfoFn(provider) : null;
+  const piped = pipedRaw && rec.pid != null && pipedRaw.pid === rec.pid ? pipedRaw : null;
+  const url = piped?.url ?? null;
 
   // --- stage 1 not finished ------------------------------------------------
   if (cli !== 'done') {
@@ -875,6 +883,14 @@ export async function loginStatus({
     // may legitimately hand out 0.)
     const startedAt = rec.startedAt == null ? null : Number(rec.startedAt);
     const elapsed = startedAt == null ? 0 : now() - startedAt;
+    if (piped && piped.exited && rec.state === 'waiting') {
+      // 로그인 프로세스가 인증 파일 없이 끝났다(브라우저에서 취소·오류). 2분을 기다릴 이유가 없다.
+      const reason = 'login-exited';
+      const message = '로그인이 끝나기 전에 멈췄습니다. 「다시 로그인」을 누르면 처음부터 다시 시작합니다.';
+      setLoginRecord(root, provider, { state: 'failed', cli: false, relay: false, reason, exitCode: piped.code ?? null }, deps);
+      log(`login ${provider} failed reason=${reason} code=${piped.code ?? '?'}`);
+      return { state: 'failed', cli: 'pending', relay: 'pending', reason, message };
+    }
     if (startedAt != null && elapsed >= windowMs) {
       // Which of the two is it? Re-probe the login page NOW: a firewall that
       // swallowed the login page is a completely different instruction to the
@@ -883,12 +899,12 @@ export async function loginStatus({
       const reason = r?.reachable ? 'window-closed' : 'page-blocked';
       const message = reason === 'page-blocked'
         ? '로그인 페이지에 연결하지 못했습니다. 다른 인터넷 망에서 다시 시도해 주세요.'
-        : '로그인 창이 닫혔습니다. 「다시 열기」를 눌러 주세요.';
+        : '2분 안에 로그인이 끝나지 않았습니다. 「다시 로그인」을 눌러 주세요.';
       setLoginRecord(root, provider, { state: 'failed', cli: false, relay: false, reason }, deps);
       log(`login ${provider} failed reason=${reason}`);
-      return { state: 'failed', cli: 'pending', relay: 'pending', reason, message };
+      return { state: 'failed', cli: 'pending', relay: 'pending', reason, message, url };
     }
-    return { state: 'waiting', cli: 'pending', relay: 'pending', reason: null };
+    return { state: 'waiting', cli: 'pending', relay: 'pending', reason: null, url };
   }
 
   // --- stage 2: hand the finished login to the relay -----------------------
