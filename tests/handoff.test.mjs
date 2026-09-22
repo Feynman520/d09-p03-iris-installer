@@ -204,7 +204,7 @@ test('writeFirstSessionSpec: Face-shaped spec (cwd/agent/model/effort/promptFile
   assert.equal(codexSpec.approval, 'never');
   assert.equal(codexSpec.sandbox, 'danger-full-access');
   assert.equal(codexSpec.permission, undefined, 'Claude-only field stays off a Codex spec');
-  assert.equal(defaultSpecFor('chatgpt').model, 'gpt-5.6-terra');
+  assert.equal(defaultSpecFor('chatgpt').model, 'gpt-6-sol');
 
   // Overrides (used by the rehearsal to pick a cheap model).
   const cheap = writeFirstSessionSpec(root, { leadAgent: 'claude', promptFile, model: 'haiku', effort: 'low' });

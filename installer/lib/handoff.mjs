@@ -210,7 +210,8 @@ export async function writeFaceLauncher(root, name, { desktopDir = null, runPs =
 // settings the installer seeded (firstrun.mjs seedPermissions).
 const AGENT_DEFAULTS = {
   claude: { agent: 'claude', model: 'opus', effort: 'high', permission: 'bypassPermissions' },
-  codex: { agent: 'codex', model: 'gpt-5.6-terra', effort: 'high', approval: 'never', sandbox: 'danger-full-access' },
+  // 2026-09-23: GPT-6 Sol replaced GPT-5.6 Sol/Luna (Terra has no successor) - same default as Face 2.74.
+  codex: { agent: 'codex', model: 'gpt-6-sol', effort: 'high', approval: 'never', sandbox: 'danger-full-access' },
 };
 
 export function defaultSpecFor(leadAgent = 'claude') {
