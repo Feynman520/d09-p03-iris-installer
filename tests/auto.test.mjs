@@ -398,6 +398,50 @@ test('auto: 파이썬 판이 바뀐 꾸러미면 venv 도 되돌린 채로 엔�
   }
 });
 
+// 2.0.38 (두 비서 늘 설치): 2.0.37 이하 ChatGPT 단독 설치 PC 는 Claude Code 가 없다 — 업데이트가 채운다.
+for (const [label, present, fillOk] of [
+  ['Claude Code 가 없으면 업데이트가 채우고, 실패해도 업데이트는 끝난다', false, false],
+  ['Claude Code 가 있으면 업데이트는 건드리지 않는다', true, true],
+]) {
+  test(`auto: ${label}`, async () => {
+    const zipRoot = makeZipRoot(`zip-auto-claude-${present ? 'has' : 'none'}`);
+    const store = receiptStore(priorReceipt());
+    const engine = fakeSetupRunner();
+    const fills = [];
+    const { url, close } = await startServer({
+      onlineRunner: {
+        startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }),
+        installClaude: async (args) => { fills.push(args.root); return fillOk ? { ok: true, source: 'claude.ai' } : { ok: false, message: 'blocked' }; },
+      },
+      relayRecheckFn: async () => ({ at: '2026-09-23T00:00:00.000Z', items: [] }),
+      claudePresentFn: () => present,
+      autoSelfStart: false,
+      holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) },
+      port: 0,
+      precheckFn: async () => OK_PRECHECK,
+      zipRoot,
+      nodeDir: path.join(tmp, 'node'),
+      stateFile: path.join(tmp, `state-auto-claude-${present ? 'has' : 'none'}.json`),
+      soulName: SOUL,
+      auto: true,
+      readReceiptFn: store.readReceiptFn,
+      writeReceiptFn: store.writeReceiptFn,
+      setupRunner: engine.runner,
+      relaunchFaceFn: () => ({ ok: true, pid: 5 }),
+      finishFn: () => ({ ok: true }),
+      onQuit: () => {},
+    });
+    try {
+      await fetch(`${url}/api/auto`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      await waitForStep(url, 'done');
+      assert.equal(fills.length, present ? 0 : 1, present ? '있으면 내려받지 않는다' : '없으면 한 번 받는다');
+      assert.equal(store.state.receipt.update.to, '2.0.0', '채우기 결과와 상관없이 업데이트는 끝까지 간다');
+    } finally {
+      await close();
+    }
+  });
+}
+
 test('auto: requested on a PC with no receipt falls back to the ordinary wizard', async () => {
   const zipRoot = makeZipRoot('zip-auto-fresh');
   const engine = fakeSetupRunner();

@@ -367,6 +367,8 @@ export function startServer({
   reportFetchFn = globalThis.fetch,
   // ⑦ 뒤 검사 12·13 다시 재기 — 시험은 가짜를 넣어 실제 중계기에 닿지 않게 한다.
   relayRecheckFn = null,
+  // 2.0.38: 업데이트가 Claude Code 를 채울지 가르는 유무 검사(root → boolean) — 시험은 가짜를 넣는다.
+  claudePresentFn = (root) => fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', 'claude.cmd')),
   faceDir,
   faceNodeExe,
   workDir,
@@ -1500,6 +1502,22 @@ export function startServer({
       }
       state.setup.percent = 100;
       state.setup.pending = result.pending ?? [];
+
+      // 2.0.38 (2026-09-23 사용자 결정 — 두 비서 늘 설치): 2.0.37 이하에서 ChatGPT 만 골라 설치한 PC 는
+      // Claude Code 가 아예 없다. 업데이트가 온라인 단계를 건너뛰므로 여기서 채운다 — 프로그램이 **없을 때만**
+      // (있으면 판이 달라도 건드리지 않는다). Face(wake.mjs missingAgents)와 같은 기준(`claude.cmd` 유무).
+      // 실패해도 업데이트는 끝난다(기록만) — 코덱스로 일하는 데는 지장이 없다.
+      if (!claudePresentFn(root)) {
+        try {
+          forward({ part: 'claude-fill', pct: 95, status: 'running' });
+          const got = await onlineRunner.installClaude({ root, nodeDir: state.nodeDir, log });
+          log(`update claude fill: ${got?.ok ? `ok source=${got?.source ?? '-'}` : `failed (optional) ${JSON.stringify(got?.detail ?? got?.message ?? null)}`}`);
+          forward({ part: 'claude-fill', pct: 96, status: got?.ok ? 'done' : 'error' });
+        } catch (err) {
+          log(`update claude fill failed (optional): ${String(err?.stack ?? err)}`);
+          forward({ part: 'claude-fill', pct: 96, status: 'error' });
+        }
+      }
 
       // 업데이트 경로도 검사 12·13 을 다시 잰다(2.0.21, 2026-09-19). 업데이트는 `checks` 단계를 건너뛰고(KEEP_DONE)
       // 온라인 단계도 없으므로, 2.0.20 의 "⑦ 뒤 재측정"만으로는 이미 설치된 PC 가 「업데이트」를 눌러도
