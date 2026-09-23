@@ -1027,23 +1027,36 @@ export function startServer({
         log(`online net blocked: ${(net?.blocked ?? []).join(',') || net?.code || 'unknown'}`);
         return;
       }
-      if (subs.includes('claude')) {
-        state.online.stage = 'claude';
-        state.online.claude = { state: 'downloading', source: null, code: null };
-        save();
-        // `log` 를 넘긴다 — 2026-09-16 VM S01 에서 출처 1·2 가 왜 실패했는지 어디에도
-        // 남지 않아(기본 log 는 빈 함수) 원인을 되짚을 수 없었다.
-        const got = await onlineRunner.installClaude({ root, nodeDir: state.nodeDir, log });
-        if (!got?.ok) log(`online claude failed: ${JSON.stringify(got?.detail ?? got?.message ?? null)}`);
-        state.online.claude = {
-          state: got?.ok ? 'done' : 'failed',
-          source: got?.source ?? null,
-          code: got?.code ?? null,
-          // 2.0.36: 실패 까닭 한 줄(화면 표시용). 없으면 화면이 기본 문구를 쓴다.
-          message: got?.ok ? null : (typeof got?.message === 'string' ? got.message.slice(0, 300) : null),
-        };
-        save();
+      // 2.0.38 (2026-09-23 사용자 결정): 로그인 상자를 내려받기 전에 먼저 만든다 — Claude Code 를
+      // 늘 받게 되면서, 코덱스만 고른 사람이 받는 몇 분 동안 로그인을 못 하고 기다리지 않게.
+      // (클로드 상자는 화면이 내려받기 동안 스스로 잠근다.)
+      for (const provider of subs) {
+        state.online.logins[provider] = state.online.logins[provider]
+          ?? { state: 'waiting', cli: 'pending', relay: 'pending', reason: null };
+      }
+      // Claude Code 는 구독 선택과 상관없이 늘 받는다 — 나중에 대시보드에서 Claude 계정만 더하면
+      // IRIS 창에서 바로 쓸 수 있어야 한다. 클로드를 고르지 않은 설치에서 실패하면 막지 않고
+      // `optional` 로 표시해 경고만 남긴다(코덱스로 일하는 데는 지장이 없다).
+      const claudeWanted = subs.includes('claude');
+      state.online.stage = 'claude';
+      state.online.claude = { state: 'downloading', source: null, code: null, optional: !claudeWanted };
+      save();
+      // `log` 를 넘긴다 — 2026-09-16 VM S01 에서 출처 1·2 가 왜 실패했는지 어디에도
+      // 남지 않아(기본 log 는 빈 함수) 원인을 되짚을 수 없었다.
+      const got = await onlineRunner.installClaude({ root, nodeDir: state.nodeDir, log });
+      if (!got?.ok) log(`online claude failed${claudeWanted ? '' : ' (optional — claude not chosen)'}: ${JSON.stringify(got?.detail ?? got?.message ?? null)}`);
+      state.online.claude = {
+        state: got?.ok ? 'done' : 'failed',
+        source: got?.source ?? null,
+        code: got?.code ?? null,
+        // 2.0.36: 실패 까닭 한 줄(화면 표시용). 없으면 화면이 기본 문구를 쓴다.
+        message: got?.ok ? null : (typeof got?.message === 'string' ? got.message.slice(0, 300) : null),
+        optional: !claudeWanted,
+      };
+      save();
 
+      // 2.0.38: Claude Code 가 깔렸으면 문서 스킬도 함께 놓는다(나중에 Claude 계정을 더해도 바로 쓰게).
+      if (claudeWanted || got?.ok) {
         // document-skills: 허가서상 꾸러미에 못 싣는 클로드 플러그인이라
         // 여기서 받아 등록한다(설계-v2 13절). 받지 못해도 설치를 멈추지
         // 않는다 — `pending` 으로 남고 완료 보고의 "남은 일"에 실린다.
@@ -1052,7 +1065,7 @@ export function startServer({
         save();
         const skills = typeof onlineRunner.installDocumentSkills === 'function'
           ? await onlineRunner.installDocumentSkills({
-            root, zipRoot: state.zipRoot, lock: readLock(state.zipRoot), subscriptions: subs,
+            root, zipRoot: state.zipRoot, lock: readLock(state.zipRoot), subscriptions: [...new Set([...subs, 'claude'])],
           })
           : { ok: false, state: 'pending', code: 'E-NOT-IMPLEMENTED' };
         state.online.documentSkills = {
@@ -1061,7 +1074,6 @@ export function startServer({
         };
         log(`online document-skills ${state.online.documentSkills.state}${skills?.code ? ` (${skills.code})` : ''}`);
       } else {
-        state.online.claude = { state: 'skipped', source: null, code: null };
         state.online.documentSkills = { state: 'skipped', code: null };
       }
       state.online.stage = 'login';
@@ -1191,6 +1203,7 @@ export function startServer({
     // 새로 더한 구독이 클로드이고 온라인 묶음이 이미 지나갔으면(claude 단계를 건너뜀) 그 단계를 다시 돌린다.
     const added = subs.filter((p) => !before.includes(p));
     let restarted = false;
+    if (state.online.claude) state.online.claude.optional = !subs.includes('claude');
     if (added.includes('claude') && state.online.stage != null && state.online.claude?.state !== 'done' && !onlineRunning) {
       restarted = true;
       runOnlineStart();

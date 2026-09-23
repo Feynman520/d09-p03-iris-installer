@@ -511,6 +511,11 @@ test('env: 영수증 env 에 teamclaudeConfig 를 남기고, relay 가 만드는
   // ② 디스크의 영수증 -- 엔진 없이 이 단계만 불러도 읽힌다
   assert.equal(readReceipt(ctx.root)?.env?.teamclaudeConfig, want);
 
+  // 2.0.38: 코덱스는 구독 선택과 상관없이 깔리고 켜진 것으로 남는다(IRIS 창이 두 단추를 다 띄우는 근거)
+  assert.equal(ctx.receipt.installed.codex.active, true);
+  assert.equal(ctx.receipt.installed.codex.state, 'installed');
+  assert.equal(readReceipt(ctx.root)?.installed?.codex?.active, true);
+
   // ③ login.mjs 의 실제 해석기가 그 값을 1순위로 집는다
   assert.equal(resolveTeamclaudeConfigPath({ root: ctx.root, env: {}, readReceiptFn: readReceipt }), want);
 

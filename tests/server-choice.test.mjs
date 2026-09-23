@@ -85,19 +85,23 @@ test('online/choice: 빈 목록은 거절(비서가 일할 수 없음), 상태�
   } finally { s.close(); }
 });
 
-test('online/choice: 코덱스만 골랐다가 클로드를 더하면 상자가 생기고 클로드 내려받기 단계가 다시 돈다', async () => {
+test('online/choice: 코덱스만 골라도 클로드는 이미 받아 두었으므로, 클로드를 더하면 상자만 생긴다(2.0.38)', async () => {
   const s = await start();
   try {
     await toOnline(s.url, ['chatgpt']);
     await post(s.url, '/api/online/start');
     await waitOnline(s.url, (b) => b.stage === 'login');
-    assert.equal(s.calls.installClaude, 0);
+    assert.equal(s.calls.installClaude, 1, '구독과 상관없이 Claude Code 를 받는다');
+    const before = await getJson(s.url, '/api/online/status');
+    assert.equal(before.claude.state, 'done');
+    assert.equal(before.claude.optional, true);
     const r = await (await post(s.url, '/api/online/choice', { subscriptions: ['chatgpt', 'claude'] })).json();
     assert.equal(r.ok, true);
     assert.equal(r.leadAgent, 'claude');
-    assert.equal(r.restarted, true);
+    assert.equal(r.restarted, false, '이미 받았으니 다시 돌지 않는다');
     const st = await waitOnline(s.url, (b) => b.stage === 'login' && b.claude?.state === 'done');
     assert.equal(s.calls.installClaude, 1);
+    assert.equal(st.claude.optional, false);
     assert.equal(st.logins.claude.state, 'waiting');
     assert.equal(st.logins.chatgpt.state, 'waiting');
   } finally { s.close(); }

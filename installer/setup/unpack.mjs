@@ -959,9 +959,38 @@ export async function runEnv(ctx) {
     userEnv: recorded.userEnv,
   });
 
+  // ── 영수증 `installed.codex` (2.0.38) ─────────────────────────────────
+  // 코덱스는 꾸러미에 동봉돼 이 단계에서 이미 쓸 수 있는데, 영수증에 한 번도 적히지
+  // 않았다. IRIS 창(P02 daemon\wake.mjs)은 영수증에 적힌 비서만 "아는 비서"로 보므로
+  // `installed.claude` 만 있는 PC 에서는 코덱스 단추가 끝내 나타나지 않았다
+  // (2026-09-23 다른 선생님 PC 실사고). 구독 선택과 상관없이 늘 켠 상태로 적는다.
+  recorded.codexReceipt = writeCodexInstalled(ctx, root, {
+    state: 'installed',
+    version: lockField(ctx, 'codex', 'version') ?? null,
+    source: 'bundled',
+    path: lockField(ctx, 'codex', 'dest') ? String(lockField(ctx, 'codex', 'dest')).split('/').join('\\') : null,
+    verified: true,
+    active: true,
+  });
+
   log(`[env] shim ${recorded.shims.length}개, 환경변수 ${Object.keys(vars).length}개`
     + `${recorded.userEnv.applied ? ' 적용' : ' 기록만'}`);
   return { recorded, pending };
+}
+
+// 영수증 `installed.codex` 를 적는다 — writeReceiptEnv 와 같은 두 군데(엔진 객체·디스크).
+// 이미 적힌 칸이 있으면 그 위에 얹되 `active` 는 늘 true 로 되돌린다(옛 판이 잠재운 코덱스를 깨운다).
+export function writeCodexInstalled(ctx, root, info) {
+  const apply = (receipt) => {
+    receipt.installed = receipt.installed ?? {};
+    receipt.installed.codex = { ...(receipt.installed.codex ?? {}), ...info, active: true };
+  };
+  if (ctx?.receipt && typeof ctx.receipt === 'object') apply(ctx.receipt);
+  try {
+    const onDisk = readReceipt(root);
+    if (onDisk) { apply(onDisk); writeReceipt(root, onDisk); }
+  } catch { /* 엔진이 단계 끝에 ctx.receipt 를 다시 쓴다 */ }
+  return info;
 }
 
 // 영수증의 최상위 `env` 칸을 v1 과 같은 모양으로 채운다.

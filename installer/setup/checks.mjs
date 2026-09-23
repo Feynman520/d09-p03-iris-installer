@@ -1009,7 +1009,7 @@ export async function checkRelayCodex(ctx, {
 
   if (!wantsCodex) {
     return item('relayCodex', 13, '중계기 경유(코덱스 세션 → TeamClaude)', 'pass',
-      '코덱스를 선택하지 않은 설치라 해당 없음(코덱스 심을 만들지 않음). 나중에 IRIS 창 ⑦ 에서 ChatGPT 를 추가하면 그때 다시 잽니다.',
+      'ChatGPT 구독을 고르지 않은 설치라 이번에는 재지 않음(코덱스 명령은 깔려 있음). 나중에 대시보드에서 ChatGPT 계정을 추가하면 IRIS 창에서 바로 씁니다.',
       { wiring: { shim: null }, relay: null, mitm: null, bundle: null, skipped: 'no-codex' });
   }
 

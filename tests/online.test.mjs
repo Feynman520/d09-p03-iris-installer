@@ -149,14 +149,19 @@ test('checkNet: a 403 answer is reachable, a thrown request is blocked', async (
 // ⑥-2 installClaude
 // ===========================================================================
 
-test('installClaude: claude not chosen -> skipped, receipt says why', async () => {
+test('installClaude: claude not chosen -> still installed, both shims (2.0.38 두 비서 항상 설치)', async () => {
   const root = tmpRoot('skip');
+  const shimCalls = [];
   const r = await installClaude({
     root, lock: LOCK, subscriptions: ['chatgpt'],
-    fetchFn: async () => { throw new Error('must not fetch'); },
+    fetchFn: async (url) => (String(url).endsWith('manifest.json') ? manifestResponse(PAYLOAD_SHA) : fileResponse(PAYLOAD)),
+    runFn: async () => ({ code: 0, out: `${VERSION} (Claude Code)`, err: '' }),
+    writeShimsFn: (rt, agents) => { shimCalls.push(agents); return { written: ['claude.cmd'] }; },
   });
-  assert.deepEqual({ ok: r.ok, state: r.state }, { ok: true, state: 'skipped' });
-  assert.deepEqual(readReceipt(root).installed.claude, { state: 'not-installed', reason: 'subscription-not-selected' });
+  assert.deepEqual({ ok: r.ok, state: r.state }, { ok: true, state: 'done' });
+  assert.deepEqual(shimCalls, [['claude', 'codex']]);
+  assert.equal(readReceipt(root).installed.claude.verified, true);
+  assert.notEqual(readReceipt(root).installed.claude.reason, 'subscription-not-selected');
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -611,6 +616,7 @@ function loginDeps(root, over = {}) {
     cliLoginStatusFn: () => 'pending',
     relayStatusFn: async () => 'pending',
     relayImportFn: async () => ({ ok: true, method: 'import' }),
+    countFn: async () => 0,
     probe: async () => ({ reachable: true, status: 200 }),
     ...over,
   };
@@ -720,6 +726,52 @@ test('loginStatus: import succeeds and the account appears -> done', async () =>
   }));
   assert.deepEqual({ state: r.state, cli: r.cli, relay: r.relay, reason: r.reason }, { state: 'done', cli: 'done', relay: 'done', reason: null });
   assert.equal(readReceipt(root).login.claude.state, 'done');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('loginStatus: 같은 계정 다시 로그인 -- 가져오기 성공인데 개수가 그대로면 계정이 있는 것으로 done (2.0.38)', async () => {
+  // 2026-09-23 다른 PC 실측: 중계기가 같은 신원의 칸을 고쳐 쓸 뿐이라 개수가 안 늘어 "옮겨 담는 중"에서 멈췄다.
+  const root = tmpRoot('dedup');
+  await startLogin({
+    provider: 'claude', root, cliLoginStatusFn: () => 'pending', countAccountsFn: async () => 1,
+    resolveConfigPathFn: () => path.join(root, 'tc.json'), startCliLoginFn: () => ({ started: true }), now: () => 0,
+  });
+  const r = await loginStatus(loginDeps(root, {
+    cliLoginStatusFn: () => 'done', countFn: async () => 1, now: () => 1000,
+  }));
+  assert.deepEqual({ state: r.state, relay: r.relay }, { state: 'done', relay: 'done' });
+  assert.equal(readReceipt(root).login.claude.state, 'done');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('loginStatus: 가져오기 성공 뒤 계정이 늦게 보여도 다음 확인에서 done, 없으면 기다림 (2.0.38)', async () => {
+  const root = tmpRoot('dedup-late');
+  await startLogin({
+    provider: 'chatgpt', root, cliLoginStatusFn: () => 'pending', countAccountsFn: async () => 0,
+    resolveConfigPathFn: () => path.join(root, 'tc.json'), startCliLoginFn: () => ({ started: true }), now: () => 0,
+  });
+  let n = 0;
+  const deps = loginDeps(root, { provider: 'chatgpt', cliLoginStatusFn: () => 'done', countFn: async () => n, now: () => 1000 });
+  const first = await loginStatus(deps);
+  assert.equal(first.state, 'cli-done', '계정이 하나도 없으면 아직 끝난 것이 아니다');
+  n = 1;
+  const second = await loginStatus(deps);
+  assert.deepEqual({ state: second.state, relay: second.relay }, { state: 'done', relay: 'done' });
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('loginStatus: 자동 재시도(method login) 창은 계정 수가 늘어야만 done -- 이미 있던 계정만으로는 끝내지 않는다', async () => {
+  const root = tmpRoot('login-fallback');
+  await startLogin({
+    provider: 'claude', root, cliLoginStatusFn: () => 'pending', countAccountsFn: async () => 1,
+    resolveConfigPathFn: () => path.join(root, 'tc.json'), startCliLoginFn: () => ({ started: true }), now: () => 0,
+  });
+  const deps = loginDeps(root, {
+    cliLoginStatusFn: () => 'done', countFn: async () => 1,
+    relayImportFn: async () => ({ ok: true, method: 'login' }), now: () => 1000,
+  });
+  assert.equal((await loginStatus(deps)).state, 'cli-done');
+  assert.equal((await loginStatus(deps)).state, 'cli-done');
   fs.rmSync(root, { recursive: true, force: true });
 });
 

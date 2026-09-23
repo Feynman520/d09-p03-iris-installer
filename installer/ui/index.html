@@ -1285,11 +1285,13 @@ function renderOnlineRows(on) {
   const c = o.claude || {};
   if (c.state && c.state !== 'skipped') {
     rows.push([
-      c.state === 'done' ? 'done' : c.state === 'failed' ? 'failed' : c.state === 'downloading' ? 'running' : 'pending',
+      c.state === 'done' ? 'done' : c.state === 'failed' ? (c.optional ? 'pending' : 'failed') : c.state === 'downloading' ? 'running' : 'pending',
       'Claude Code 내려받기',
       c.state === 'done' ? '받았습니다 — 출처: ' + (SOURCE_NAME[c.source] || c.source || '') :
         c.state === 'downloading' ? '받는 중 — 출처: ' + (SOURCE_NAME[c.source] || c.source || '') :
-          c.state === 'failed' ? ((c.message || '받지 못했습니다') + (c.code ? ' (' + c.code + ')' : '') + ' — 아래 「Claude Code 다시 받기」') : '차례를 기다립니다',
+          c.state === 'failed' ? (c.optional
+            ? '받지 못했습니다 — 지금 고른 구독(ChatGPT)으로 일하는 데는 지장이 없습니다. Claude 는 인터넷이 되는 곳에서 설치기를 다시 열면 이어서 받습니다'
+            : ((c.message || '받지 못했습니다') + (c.code ? ' (' + c.code + ')' : '') + ' — 아래 「Claude Code 다시 받기」')) : '차례를 기다립니다',
     ]);
   }
   const ds = o.documentSkills || {};
@@ -1332,7 +1334,7 @@ function renderOnlineRows(on) {
   $('btn-relay-retry').hidden = !relayFailed;
   // 2.0.36: Claude Code 내려받기 실패·로그인 실패에서도 신고 단추를 보인다(9/23 실사고 때 누를 곳이 없었다).
   const loginFailed = Object.values(o.logins || {}).some((s) => (s || {}).state === 'failed');
-  $('btn-report-online').hidden = !(relayFailed || !!o.error || (o.net && o.net.ok === false) || c.state === 'failed' || loginFailed);
+  $('btn-report-online').hidden = !(relayFailed || !!o.error || (o.net && o.net.ok === false) || (c.state === 'failed' && !c.optional) || loginFailed);
   if (relayFailed && !relayNoteShown) {
     relayNoteShown = true;
     note('online-note', '<b>계정 연결(중계기)</b>에서 멈췄습니다.<br>' + esc(relay.message || '중계기를 시작하지 못했습니다.') +

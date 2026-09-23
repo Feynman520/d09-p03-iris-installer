@@ -129,12 +129,10 @@ function resolveSubscriptions(subscriptions, root, readReceiptFn) {
   return ['claude'];
 }
 
-function activeAgentsOf(subscriptions) {
-  const agents = [];
-  if (subscriptions.includes('claude')) agents.push('claude');
-  if (subscriptions.includes('chatgpt')) agents.push('codex');
-  return agents;
-}
+// 2.0.38 (2026-09-23 사용자 결정): 구독 선택과 상관없이 두 비서를 모두 깔고 모두 켠다.
+// 선택은 "지금 어느 계정으로 로그인할지"만 정한다 — 나중에 대시보드에서 계정만 더하면
+// Face 에서 바로 쓸 수 있어야 한다(다른 선생님 PC: 코덱스 단추가 끝내 안 보였다).
+const ALL_AGENTS = Object.freeze(['claude', 'codex']);
 
 // Read-modify-write on the receipt. Every call re-reads, because the engine and
 // the server write the same file and this module is called from poll routes.
@@ -350,7 +348,9 @@ function recordClaude(root, info, deps) {
 /**
  * ⑥-2. Put Claude Code in the soul, or say exactly why it could not be.
  *
- * States: `skipped` (no claude subscription) · `done` · `failed`.
+ * States: `done` · `failed`. 2.0.38부터 구독 선택과 상관없이 늘 받는다(`subscriptions` 는
+ * 받기만 하고 쓰지 않는다 — 옛 호출과의 호환). 클로드를 고르지 않은 설치에서 실패하면
+ * 서버가 막지 않고 경고만 남긴다.
  * Sources: `existing` (already the locked version) · `claude.ai` · `npm`.
  *
  * @returns {Promise<{ok:boolean, state:string, source?:string, version?:string, path?:string, code?:string, message?:string, detail?:any}>}
@@ -368,14 +368,7 @@ export async function installClaude({
   env = process.env,
 } = {}) {
   const deps = { readReceiptFn, writeReceiptFn };
-  const subs = resolveSubscriptions(subscriptions, root, readReceiptFn);
-
-  // --- not chosen: recorded as a deliberate non-install, never as a failure --
-  if (!subs.includes('claude')) {
-    recordClaude(root, { state: 'not-installed', reason: 'subscription-not-selected' }, deps);
-    log('claude skipped (subscription not selected)');
-    return { ok: true, state: 'skipped', source: null };
-  }
+  void subscriptions;
 
   const theLock = lock ?? readLock({ zipRoot });
   const part = theLock?.parts?.claude;
@@ -506,7 +499,7 @@ export async function installClaude({
     if (!probe.ok) throw new Error(`--version did not report ${version} (${probe.out})`);
 
     fsImpl.writeFileSync(cmdPath, claudeForwarderText(version, binName), 'ascii');
-    const shims = writeShimsFn(root, activeAgentsOf(subs));
+    const shims = writeShimsFn(root, ALL_AGENTS);
 
     const seconds = Math.round((Date.now() - started) / 100) / 10;
     log(`claude source=claude.ai version=${version} bytes=${got.bytes} seconds=${seconds}`);
@@ -549,7 +542,7 @@ export async function installClaude({
     const probe = await probeVersion(cmdPath, fb.version);
     if (!probe.ok) throw new Error(`--version did not report ${fb.version} (${probe.out})`);
 
-    const shims = writeShimsFn(root, activeAgentsOf(subs));
+    const shims = writeShimsFn(root, ALL_AGENTS);
     log(`claude source=npm version=${fb.version}`);
     recordClaude(root, {
       state: 'installed', version: fb.version, source: 'npm',
@@ -880,6 +873,7 @@ export async function loginStatus({
   cliLoginStatusFn = cliLoginStatus,
   relayImportFn = relayImport,
   relayStatusFn = relayStatus,
+  countFn = countProviderAccounts,
   resolveConfigPathFn = resolveTeamclaudeConfigPath,
   probe = probeHost, fetchFn = fetch,
   readReceiptFn = readReceipt, writeReceiptFn = writeReceipt,
@@ -967,6 +961,14 @@ export async function loginStatus({
       setLoginRecord(root, provider, { state: 'done', cli: true, relay: true, reason: null }, deps);
       return { state: 'done', cli: 'done', relay: 'done', reason: null };
     }
+    // 2.0.38: 같은 계정으로 다시 로그인하면 중계기가 기존 칸을 새 토큰으로 고쳐 쓸 뿐 개수는 그대로다
+    // (신원 기준 중복 제거). 가져오기가 성공했고 그 구독 계정이 하나라도 있으면 끝난 것이다 —
+    // "옮겨 담는 중"에서 영영 멈추던 원인(2026-09-23 다른 PC 실측).
+    if (method === 'import' && await countFn({ teamclaudeConfigPath: configPath, provider }) >= 1) {
+      setLoginRecord(root, provider, { state: 'done', cli: true, relay: true, reason: null, relayDedup: true }, deps);
+      log(`login ${provider} done (import ok, account already present)`);
+      return { state: 'done', cli: 'done', relay: 'done', reason: null };
+    }
     // method 'login' = the automatic retry is running in its own window now.
     return {
       state: 'cli-done', cli: 'done', relay: 'pending',
@@ -977,6 +979,12 @@ export async function loginStatus({
   // --- the one attempt already happened and the account still is not there --
   // "once" is enforced here: a poll route calls this every second or so, and a
   // second relayImport would open a second browser window.
+  // 2.0.38: 앞선 가져오기가 성공한 뒤라면(개수만 안 늘었을 뿐) 계정이 보이는 즉시 끝낸다.
+  if (rec.relayMethod === 'import' && rec.state !== 'failed'
+    && await countFn({ teamclaudeConfigPath: configPath, provider }) >= 1) {
+    setLoginRecord(root, provider, { state: 'done', cli: true, relay: true, reason: null, relayDedup: true }, deps);
+    return { state: 'done', cli: 'done', relay: 'done', reason: null };
+  }
   const since = Number(rec.relayAttemptedAt ?? 0);
   if (rec.state === 'failed' || (since > 0 && now() - since >= relayGraceMs)) {
     setLoginRecord(root, provider, { state: 'failed', relay: false, reason: 'import-failed' }, deps);
