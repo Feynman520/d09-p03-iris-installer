@@ -517,10 +517,15 @@ export function applyPackageItem({
 export function relaunchFace({ root, spawnFn = spawn, log = () => {} }) {
   const faceDir = faceDirFor(root);
   const vbs = path.join(faceDir, 'launch-hidden.vbs');
+  const nodeExe = path.join(toolsDir(root), 'node', 'node.exe');
   try {
     if (fs.existsSync(vbs)) {
+      // The .vbs runs IRIS_FACE_NODE, else a bare "node" from PATH -- which a
+      // process started before the install may not have (2026-09-23 fresh PCs:
+      // "IRIS-Face could not start node.exe"). Same line as the desktop .cmd.
       const child = spawnFn('wscript.exe', ['//nologo', vbs], {
         cwd: faceDir, detached: true, stdio: 'ignore', windowsHide: true,
+        env: { ...process.env, IRIS_FACE_NODE: nodeExe },
       });
       child.unref?.();
       log(`relaunch: wscript ${vbs} (pid ${child.pid})`);
@@ -528,7 +533,6 @@ export function relaunchFace({ root, spawnFn = spawn, log = () => {} }) {
     }
     // A Face too old to ship the hidden launcher: the visible window is
     // still better than leaving the person with no window at all.
-    const nodeExe = path.join(toolsDir(root), 'node', 'node.exe');
     const child = spawnFn(nodeExe, [path.join(faceDir, 'launch.mjs')], {
       cwd: faceDir, detached: true, stdio: 'ignore', windowsHide: true,
     });

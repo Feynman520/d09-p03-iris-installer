@@ -531,6 +531,25 @@ test('updater: relaunch uses wscript + launch-hidden.vbs when Face ships one', a
   assert.equal(calls[0].opts.detached, true);
 });
 
+test('updater: relaunch hands the soul\'s bundled node to launch-hidden.vbs via IRIS_FACE_NODE (no PATH lookup)', async () => {
+  const { root, face } = makeSoul('case-relaunch-node');
+  fs.writeFileSync(path.join(face, 'launch-hidden.vbs'), 'rem launcher', 'utf8');
+  const dir = makeNewFace(root);
+  fs.writeFileSync(path.join(dir, 'launch-hidden.vbs'), 'rem launcher', 'utf8');
+
+  const calls = [];
+  await applyPlan({
+    plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: true },
+    npmInstall: async () => ({ code: 0 }),
+    spawnFn: fakeSpawn(calls),
+  });
+
+  assert.equal(calls[0].exe, 'wscript.exe');
+  // Without it the .vbs runs a bare "node" from PATH -- the 2026-09-23 fresh-PC
+  // dialog "IRIS-Face could not start node.exe".
+  assert.equal(calls[0].opts.env?.IRIS_FACE_NODE, path.join(toolsDir(root), 'node', 'node.exe'));
+});
+
 test('updater: the daemon never stopping leaves everything exactly as it was', async () => {
   const { root, face } = makeSoul('case-timeout');
   const dir = makeNewFace(root);

@@ -5,7 +5,7 @@ import {
   resolveGuide, firstRequestText, writeFirstRequest, firstRequestPath,
   faceLauncherContent, writeFaceLauncher,
   writeFirstSessionSpec, defaultSpecFor, launchFace, waitFaceReady,
-  finish, faceDirFor,
+  finish, faceDirFor, relaunchFace, nodeExeFor,
 } from '../installer/lib/handoff.mjs';
 import { newReceipt, writeReceipt, readReceipt } from '../installer/lib/receipt.mjs';
 import { startServer } from '../installer/server.mjs';
@@ -252,6 +252,34 @@ test('launchFace spawns the bundled node on <tools>\\face\\launch.mjs --first-se
   assert.equal(seen2[0].args[0], path.join('X:\\face-src', 'launch.mjs'));
   assert.ok(seen2[0].args.includes('--no-open'));
   assert.equal(seen2[0].opts.env.IRIS_FACE_PORT, '3466');
+});
+
+// 2026-09-23, three fresh PCs: 「IRIS 열기」 -> "IRIS-Face could not start
+// node.exe" with `"node" "...\launch.mjs"`. The installer server runs on the
+// bundled node by absolute path and its PATH is the one from the moment of the
+// double-click (no node on a fresh PC; the User PATH written mid-install never
+// reaches a running process). launch-hidden.vbs falls back to bare "node"
+// unless IRIS_FACE_NODE is set -- which the desktop .cmd does and the wscript
+// branch here did not.
+test('relaunchFace (wscript): hands the bundled node to launch-hidden.vbs via IRIS_FACE_NODE even when PATH has no node', () => {
+  const root = path.join(tmp, 'relaunch-soul');
+  const faceDir = path.join(root, '_agent', 'shared', 'tools', 'face');
+  fs.mkdirSync(faceDir, { recursive: true });
+  fs.writeFileSync(path.join(faceDir, 'launch-hidden.vbs'), "' stub\r\n");
+  const stale = { PATH: 'C:\\Windows\\System32;C:\\Windows', SystemRoot: 'C:\\Windows' };
+
+  const seen = [];
+  const spawnFn = (exe, args, opts) => { seen.push({ exe, args, opts }); return { pid: 11, unref() {} }; };
+  const r = relaunchFace({ root, spawnFn, env: stale });
+  assert.equal(r.ok, true);
+  assert.equal(r.how, 'wscript');
+  assert.equal(seen[0].exe, 'wscript.exe');
+  assert.equal(seen[0].opts.env.IRIS_FACE_NODE, nodeExeFor(root), 'default = the soul\'s bundled node');
+
+  // An injected node (server --node-dir / rehearsal) wins over the default.
+  seen.length = 0;
+  relaunchFace({ root, spawnFn, env: stale, nodeExe: 'X:\\node\\node.exe' });
+  assert.equal(seen[0].opts.env.IRIS_FACE_NODE, 'X:\\node\\node.exe');
 });
 
 // Fix round 1, finding 1: /api/health's `sessions` is the daemon's GLOBAL

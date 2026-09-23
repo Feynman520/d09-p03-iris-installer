@@ -298,6 +298,7 @@ export function relaunchFace({
 } = {}) {
   const dir = faceDir ?? faceDirFor(root);
   const vbs = path.join(dir, 'launch-hidden.vbs');
+  const exe = nodeExe ?? nodeExeFor(root);
   const spawnOpts = {
     cwd: dir,
     detached: true,
@@ -305,11 +306,16 @@ export function relaunchFace({
     env: env ? { ...process.env, ...env } : process.env,
   };
   if (fs.existsSync(vbs)) {
-    const child = spawnFn('wscript.exe', ['//nologo', vbs], { ...spawnOpts, stdio: 'ignore' });
+    // Same line as the desktop .cmd (faceLauncherContent): the .vbs uses
+    // IRIS_FACE_NODE and otherwise a bare "node" looked up on PATH -- and this
+    // process's PATH is the one from before the install (2026-09-23, three
+    // fresh PCs: "IRIS-Face could not start node.exe").
+    const child = spawnFn('wscript.exe', ['//nologo', vbs], {
+      ...spawnOpts, env: { ...spawnOpts.env, IRIS_FACE_NODE: exe }, stdio: 'ignore',
+    });
     child.unref?.();
     return { ok: true, how: 'wscript', pid: child.pid, launcher: vbs };
   }
-  const exe = nodeExe ?? nodeExeFor(root);
   const log = logFile ?? faceLogPath(root);
   let stdio = 'ignore';
   let fd = null;
