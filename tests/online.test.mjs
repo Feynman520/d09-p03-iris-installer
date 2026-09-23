@@ -74,7 +74,7 @@ function fileResponse(bytes) {
 // ⑥-1 checkNet
 // ===========================================================================
 
-test('checkNet: claude only -> probes the three claude hosts, not chatgpt.com', async () => {
+test('checkNet: claude only -> probes the five claude hosts (2.0.36: + claude.com, platform.claude.com), not chatgpt.com', async () => {
   const seen = [];
   const r = await checkNet({
     root: 'C:\\FAKE', subscriptions: ['claude'], lock: LOCK,
@@ -82,7 +82,7 @@ test('checkNet: claude only -> probes the three claude hosts, not chatgpt.com', 
   });
   assert.equal(r.ok, true);
   assert.deepEqual(r.blocked, []);
-  assert.deepEqual(new Set(r.checked), new Set(['downloads.claude.ai', 'registry.npmjs.org', 'claude.ai']));
+  assert.deepEqual(new Set(r.checked), new Set(['downloads.claude.ai', 'registry.npmjs.org', 'claude.ai', 'claude.com', 'platform.claude.com']));
   assert.ok(!seen.includes(HOSTS.chatgpt), 'chatgpt.com must not be probed when it was not chosen');
 });
 
@@ -100,7 +100,7 @@ test('checkNet: npm blocked alone -> ok:true with a note (출처 1 still works)'
 test('checkNet: both claude sources blocked -> ok:false + resume sentence', async () => {
   const r = await checkNet({
     root: 'C:\\FAKE', subscriptions: ['claude'], lock: LOCK,
-    probe: async (url) => ({ reachable: url === HOSTS.claudeLogin, status: 200 }),
+    probe: async (url) => ({ reachable: [HOSTS.claudeLogin, HOSTS.claudeAuthorize, HOSTS.claudePlatform].includes(url), status: 200 }),
   });
   assert.equal(r.ok, false);
   assert.equal(r.code, CODES.net);
@@ -115,6 +115,17 @@ test('checkNet: claude.ai (login page) blocked -> ok:false even though a source 
   });
   assert.equal(r.ok, false, 'the login page has no alternative, so it is required');
   assert.deepEqual(r.blocked, ['claude.ai']);
+});
+
+test('checkNet: 2.0.36 — claude.com / platform.claude.com (실제 로그인·토큰 교환 주소) 이 막히면 ok:false', async () => {
+  for (const host of [HOSTS.claudeAuthorize, HOSTS.claudePlatform]) {
+    const r = await checkNet({
+      root: 'C:\\FAKE', subscriptions: ['claude'], lock: LOCK,
+      probe: async (url) => ({ reachable: url !== host, status: 200 }),
+    });
+    assert.equal(r.ok, false, `${host} has no alternative for the login`);
+    assert.deepEqual(r.blocked, [new URL(host).host]);
+  }
 });
 
 test('checkNet: chatgpt only -> only chatgpt.com decides', async () => {

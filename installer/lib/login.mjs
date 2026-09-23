@@ -185,10 +185,45 @@ export function parseNetstatListeners(output, pid) {
   return [...loop, ...rest];
 }
 
-async function defaultListeningPorts(pid, { runFn = run } = {}) {
-  const r = await runFn('netstat', ['-ano', '-p', 'tcp'], {});
-  return parseNetstatListeners(r?.stdout ?? '', pid);
+/** `<pid> <ppid>` 줄들에서 pid 의 모든 자손 PID(자신 제외, 가까운 순). */
+export function descendantPids(treeText, pid) {
+  const kids = new Map();
+  for (const line of String(treeText ?? '').split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (!m) continue;
+    if (!kids.has(m[2])) kids.set(m[2], []);
+    kids.get(m[2]).push(m[1]);
+  }
+  const out = []; const seen = new Set([String(pid)]); const queue = [String(pid)];
+  while (queue.length) {
+    for (const c of kids.get(queue.shift()) ?? []) {
+      if (seen.has(c)) continue;
+      seen.add(c); out.push(c); queue.push(c);
+    }
+  }
+  return out;
 }
+
+/**
+ * 로그인 프로세스(pid)가 연 수신 포트. 2.0.36 두 가지 수리:
+ *  - `lib/run.mjs` 는 출력을 `out` 에 담는데 예전엔 `stdout` 을 읽어 **늘 빈 목록**이었다 — 화면의
+ *    「브라우저가 열리지 않았으면 여기」 링크가 한 번도 안 떴다(CLI 가 브라우저를 스스로 열어 가려져 있었음).
+ *  - npm 감싸개(cmd.exe → claude)로 띄우면 포트는 손자 프로세스에 있다 → 자기 PID 에 없으면 자손으로 넓힌다.
+ */
+export async function listeningPorts(pid, { runFn = run } = {}) {
+  const r = await runFn('netstat', ['-ano', '-p', 'tcp'], {});
+  const text = r?.out ?? r?.stdout ?? '';
+  const own = parseNetstatListeners(text, pid);
+  if (own.length) return own;
+  const t = await runFn('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+    "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1}' -f $_.ProcessId,$_.ParentProcessId }"], { timeoutMs: 15000 });
+  for (const d of descendantPids(t?.out ?? t?.stdout ?? '', pid)) {
+    const ports = parseNetstatListeners(text, d);
+    if (ports.length) return ports;
+  }
+  return [];
+}
+const defaultListeningPorts = (pid) => listeningPorts(pid);
 
 /** claude.cmd 전달자(`"%~dp0<판>\claude.exe" %*`)가 가리키는 실제 exe. 전달자·exe 가 없으면 null. */
 export function resolveClaudeExe(root, { fs: fsImpl = fs } = {}) {
@@ -208,13 +243,30 @@ export function pipedLoginInfo(provider) {
 }
 export function resetPipedLogin(provider) { piped.delete(provider); }
 
+/** 이 설치기가 띄운 로그인 프로세스 하나(PID 지정)와 그 자식만 끝낸다 — 이름으로 끄지 않는다. */
+function defaultKillTree(pid) {
+  if (!pid) return;
+  try {
+    const k = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    k.on('error', () => {}); k.unref();
+  } catch { /* 이미 끝났으면 그만 */ }
+}
+
+/** 로그에 남길 출력 꼬리 — 주소는 지워(공개 매개변수라도 길고 쓸모없음) 마지막 300자만. */
+export function outputTail(buf) {
+  return String(buf ?? '').replace(/https?:\/\/\S+/g, '<url>').replace(/\s+/g, ' ').trim().slice(-300);
+}
+
 /**
  * CLI 로그인을 창 없이 띄우고 출력에서 자동 복귀 주소를 모은다(위 머리말). 표준입력은 열어 두되 아무것도 쓰지 않는다.
  * 돌려주는 값은 startCliLogin 과 같은 모양(+mode:'piped')이라 startLogin 이 그대로 받는다.
+ * CLI 가 아직 없으면(내려받기 실패) 띄우지 않고 code='cli-missing' 오류를 던진다 — 없는 파일을 cmd.exe 로
+ * 부르면 곧장 꺼져 "로그인 창이 안 뜬다"로만 보였다(2026-09-23 다른 선생님 PC 실사고).
  */
 export function startPipedLogin({
   provider, root, nodeDir, teamclaudeConfigPath,
   spawnFn = spawn, portsFn = defaultListeningPorts, portPollMs = 300, portTries = 20,
+  existsFn = fs.existsSync, killFn = defaultKillTree,
   dryRun = false, log = () => {}, now = () => Date.now(),
 } = {}) {
   const tools = toolsDir(root);
@@ -226,22 +278,40 @@ export function startPipedLogin({
   else env.CODEX_HOME = path.join(root, '_agent', 'codex');
 
   let cmd; let args; let verbatim = false;
+  // 전달자(claude.cmd·codex.cmd) — 1순위 받기(claude.ai)면 exe 를 가리키고, 2순위(npm)면 npm 이 만든 감싸개다.
+  const cmdPath = provider === 'claude' ? path.join(tools, 'claude', 'claude.cmd') : path.join(tools, 'codex', 'codex.cmd');
   const exe = provider === 'claude' ? resolveClaudeExe(root) : null;
   if (exe) {
     cmd = exe; args = ['auth', 'login', '--claudeai'];
   } else {
     // .cmd 는 셸 없이 파이프로 못 띄운다 → cmd.exe /d /s /c "<경로>" <인수>
-    const cmdPath = provider === 'claude' ? path.join(tools, 'claude', 'claude.cmd') : path.join(tools, 'codex', 'codex.cmd');
     const loginArgs = provider === 'claude' ? 'auth login --claudeai' : 'login';
     cmd = COMSPEC; args = ['/d', '/s', '/c', `""${cmdPath}" ${loginArgs}"`]; verbatim = true;
   }
   const opts = { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env, ...(verbatim ? { windowsVerbatimArguments: true } : {}) };
   if (dryRun) return { started: false, dryRun: true, mode: 'piped', cmd, args, env };
+  if (!exe && !existsFn(cmdPath)) {
+    log(`login ${provider}: CLI not found (${path.basename(cmdPath)} missing) -- not starting`);
+    const err = new Error(`${path.basename(cmdPath)} is missing`);
+    err.code = 'cli-missing';
+    throw err;
+  }
+
+  // 같은 제공자의 앞선 로그인이 아직 살아 있으면(「다시 로그인」) 그 PID 만 끝낸다 — 주소·포트가 둘로 갈리지 않게.
+  const prev = piped.get(provider);
+  if (prev && !prev.exited && prev.pid) {
+    log(`login ${provider}: stopping previous own login process pid=${prev.pid}`);
+    try { killFn(prev.pid); } catch { /* 이미 끝남 */ }
+  }
 
   const child = spawnFn(cmd, args, opts);
   const info = { pid: child?.pid ?? null, url: null, manualSeen: false, exited: false, code: null, startedAt: now(), child, buf: '' };
   piped.set(provider, info);
-  const onExit = (code) => { info.exited = true; info.code = code; log(`login ${provider} piped process exited code=${code}`); };
+  const onExit = (code) => {
+    info.exited = true; info.code = code;
+    log(`login ${provider} piped process exited code=${code}`);
+    if (!info.manualSeen && !info.url) log(`login ${provider} output before exit: ${outputTail(info.buf) || '(none)'}`);
+  };
   child?.on?.('exit', onExit);
   child?.on?.('error', (e) => { info.exited = true; info.code = -1; log(`login ${provider} piped spawn error: ${e?.message ?? e}`); });
 

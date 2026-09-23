@@ -101,3 +101,55 @@ test('no user-facing message shows a manual-code instruction or the relay produc
   assert.doesNotMatch(String(st.message), /코드|paste|TeamClaude/i);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+// 2.0.36 (2026-09-23 다른 선생님 PC 실사고): 내려받기가 실패해 CLI 가 없는데 로그인 단추가 눌렸다.
+test('startLogin: CLI 가 없다(cli-missing)면 창을 연 척하지 않고 "다시 받기"로 안내하는 실패를 돌려준다', async () => {
+  const root = tmpRoot('cli-missing');
+  const r = await startLogin({
+    provider: 'claude', root, cliLoginStatusFn: () => 'pending', countAccountsFn: async () => 0,
+    resolveConfigPathFn: () => path.join(root, 'tc.json'),
+    startCliLoginFn: () => { const e = new Error('claude.cmd is missing'); e.code = 'cli-missing'; throw e; },
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.state, 'failed');
+  assert.equal(r.reason, 'cli-missing');
+  assert.match(r.message, /다시 받기/);
+  assert.equal(readReceipt(root).login.claude.reason, 'cli-missing');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('loginStatus: cli-missing 실패는 다음 확인 때 "기다리는 중"이나 window-closed 로 바뀌지 않는다', async () => {
+  const root = tmpRoot('cli-missing-sticky');
+  // 앞선 시작(2분 넘게 지난 startedAt·pid)이 남아 있는 상태에서 CLI 가 사라진 경우까지 덮는다.
+  await startLogin({ provider: 'claude', root, cliLoginStatusFn: () => 'pending', countAccountsFn: async () => 0, resolveConfigPathFn: () => path.join(root, 'tc.json'), startCliLoginFn: () => ({ started: true, pid: 9, mode: 'piped' }), now: () => 1000 });
+  await startLogin({
+    provider: 'claude', root, retry: true, cliLoginStatusFn: () => 'pending', countAccountsFn: async () => 0,
+    resolveConfigPathFn: () => path.join(root, 'tc.json'),
+    startCliLoginFn: () => { const e = new Error('claude.cmd is missing'); e.code = 'cli-missing'; throw e; },
+  });
+  let probed = false;
+  for (const at of [1500, 1000 + 10 * 60 * 1000]) {
+    const st = await loginStatus(deps(root, { now: () => at, probe: async () => { probed = true; return { reachable: true, status: 200 }; }, pipedInfoFn: () => null }));
+    assert.equal(st.state, 'failed');
+    assert.equal(st.reason, 'cli-missing');
+    assert.match(st.message, /다시 받기/);
+  }
+  assert.equal(probed, false);
+  assert.equal(readReceipt(root).login.claude.reason, 'cli-missing');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('loginStatus: 로그인 주소를 한 번도 못 찍고 꺼졌으면 login-no-start (브라우저가 뜰 수 없었음)', async () => {
+  const root = tmpRoot('no-start');
+  await startLogin({ provider: 'claude', root, cliLoginStatusFn: () => 'pending', countAccountsFn: async () => 0, resolveConfigPathFn: () => path.join(root, 'tc.json'), startCliLoginFn: () => ({ started: true, pid: 9, mode: 'piped' }), now: () => 1000 });
+  const st = await loginStatus(deps(root, {
+    now: () => 1500,
+    pipedInfoFn: () => ({ pid: 9, url: null, manualSeen: false, exited: true, code: 1, startedAt: 1000 }),
+  }));
+  assert.equal(st.state, 'failed');
+  assert.equal(st.reason, 'login-no-start');
+  assert.match(st.message, /다시 로그인/);
+  assert.match(st.message, /신고/);
+  assert.doesNotMatch(String(st.message), /코드|paste|TeamClaude/i);
+  fs.rmSync(root, { recursive: true, force: true });
+});

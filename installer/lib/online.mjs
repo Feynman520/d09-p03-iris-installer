@@ -63,6 +63,10 @@ export const RELAY_GRACE_MS = 180000;
 export const HOSTS = {
   claudeDownloads: 'https://downloads.claude.ai/',
   claudeLogin: 'https://claude.ai/',
+  // 2.0.36: 실제 로그인 주소는 claude.com/cai/oauth/authorize, 토큰 교환은 platform.claude.com —
+  // 이 둘만 막는 망이면 로그인 단계에서야 조용히 멈추므로 첫 확인에서 같이 본다.
+  claudeAuthorize: 'https://claude.com/',
+  claudePlatform: 'https://platform.claude.com/',
   chatgpt: 'https://chatgpt.com/',
   npmRegistry: 'https://registry.npmjs.org/',
 };
@@ -230,6 +234,8 @@ export async function checkNet({
     targets.push({ url: HOSTS.claudeDownloads, role: 'claude-source' });
     targets.push({ url: HOSTS.npmRegistry, role: 'claude-source' });
     targets.push({ url: HOSTS.claudeLogin, role: 'required' });
+    targets.push({ url: HOSTS.claudeAuthorize, role: 'required' });
+    targets.push({ url: HOSTS.claudePlatform, role: 'required' });
   }
   if (wantChatgpt) targets.push({ url: HOSTS.chatgpt, role: 'required' });
 
@@ -793,6 +799,13 @@ function loginHostFor(provider) {
   return provider === 'claude' ? HOSTS.claudeLogin : HOSTS.chatgpt;
 }
 
+// 2.0.36: 내려받기가 실패해 CLI 가 없을 때의 안내 — 로그인 문제가 아니라 내려받기 문제로 알린다.
+function cliMissingMessage(provider) {
+  return provider === 'claude'
+    ? 'Claude Code가 아직 이 컴퓨터에 없습니다. 이 칸의 「Claude Code 다시 받기」를 먼저 눌러 주세요.'
+    : 'Codex 프로그램이 이 컴퓨터에 없습니다. 설치를 처음부터 다시 실행해 주세요.';
+}
+
 /**
  * ⑥-3 start. Opens the CLI's own login console (lib/login.mjs, unchanged), or
  * reports the login as already done.
@@ -834,6 +847,14 @@ export async function startLogin({
     return { ok: true, state: 'waiting', cli: 'pending', relay: 'pending', reused: false, pid: started?.pid ?? null, mode };
   } catch (err) {
     const detail = String(err?.message ?? err);
+    if (err?.code === 'cli-missing') {
+      // 2.0.36: 내려받기가 실패해 CLI 가 없다 — 로그인 문제가 아니라 내려받기 문제로 알린다.
+      const reason = 'cli-missing';
+      const message = cliMissingMessage(provider);
+      setLoginRecord(root, provider, { state: 'failed', cli: false, relay: false, reason, pid: null }, deps);
+      log(`login ${provider} not started: CLI missing (${detail})`);
+      return { ok: false, state: 'failed', cli: 'pending', relay: 'pending', reason, message, detail };
+    }
     setLoginRecord(root, provider, { state: 'failed', cli: false, relay: false, reason: 'window-closed' }, deps);
     log(`login ${provider} could not open a console: ${detail}`);
     return {
@@ -878,6 +899,11 @@ export async function loginStatus({
 
   // --- stage 1 not finished ------------------------------------------------
   if (cli !== 'done') {
+    // 2.0.36: CLI 가 없어 아무것도 띄우지 않은 실패는 여기서 되살리지 않는다 — 남은 옛 startedAt 으로
+    // "기다리는 중"/window-closed 로 바뀌면 화면이 「다시 받기」 안내를 한 번 보이고 곧 지워 버린다.
+    if (rec.state === 'failed' && rec.reason === 'cli-missing') {
+      return { state: 'failed', cli: 'pending', relay: 'pending', reason: 'cli-missing', message: cliMissingMessage(provider) };
+    }
     // No recorded start = this poll arrived before startLogin ever ran, which
     // is "waiting", not a failure. (`== null` deliberately: an injected clock
     // may legitimately hand out 0.)
@@ -885,8 +911,12 @@ export async function loginStatus({
     const elapsed = startedAt == null ? 0 : now() - startedAt;
     if (piped && piped.exited && rec.state === 'waiting') {
       // 로그인 프로세스가 인증 파일 없이 끝났다(브라우저에서 취소·오류). 2분을 기다릴 이유가 없다.
-      const reason = 'login-exited';
-      const message = '로그인이 끝나기 전에 멈췄습니다. 「다시 로그인」을 누르면 처음부터 다시 시작합니다.';
+      // 2.0.36: 로그인 주소를 한 번도 찍지 못하고 꺼졌으면(= 브라우저가 뜰 수 없었음) 따로 구분한다.
+      const noStart = !piped.manualSeen && !piped.url;
+      const reason = noStart ? 'login-no-start' : 'login-exited';
+      const message = noStart
+        ? '로그인 프로그램이 브라우저를 띄우기 전에 꺼졌습니다. 「다시 로그인」을 눌러 보고, 또 그러면 「개발자에게 신고하기」를 눌러 주세요.'
+        : '로그인이 끝나기 전에 멈췄습니다. 「다시 로그인」을 누르면 처음부터 다시 시작합니다.';
       setLoginRecord(root, provider, { state: 'failed', cli: false, relay: false, reason, exitCode: piped.code ?? null }, deps);
       log(`login ${provider} failed reason=${reason} code=${piped.code ?? '?'}`);
       return { state: 'failed', cli: 'pending', relay: 'pending', reason, message };

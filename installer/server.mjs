@@ -1039,6 +1039,8 @@ export function startServer({
           state: got?.ok ? 'done' : 'failed',
           source: got?.source ?? null,
           code: got?.code ?? null,
+          // 2.0.36: 실패 까닭 한 줄(화면 표시용). 없으면 화면이 기본 문구를 쓴다.
+          message: got?.ok ? null : (typeof got?.message === 'string' ? got.message.slice(0, 300) : null),
         };
         save();
 
@@ -1107,6 +1109,7 @@ export function startServer({
             // 2.0.33: 파이프 로그인이 알아낸 자동 복귀 주소(화면의 "브라우저가 안 열렸으면 여기" 링크). 수동 코드 주소는 절대 아니다.
             mode: entry.mode ?? null,
             url: st.url ?? entry.url ?? null,
+            startedAt: entry.startedAt ?? null,
           };
         }
       } catch { /* a polling route must never throw */ }
@@ -1129,6 +1132,12 @@ export function startServer({
       return;
     }
     if (!requireLocated(res)) return;
+    // 2.0.36: Claude Code 를 아직 받는 중이면 로그인을 띄우지 않는다 — 없는 프로그램을 불러 곧장 꺼지면
+    // 사람에게는 "로그인 창이 안 뜬다"로만 보였다(2026-09-23 다른 선생님 PC 실사고).
+    if (provider === 'claude' && state.online.claude?.state === 'downloading') {
+      sendJson(res, 200, { ok: false, provider, reason: 'claude-downloading', message: 'Claude Code를 아직 내려받는 중입니다. 내려받기가 끝나면 로그인 단추가 켜집니다.' });
+      return;
+    }
     const started = await onlineRunner.startLogin({
       provider, root: state.soul.root, nodeDir: state.nodeDir, retry: !!retry,
     });
@@ -1139,6 +1148,8 @@ export function startServer({
       reason: started?.reason ?? null,
       mode: started?.mode ?? null,
       url: null,
+      // 화면이 "20초가 지나도 링크가 없으면 「다시 로그인」"을 켜는 기준 시각.
+      startedAt: Date.now(),
     };
     state.online.stage = 'login';
     save();

@@ -11,6 +11,7 @@ import path from 'node:path';
 import {
   startPipedLogin, pipedLoginInfo, resetPipedLogin,
   parseLoginUrl, autoLoginUrl, parseNetstatListeners, resolveClaudeExe,
+  listeningPorts, descendantPids,
 } from '../installer/lib/login.mjs';
 
 const MANUAL = 'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code'
@@ -138,7 +139,7 @@ test('startPipedLogin(claude): 포트를 끝내 못 읽으면 url 은 null 로 �
   const child = fakeChild(11);
   startPipedLogin({
     provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json',
-    spawnFn: () => child, portsFn: async () => [], portPollMs: 1, portTries: 3,
+    spawnFn: () => child, portsFn: async () => [], portPollMs: 1, portTries: 3, existsFn: () => true,
   });
   child.stdout.emit('data', Buffer.from(`visit: ${MANUAL}\n`));
   await tick(40);
@@ -148,9 +149,12 @@ test('startPipedLogin(claude): 포트를 끝내 못 읽으면 url 은 null 로 �
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('startPipedLogin(claude): claude.exe 를 못 찾으면 cmd.exe 로 claude.cmd 를 파이프 실행한다', () => {
+test('startPipedLogin(claude): exe 전달자가 아닌 claude.cmd(npm 감싸개)면 cmd.exe 로 파이프 실행한다', () => {
   resetPipedLogin('claude');
-  const root = tmpRoot('nocmd');
+  const root = tmpRoot('npmcmd');
+  const dir = path.join(root, '_agent', 'shared', 'tools', 'claude');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'claude.cmd'), '@ECHO off\r\nnode "%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*\r\n');
   let captured = null;
   startPipedLogin({ provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: (cmd, args, opts) => { captured = { cmd, args, opts }; return fakeChild(1); }, portsFn: async () => [] });
   assert.match(captured.cmd, /cmd\.exe$/i);
@@ -159,9 +163,59 @@ test('startPipedLogin(claude): claude.exe 를 못 찾으면 cmd.exe 로 claude.c
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('startPipedLogin: CLI 가 아예 없으면(내려받기 실패) 띄우지 않고 cli-missing 을 던진다 (2.0.36, 9/23 실사고)', () => {
+  for (const provider of ['claude', 'chatgpt']) {
+    resetPipedLogin(provider);
+    const root = tmpRoot(`missing-${provider}`);
+    let spawned = 0; const lines = [];
+    assert.throws(
+      () => startPipedLogin({ provider, root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => { spawned++; return fakeChild(1); }, log: (l) => lines.push(l) }),
+      (e) => e.code === 'cli-missing',
+    );
+    assert.equal(spawned, 0, 'a missing CLI must not be launched through cmd.exe (it exits instantly and looks like "no browser")');
+    assert.equal(pipedLoginInfo(provider), null);
+    assert.ok(lines.some((l) => /CLI not found/.test(l)));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('startPipedLogin: 앞선 로그인이 살아 있으면 그 PID 하나만 끝내고 새로 띄운다, 끝난 것은 건드리지 않는다', () => {
+  resetPipedLogin('claude');
+  const root = tmpRoot('restart');
+  const second = fakeChild(42);
+  const kids = [fakeChild(41), second, fakeChild(43)];
+  const killed = [];
+  const opts = { provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => kids.shift(), portsFn: async () => [], existsFn: () => true, killFn: (pid) => killed.push(pid) };
+  startPipedLogin(opts);
+  startPipedLogin(opts);
+  assert.deepEqual(killed, [41], 'only our own previous child, by PID');
+  assert.equal(pipedLoginInfo('claude').pid, 42);
+  second.emit('exit', 1, null); // 42 가 스스로 끝났으면 다음 시작은 아무것도 끄지 않는다
+  startPipedLogin(opts);
+  assert.deepEqual(killed, [41]);
+  assert.equal(pipedLoginInfo('claude').pid, 43);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('startPipedLogin: 주소 전에 꺼지면 출력 꼬리를 로그에 남긴다(주소는 지움)', () => {
+  resetPipedLogin('claude');
+  const root = tmpRoot('tail');
+  const child = fakeChild(51); const lines = [];
+  startPipedLogin({ provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => child, portsFn: async () => [], existsFn: () => true, log: (l) => lines.push(l) });
+  child.stderr.emit('data', Buffer.from('error: unable to reach https://claude.com/x?y=1 (ECONNRESET)\n'));
+  child.emit('exit', 1, null);
+  const tail = lines.find((l) => /output before exit/.test(l));
+  assert.ok(tail, 'exit before any url must log the output tail');
+  assert.match(tail, /ECONNRESET/);
+  assert.doesNotMatch(tail, /https?:\/\//);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('startPipedLogin(codex): codex.cmd login 을 창 없이, CODEX_HOME, localhost 주소를 그대로 기록', async () => {
   resetPipedLogin('chatgpt');
   const root = tmpRoot('codex');
+  fs.mkdirSync(path.join(root, '_agent', 'shared', 'tools', 'codex'), { recursive: true });
+  fs.writeFileSync(path.join(root, '_agent', 'shared', 'tools', 'codex', 'codex.cmd'), '@echo off\r\n');
   let captured = null; const child = fakeChild(22);
   const r = startPipedLogin({ provider: 'chatgpt', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: (cmd, args, opts) => { captured = { cmd, args, opts }; return child; }, portsFn: async () => { throw new Error('must not be called for codex'); } });
   assert.equal(r.mode, 'piped');
@@ -189,11 +243,43 @@ test('pipedLoginInfo: 시작한 적 없으면 null, 다시 시작하면 이전 �
   const root = tmpRoot('again');
   const a = fakeChild(1); const b = fakeChild(2);
   const kids = [a, b];
-  const opts = { provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => kids.shift(), portsFn: async () => [1] };
+  const opts = { provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => kids.shift(), portsFn: async () => [1], existsFn: () => true, killFn: () => { throw new Error('exited child must not be killed'); } };
   startPipedLogin(opts); a.emit('exit', 1, null);
   assert.equal(pipedLoginInfo('claude').exited, true);
   startPipedLogin(opts);
   assert.equal(pipedLoginInfo('claude').pid, 2);
   assert.equal(pipedLoginInfo('claude').exited, false);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+// 2.0.36 — 포트 조회가 run() 의 `out` 을 읽는지(예전엔 `stdout` 을 읽어 늘 빈 목록), 그리고
+// npm 감싸개(cmd.exe → 손자 claude)일 때 자손 PID 로 넓혀 찾는지.
+const NETSTAT = [
+  '  Proto  Local Address          Foreign Address        State           PID',
+  '  TCP    127.0.0.1:3456         0.0.0.0:0              LISTENING       900',
+  '  TCP    127.0.0.1:65416        0.0.0.0:0              LISTENING       77',
+].join('\r\n');
+
+test('listeningPorts reads run().out (not stdout) and finds the own port', async () => {
+  const calls = [];
+  const ports = await listeningPorts(77, { runFn: async (cmd) => { calls.push(cmd); return { code: 0, out: NETSTAT, err: '' }; } });
+  assert.deepEqual(ports, [65416]);
+  assert.deepEqual(calls, ['netstat']);
+});
+
+test('listeningPorts widens to descendants when the own pid has no listener (npm wrapper)', async () => {
+  const tree = ['10 1', '55 10', '77 55', '900 4'].join('\r\n');
+  const ports = await listeningPorts(10, { runFn: async (cmd) => ({ code: 0, out: cmd === 'netstat' ? NETSTAT : tree, err: '' }) });
+  assert.deepEqual(ports, [65416]);
+});
+
+test('listeningPorts never borrows an unrelated process port', async () => {
+  const tree = ['10 1', '55 10', '900 4'].join('\r\n');
+  const ports = await listeningPorts(10, { runFn: async (cmd) => ({ code: 0, out: cmd === 'netstat' ? NETSTAT : tree, err: '' }) });
+  assert.deepEqual(ports, []);
+});
+
+test('descendantPids walks children breadth-first and ignores cycles', () => {
+  assert.deepEqual(descendantPids('2 1\n3 1\n4 2\n1 4', 1), ['2', '3', '4']);
+  assert.deepEqual(descendantPids('', 1), []);
 });

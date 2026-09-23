@@ -136,3 +136,36 @@ test('online/choice: 이미 끝난 로그인은 다시 골라도 done 그대로(
     assert.equal(b.logins.chatgpt.state, 'waiting');
   } finally { s.close(); }
 });
+
+// 2.0.36 (2026-09-23 다른 선생님 PC 실사고): 내려받기가 끝나기 전·실패한 뒤 로그인을 눌렀더니 아무 창도 안 떴다.
+test('online/login: Claude Code 를 받는 중에는 로그인을 띄우지 않고 claude-downloading 으로 돌려준다', async () => {
+  let finish;
+  const gate = new Promise((r) => { finish = r; });
+  const s = await start({ installClaude: async () => { await gate; return { ok: false, code: 'E-DL', message: '내려받지 못했습니다' }; } });
+  try {
+    await toOnline(s.url, ['claude']);
+    await post(s.url, '/api/online/start');
+    await waitOnline(s.url, (b) => b.claude?.state === 'downloading');
+    const early = await (await post(s.url, '/api/online/login', { provider: 'claude' })).json();
+    assert.equal(early.ok, false);
+    assert.equal(early.reason, 'claude-downloading');
+    assert.deepEqual(s.calls.startLogin, []);
+    finish();
+    const st = await waitOnline(s.url, (b) => b.claude?.state === 'failed');
+    assert.equal(st.claude.message, '내려받지 못했습니다');
+  } finally { s.close(); }
+});
+
+test('online/login: 로그인 시작 시각(startedAt)이 상자에 실리고 상태 확인 뒤에도 남는다', async () => {
+  const s = await start();
+  try {
+    await toOnline(s.url, ['claude']);
+    await post(s.url, '/api/online/start');
+    await waitOnline(s.url, (b) => b.stage === 'login');
+    const t0 = Date.now();
+    await post(s.url, '/api/online/login', { provider: 'claude' });
+    const st = await getJson(s.url, '/api/online/status');
+    assert.ok(Number(st.logins.claude.startedAt) >= t0);
+    assert.ok(Number(st.now) >= Number(st.logins.claude.startedAt));
+  } finally { s.close(); }
+});

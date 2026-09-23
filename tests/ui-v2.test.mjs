@@ -103,7 +103,8 @@ test('ui/index.html: 로그인 실패 4종·기다림 없는 다시 로그인·�
   assert.ok(src.includes('다시 로그인') && !src.includes('다시 열기'), '실패 뒤 단추는 「다시 로그인」');
   assert.ok(src.includes('검은 창은 열리지 않습니다') && !src.includes('검은 창이 잠깐 열리고'), '로그인 상자 문구에 검은 창이 없다');
   assert.ok(src.includes('코드를 복사해 붙여넣는 일은 없습니다'), '수동 코드 붙여넣기가 없음을 밝힌다');
-  assert.ok(/llink-/.test(src) && /s\.url/.test(src) && /platform\.claude\.com/.test(src) === false, '자동 복귀 주소 링크만 그린다');
+  // 2.0.36: 망 점검의 "막힌 곳" 이름표에는 platform.claude.com 이라는 호스트 이름이 들어간다 — 금지 대상은 그 주소로 가는 링크다.
+  assert.ok(/llink-/.test(src) && /s\.url/.test(src) && !/https?:\/\/platform\.claude\.com/.test(src) && !/oauth\/code/.test(src), '자동 복귀 주소 링크만 그린다');
   assert.ok(src.includes('id="login-choice"') && src.includes('/api/online/choice') && src.includes('chk-claude') && src.includes('chk-chatgpt'), '로그인 단계에서 구독을 다시 고르는 상자가 있다');
   for (const head of ['1. 하려던 일', '2. 기존 자료의 안전', '3. 결과', '4. 남은 일의 뜻', '5. 이제 하실 일']) {
     assert.ok(src.includes(head), `완료 보고 순서 「${head}」 없음`);
