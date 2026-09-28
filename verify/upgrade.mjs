@@ -417,6 +417,14 @@ async function main() {
     const rolesNow = fs.readdirSync(SOUL_ROOT).filter((n) => /^R\d{2}-/.test(n)).sort();
     check('③ⓘ 기존 역할 폴더(R##-) 그대로', rolesNow.length > 0 && rolesNow.join('|') === rolesBefore.join('|'), `${rolesBefore.length} -> ${rolesNow.length}`);
     check('③ⓘ 업데이트 PC 는 인터뷰를 다시 하지 않는다', handoffAfter?.structure?.mode !== 'interview' && !String(handoffAfter?.firstMessage || '').includes('interview.md'), `structure.mode=${handoffAfter?.structure?.mode ?? '(없음: 옛 인수 문서)'}`);
+    // 2.0.39(2026-09-29 예행연습 발견): 업데이트는 `checks` 단계를 건너뛰므로 설치기 사본이 옛 판 그대로였다 —
+    // 업데이트한 PC 의 사본에도 새 판(과 IRIS-삭제.cmd)이 있어야 한다.
+    if (cmpVer(nextVersion, '2.0.39') >= 0) {
+      const copyDir = path.join(SOUL_ROOT, '_agent', 'setup', 'installer');
+      const copyVer = fs.existsSync(path.join(copyDir, '.version')) ? fs.readFileSync(path.join(copyDir, '.version'), 'utf8').trim() : '(없음)';
+      check('③ⓙ 설치기 사본 판 = 새 판', copyVer === nextVersion, copyVer);
+      check('③ⓙ 설치기 사본에 IRIS-삭제.cmd 가 있다', fs.existsSync(path.join(copyDir, 'installer', 'IRIS-삭제.cmd')));
+    }
 
     // ③ⓖ 사용자 자료 ----------------------------------------------------------
     check('③ⓖ 사용자 자료 표식 파일이 그대로다', fs.existsSync(MARKER) && fs.readFileSync(MARKER, 'utf8') === markerBefore);

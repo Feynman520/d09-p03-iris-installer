@@ -187,6 +187,11 @@ function serverEnv({ failAt = null } = {}) {
   return env;
 }
 
+// 가장 최근에 띄운 설치기 서버. 예기치 못한 오류(대개 `fetch failed`) 때 그 서버가 살아 있었는지와
+// 마지막 출력을 근거에 남긴다 -- 2.0.39 검증 때 이것 없이 한 번 실패해 원인을 가리지 못했다(서버 출력은
+// 이 프로세스 메모리에만, server.log 는 다음 시작·뒷정리 때 지워진다).
+let lastServer = null;
+
 async function startInstaller({ failAt = null, freshState = true } = {}) {
   if (freshState) fs.rmSync(STATE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -213,6 +218,7 @@ async function startInstaller({ failAt = null, freshState = true } = {}) {
 
   let exited = null;
   child.on('exit', (code, signal) => { exited = { code, signal }; });
+  lastServer = { pid: child.pid, failAt, output: () => out.join(''), exited: () => exited };
 
   const url = `http://127.0.0.1:${PORT}`;
   const deadline = Date.now() + 45000;
@@ -1087,7 +1093,14 @@ async function main() {
       else log('--quick: skipping phase ③ (fault injection)');
     }
   } catch (err) {
-    record('e2e', 'unexpected error', false, String(err?.stack ?? err));
+    // fetch 의 `TypeError: fetch failed` 는 진짜 사유(연결 거부·끊김)를 cause 에만 담는다.
+    const cause = err?.cause ? ` [cause: ${err.cause.code ?? ''} ${err.cause.message ?? err.cause}]` : '';
+    const srv = lastServer
+      ? `\n  마지막 서버 pid ${lastServer.pid} (FAIL_AT=${lastServer.failAt ?? '없음'}) · `
+        + `${lastServer.exited() ? `종료됨 ${JSON.stringify(lastServer.exited())}` : '살아 있음'}`
+        + `\n  --- 서버 출력 끝 3000자 ---\n${lastServer.output().slice(-3000)}`
+      : '';
+    record('e2e', 'unexpected error', false, String(err?.stack ?? err) + cause + srv);
   } finally {
     try { await cleanup(keep); } catch (e) { log(`cleanup warning: ${String(e?.message ?? e)}`); }
   }

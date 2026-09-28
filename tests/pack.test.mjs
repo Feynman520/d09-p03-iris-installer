@@ -30,6 +30,8 @@ test('pack: zip exists at IRIS-Setup_v<version>_<date>.zip, .sha256 matches, lis
   const installerDir = path.join(tmp, 'fake-installer');
   fs.mkdirSync(path.join(installerDir, 'ui'), { recursive: true });
   fs.writeFileSync(path.join(installerDir, 'IRIS-설치.cmd'), '@echo off\necho hi\npause\n');
+  // 2.0.39: the uninstaller launcher goes to the zip root too (and stays in installer\).
+  fs.writeFileSync(path.join(installerDir, 'IRIS-삭제.cmd'), '@echo off\necho bye\n');
   fs.writeFileSync(path.join(installerDir, 'bootstrap.ps1'), "Write-Host 'hi'\nexit 0\n");
   fs.writeFileSync(path.join(installerDir, 'ui', 'index.html'), '<!doctype html><title>hi</title>\n');
 
@@ -76,6 +78,8 @@ test('pack: zip exists at IRIS-Setup_v<version>_<date>.zip, .sha256 matches, lis
   assertCRLFOnly(path.join(extractDir, 'IRIS-설치.cmd'));
   assertCRLFOnly(path.join(extractDir, 'installer', 'IRIS-설치.cmd'));
   assertCRLFOnly(path.join(extractDir, 'installer', 'bootstrap.ps1'));
+  assertCRLFOnly(path.join(extractDir, 'IRIS-삭제.cmd'));
+  assertCRLFOnly(path.join(extractDir, 'installer', 'IRIS-삭제.cmd'));
 });
 
 // Task 12: the installer verifies the relay by checking every file

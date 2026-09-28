@@ -659,6 +659,53 @@ async function main() {
           : `schema=${manifest.schema}, missing: [${missingFromManifest.join(', ')}], malformed: [${malformed.join(', ')}]`,
       );
     }
+
+    // ㉑ (2.0.39, docs/설계-삭제기.md) the uninstaller ships whole: IRIS-삭제.cmd
+    // at the zip root and in installer\ (CRLF, ASCII -- cmd.exe reads a .cmd in
+    // the console codepage), installer\uninstall.ps1 ASCII (PowerShell 5.1 reads
+    // a BOM-less script as ANSI), and uninstall-ko.json valid JSON carrying
+    // every key the script asks for. A missing key would not crash -- T() falls
+    // back to the key name -- so the person would see "optKeepDesc" on screen.
+    {
+      const UNINSTALL_CMD = 'IRIS-삭제.cmd';
+      const problems = [];
+      const asciiCrlf = (rel) => {
+        const p = path.join(tmpDir, rel);
+        if (!fs.existsSync(p)) { problems.push(`missing ${rel}`); return null; }
+        const buf = fs.readFileSync(p);
+        const hi = buf.findIndex((b) => b > 0x7f);
+        if (hi !== -1) problems.push(`${rel}: non-ASCII byte 0x${buf[hi].toString(16)} at offset ${hi}`);
+        const text = buf.toString('latin1');
+        if (/(^|[^\r])\n/.test(text)) problems.push(`${rel}: bare LF line ending(s)`);
+        return text;
+      };
+      asciiCrlf(UNINSTALL_CMD);
+      asciiCrlf(`installer/${UNINSTALL_CMD}`);
+      const ps1 = asciiCrlf('installer/uninstall.ps1');
+      let strings = null;
+      const koPath = path.join(tmpDir, 'installer', 'uninstall-ko.json');
+      if (!fs.existsSync(koPath)) problems.push('missing installer/uninstall-ko.json');
+      else {
+        try { strings = JSON.parse(fs.readFileSync(koPath, 'utf8').replace(/^﻿/, '')); } catch (err) { problems.push(`uninstall-ko.json: ${err.message}`); }
+      }
+      let keyCount = 0;
+      if (ps1 && strings) {
+        const code = ps1.split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join('\n');
+        // Literal lookups (T 'key' ...) plus the two families the script builds
+        // at run time: the step list ('step' + $n) and Show-Refused's switch.
+        const keys = new Set([...code.matchAll(/[\s=(]T '([A-Za-z0-9_]+)'/g)].map((m) => m[1]));
+        for (let n = 1; n <= 8; n++) keys.add(`step${n}`);
+        for (const k of ['refusedDanger', 'refusedReparse', 'refusedNoReceipt', 'systemFilesKo']) keys.add(k);
+        keyCount = keys.size;
+        const missing = [...keys].filter((k) => !(k in strings));
+        if (missing.length) problems.push(`uninstall-ko.json lacks: ${missing.join(', ')}`);
+      }
+      record(
+        '㉑ uninstaller ships whole (IRIS-삭제.cmd root+installer, ASCII/CRLF, every string key present)',
+        problems.length === 0,
+        problems.length === 0 ? `${keyCount} string key(s) present` : problems.join('; '),
+      );
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

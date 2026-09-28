@@ -124,6 +124,21 @@ test('allowFiles never exempts a file from forbiddenNames (only from string/rege
   assert.deepEqual(r.hits, [{ file: 'secrets/LICENSE', rule: 'name:**/secrets/**' }]);
 });
 
+test('a run log inside a part zip is a name hit (2.0.39: dashboard test log shipped 2.0.1-2.0.38)', async () => {
+  // The dash part copies a live tool folder; its test runner had left
+  // teamclaude-manage.last.log there, and every release from 2.0.1 carried it
+  // inside payload/dash/teamclaude-dash.zip (test output only -- 0 personal
+  // strings in all 27 copies). A log is never payload.
+  const root = mkroot('log-in-zip');
+  const innerSrc = path.join(tmp, 'log-in-zip-inner');
+  writeFile(innerSrc, 'server.mjs', "console.log('ok');\n");
+  writeFile(innerSrc, 'teamclaude-manage.last.log', 'tests 57 pass 57\n');
+  await zipDir(innerSrc, path.join(root, 'payload', 'dash', 'teamclaude-dash.zip'));
+
+  const r = await sanitize(root, RULES);
+  assert.deepEqual(r.hits, [{ file: 'payload/dash/teamclaude-dash.zip!/teamclaude-manage.last.log', rule: 'name:**/*.log' }]);
+});
+
 test('(e) maxBytes overage produces a warning, not a hit, and ok stays true', async () => {
   const root = mkroot('maxbytes-case');
   writeFile(root, 'big.txt', 'x'.repeat(20));

@@ -14,9 +14,11 @@ import { planUpdateReset, applyUpdateReset, ALWAYS_RESET } from '../installer/li
 // 이 경로에서 완전히 빠졌다 — 아래 시험이 그것을 못 박는다.
 //
 // 진짜 영혼은 하나도 건드리지 않는다: 영혼 이름은 지어낸 것이고(이 PC 의 C:\IRIS 가
-// 아니다), 영수증 읽기·쓰기·세팅 엔진·창 다시 열기·마무리가 전부 주입이라 C:\ 아래에
-// 아무것도 쓰지 않는다. 대신 **잠금표만은 진짜**를 먹인다 — 업데이트가 33개 부품을
-// 다 보는지가 이 시험의 핵심이기 때문이다.
+// 아니다), 영혼 폴더는 `soulRoot` 주입으로 임시 폴더 안(SOUL_ROOT)에 두며, 영수증
+// 읽기·쓰기·세팅 엔진·창 다시 열기·마무리가 전부 주입이라 C:\ 아래에 아무것도 쓰지
+// 않는다(2.0.39 전에는 soulRoot 를 안 넘겨 서버 기록이 진짜 C:\ALPHA-AUTO-TEST 에
+// 쌓였다). 대신 **잠금표만은 진짜**를 먹인다 — 업데이트가 33개 부품을 다 보는지가 이
+// 시험의 핵심이기 때문이다.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REAL_LOCK = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'lock.json'), 'utf8'));
 
@@ -24,6 +26,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-auto-'));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
 const SOUL = 'ALPHA-AUTO-TEST';
+// 서버의 영혼 폴더(기록 installer.log 가 쌓이는 곳) — 임시 폴더 안, 만들지는 않는다.
+const SOUL_ROOT = path.join(tmp, SOUL);
 
 // 진짜 빌드의 manifest 처럼 **부품마다 지문이 있는** 목록. 잠금표에 sha256 이
 // 없는 부품(`kind: dir` 은 빌드가 zip 을 만들며 지문을 낸다)도 여기서는 지문을
@@ -88,7 +92,7 @@ function priorReceipt({ version = '1.9.0', partOverrides = {} } = {}) {
   return {
     schema: 2,
     package: { name: 'IRIS', version, guideVersion: '14', license: 'MIT' },
-    soul: { root: `C:\\${SOUL}`, name: SOUL, createdBy: 'iris-installer' },
+    soul: { root: SOUL_ROOT, name: SOUL, createdBy: 'iris-installer' },
     choice: { subscriptions: ['claude', 'chatgpt'], leadAgent: 'claude' },
     installed: {},
     setup,
@@ -275,7 +279,7 @@ test('auto: 업데이트는 v2 세팅 엔진을 돌린다 — 진짜 잠금표 3
     zipRoot,
     nodeDir: path.join(tmp, 'node'),
     stateFile: path.join(tmp, 'state-auto.json'),
-    soulName: SOUL,
+    soulName: SOUL, soulRoot: SOUL_ROOT,
     auto: true,
     readReceiptFn: store.readReceiptFn,
     writeReceiptFn: store.writeReceiptFn,
@@ -307,7 +311,7 @@ test('auto: 업데이트는 v2 세팅 엔진을 돌린다 — 진짜 잠금표 3
     // ① 엔진이 한 번, 마법사와 같은 ctx 로 불렸다
     assert.equal(engine.calls.length, 1, '세팅 엔진이 정확히 한 번 돈다');
     const ctx = engine.calls[0];
-    assert.equal(ctx.root, `C:\\${SOUL}`);
+    assert.equal(ctx.root, SOUL_ROOT);
     assert.equal(ctx.offline, true);
     assert.equal(Object.keys(ctx.lock.parts).length, Object.keys(REAL_LOCK.parts).length);
     assert.ok(Object.keys(ctx.lock.parts).length >= 33, '진짜 잠금표(부품 33개)가 그대로 들어간다');
@@ -376,7 +380,7 @@ test('auto: 파이썬 판이 바뀐 꾸러미면 venv 도 되돌린 채로 엔�
     zipRoot,
     nodeDir: path.join(tmp, 'node'),
     stateFile: path.join(tmp, 'state-auto-venv.json'),
-    soulName: SOUL,
+    soulName: SOUL, soulRoot: SOUL_ROOT,
     auto: true,
     readReceiptFn: store.readReceiptFn,
     writeReceiptFn: store.writeReceiptFn,
@@ -422,7 +426,7 @@ for (const [label, present, fillOk] of [
       zipRoot,
       nodeDir: path.join(tmp, 'node'),
       stateFile: path.join(tmp, `state-auto-claude-${present ? 'has' : 'none'}.json`),
-      soulName: SOUL,
+      soulName: SOUL, soulRoot: SOUL_ROOT,
       auto: true,
       readReceiptFn: store.readReceiptFn,
       writeReceiptFn: store.writeReceiptFn,
@@ -442,6 +446,104 @@ for (const [label, present, fillOk] of [
   });
 }
 
+// 2.0.39: 업데이트는 `checks` 단계(설치기 사본을 만드는 유일한 곳)를 건너뛴다 — 그래서 업데이트 경로가
+// 사본을 직접 새 판으로 바꿔 끼워야 `IRIS-삭제.cmd` 가 업데이트한 PC 에도 생긴다(2026-09-29 예행연습 발견).
+test('auto: 업데이트가 설치기 사본을 새 판으로 바꿔 끼운다(IRIS-삭제.cmd 포함)', async () => {
+  const zipRoot = makeZipRoot('zip-auto-copy');
+  fs.mkdirSync(path.join(zipRoot, 'installer'), { recursive: true });
+  fs.mkdirSync(path.join(zipRoot, 'lib'), { recursive: true });
+  for (const f of ['IRIS-설치.cmd', 'IRIS-삭제.cmd', 'uninstall.ps1', 'server.mjs']) {
+    fs.writeFileSync(path.join(zipRoot, 'installer', f), `new ${f}\n`, 'utf8');
+  }
+  fs.writeFileSync(path.join(zipRoot, 'lib', 'run.mjs'), 'new run\n', 'utf8');
+  fs.writeFileSync(path.join(zipRoot, 'IRIS-설치.cmd'), 'new entry\n', 'utf8');
+
+  // 1.9.0 사본이 이미 있는 가짜 영혼(임시 폴더 — 진짜 C:\ 아래가 아니다).
+  const soulRoot = path.join(tmp, 'soul-auto-copy');
+  const copyDir = path.join(soulRoot, '_agent', 'setup', 'installer');
+  fs.mkdirSync(path.join(copyDir, 'installer'), { recursive: true });
+  fs.writeFileSync(path.join(copyDir, '.version'), '1.9.0\n', 'utf8');
+  fs.writeFileSync(path.join(copyDir, 'IRIS-설치.cmd'), 'old entry\n', 'utf8');
+  fs.writeFileSync(path.join(copyDir, 'installer', 'server.mjs'), 'old server\n', 'utf8');
+  // 진짜 영혼의 표시 = 디스크 위 영수증 파일(읽기는 아래 가짜 저장소가 한다).
+  fs.writeFileSync(path.join(soulRoot, '_agent', 'setup', 'package-receipt.json'), '{}\n', 'utf8');
+
+  const store = receiptStore(priorReceipt());
+  const engine = fakeSetupRunner();
+  const { url, close } = await startServer({
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-29T00:00:00.000Z', items: [] }),
+    claudePresentFn: () => true,
+    autoSelfStart: false,
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) },
+    port: 0,
+    precheckFn: async () => OK_PRECHECK,
+    zipRoot,
+    nodeDir: path.join(tmp, 'node'),
+    stateFile: path.join(tmp, 'state-auto-copy.json'),
+    soulName: SOUL,
+    soulRoot,
+    auto: true,
+    readReceiptFn: store.readReceiptFn,
+    writeReceiptFn: store.writeReceiptFn,
+    setupRunner: engine.runner,
+    relaunchFaceFn: () => ({ ok: true, pid: 5 }),
+    finishFn: () => ({ ok: true }),
+    onQuit: () => {},
+  });
+  try {
+    await fetch(`${url}/api/auto`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    await waitForStep(url, 'done');
+    assert.equal(fs.readFileSync(path.join(copyDir, '.version'), 'utf8').trim(), '2.0.0', '사본의 판이 새 판으로');
+    assert.ok(fs.existsSync(path.join(copyDir, 'installer', 'IRIS-삭제.cmd')), '새 판에 생긴 삭제기가 사본에도 있다');
+    assert.equal(fs.readFileSync(path.join(copyDir, 'installer', 'server.mjs'), 'utf8'), 'new server.mjs\n', '낡은 파일은 새 것으로');
+    assert.ok(fs.existsSync(path.join(copyDir, 'lib', 'run.mjs')));
+    assert.ok(fs.existsSync(path.join(`${copyDir}.prev`, '.version')), '직전 사본은 installer.prev 에 한 세대');
+  } finally {
+    await close();
+  }
+});
+
+test('auto: 영수증 파일이 디스크에 없는 영혼이면 설치기 사본을 만들지 않는다(엉뚱한 곳에 폴더 금지)', async () => {
+  const zipRoot = makeZipRoot('zip-auto-nocopy');
+  fs.mkdirSync(path.join(zipRoot, 'installer'), { recursive: true });
+  fs.writeFileSync(path.join(zipRoot, 'installer', 'IRIS-설치.cmd'), 'x\n', 'utf8');
+  const soulRoot = path.join(tmp, 'soul-auto-nocopy');   // 일부러 만들지 않는다
+  const store = receiptStore(priorReceipt());
+  const calls = [];
+  const { url, close } = await startServer({
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: '2026-09-29T00:00:00.000Z', items: [] }),
+    claudePresentFn: () => true,
+    copyInstallerFn: (ctx) => { calls.push(ctx.root); return { ok: true }; },
+    autoSelfStart: false,
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) },
+    port: 0,
+    precheckFn: async () => OK_PRECHECK,
+    zipRoot,
+    nodeDir: path.join(tmp, 'node'),
+    stateFile: path.join(tmp, 'state-auto-nocopy.json'),
+    soulName: SOUL,
+    soulRoot,
+    auto: true,
+    readReceiptFn: store.readReceiptFn,
+    writeReceiptFn: store.writeReceiptFn,
+    setupRunner: fakeSetupRunner().runner,
+    relaunchFaceFn: () => ({ ok: true, pid: 5 }),
+    finishFn: () => ({ ok: true }),
+    onQuit: () => {},
+  });
+  try {
+    await fetch(`${url}/api/auto`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    await waitForStep(url, 'done');
+    assert.equal(calls.length, 0);
+    assert.equal(fs.existsSync(path.join(soulRoot, '_agent', 'setup', 'installer')), false, '사본 폴더를 새로 만들지 않는다');
+    assert.equal(store.state.receipt.update.to, '2.0.0', '업데이트는 끝까지 간다');
+  } finally {
+    await close();
+  }
+});
+
 test('auto: requested on a PC with no receipt falls back to the ordinary wizard', async () => {
   const zipRoot = makeZipRoot('zip-auto-fresh');
   const engine = fakeSetupRunner();
@@ -456,7 +558,7 @@ test('auto: requested on a PC with no receipt falls back to the ordinary wizard'
     zipRoot,
     nodeDir: path.join(tmp, 'node'),
     stateFile: path.join(tmp, 'state-fresh.json'),
-    soulName: SOUL,
+    soulName: SOUL, soulRoot: SOUL_ROOT,
     auto: true,
     readReceiptFn: () => null, // no install here yet
     setupRunner: engine.runner,
@@ -483,7 +585,7 @@ test('auto: requested on a PC with no receipt falls back to the ordinary wizard'
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     });
     assert.equal(locate.status, 200);
-    assert.equal((await locate.json()).root, `C:\\${SOUL}`);
+    assert.equal((await locate.json()).root, SOUL_ROOT);
   } finally {
     await close();
   }
@@ -502,7 +604,7 @@ test('auto: without the flag nothing is automatic, even over an existing install
     zipRoot,
     nodeDir: path.join(tmp, 'node'),
     stateFile: path.join(tmp, 'state-off.json'),
-    soulName: SOUL,
+    soulName: SOUL, soulRoot: SOUL_ROOT,
     auto: false,
     readReceiptFn: () => priorReceipt(),
   });
@@ -525,7 +627,7 @@ test('auto: without the flag nothing is automatic, even over an existing install
     autoSelfStart: false, // 2.0.22: --auto self-start off so each test drives POST /api/auto itself
     holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) }, // 2.0.26: no real process scan in tests
     port: 0, precheckFn: async () => OK_PRECHECK, zipRoot: makeZipRoot('zip-auto-off-same'),
-    nodeDir: path.join(tmp, 'node'), stateFile: path.join(tmp, 'state-off-same.json'), soulName: SOUL, auto: false,
+    nodeDir: path.join(tmp, 'node'), stateFile: path.join(tmp, 'state-off-same.json'), soulName: SOUL, soulRoot: SOUL_ROOT, auto: false,
     readReceiptFn: () => priorReceipt({ version: '2.0.0' }),
   });
   try {
@@ -599,7 +701,7 @@ function writeStaleState(file, extra) {
     step: 'done',
     zipRoot: 'C:\\somewhere-old',
     nodeDir: 'C:\\somewhere-old\\node',
-    soul: { name: SOUL, root: `C:\\${SOUL}`, existing: 'soul' },
+    soul: { name: SOUL, root: SOUL_ROOT, existing: 'soul' },
     install: { parts: { face: 'error', node: 'done' } },
     packageVersion: '2.0.0', // 1.4.4+: a saved state is resumed only by the package version that wrote it (makeZipRoot default)
     ...extra,
@@ -626,7 +728,7 @@ test('auto: a previous update left step=done + autoResult -- the update still st
     zipRoot,
     nodeDir: path.join(tmp, 'node'),
     stateFile,
-    soulName: SOUL,
+    soulName: SOUL, soulRoot: SOUL_ROOT,
     auto: true,
     readReceiptFn: store.readReceiptFn,
     writeReceiptFn: store.writeReceiptFn,
@@ -687,7 +789,7 @@ test('auto: a first install that failed long ago left installError -- the update
     zipRoot,
     nodeDir: path.join(tmp, 'node'),
     stateFile,
-    soulName: SOUL,
+    soulName: SOUL, soulRoot: SOUL_ROOT,
     auto: true,
     readReceiptFn: store.readReceiptFn,
     writeReceiptFn: store.writeReceiptFn,
@@ -735,7 +837,7 @@ test('auto: without the flag a leftover step/installError is still restored (the
     zipRoot,
     nodeDir: path.join(tmp, 'node'),
     stateFile,
-    soulName: SOUL,
+    soulName: SOUL, soulRoot: SOUL_ROOT,
     auto: false,
     readReceiptFn: () => priorReceipt(),
   });
@@ -769,7 +871,7 @@ test('auto: 엔진이 멈추면 그 단계 이름으로 멈춤을 적고, 창은
     zipRoot,
     nodeDir: path.join(tmp, 'node'),
     stateFile: path.join(tmp, 'state-fail.json'),
-    soulName: SOUL,
+    soulName: SOUL, soulRoot: SOUL_ROOT,
     auto: true,
     readReceiptFn: store.readReceiptFn,
     writeReceiptFn: store.writeReceiptFn,
@@ -802,7 +904,7 @@ test('auto: 엔진이 멈추면 그 단계 이름으로 멈춤을 적고, 창은
     // window at all. The unpack stage rolled the failed part back to .prev, so
     // the window that reopens is the one that worked before the update.
     assert.equal(relaunchCalls.length, 1, 'a failed update still reopens the window');
-    assert.equal(relaunchCalls[0].root, `C:\\${SOUL}`);
+    assert.equal(relaunchCalls[0].root, SOUL_ROOT);
     assert.equal(st.autoResult.relaunched, true);
 
     const frames = await readBufferedEvents(url);
@@ -832,7 +934,7 @@ test('auto(2.0.21): 계정 연결이 끝난 PC 의 업데이트는 중계기를 
     onlineRunner: { startRelay: async (a) => { relayCalls.push(a); return { ok: true, state: 'done', accounts: 1 }; } },
     relayRecheckFn: async (root) => { recheckRoot = root; return { at: 't', items: [{ id: 'relayCodex', num: 13, label: '중계기 경유(코덱스)', status: 'pass', detail: 'CA 번들 갱신' }] }; },
     port: 0, precheckFn: async () => OK_PRECHECK, zipRoot, nodeDir: path.join(tmp, 'node'),
-    stateFile: path.join(tmp, 'state-auto-recheck.json'), soulName: SOUL, auto: true,
+    stateFile: path.join(tmp, 'state-auto-recheck.json'), soulName: SOUL, soulRoot: SOUL_ROOT, auto: true,
     readReceiptFn: store.readReceiptFn, writeReceiptFn: store.writeReceiptFn, setupRunner: engine.runner,
     relaunchFaceFn: () => ({ ok: true, how: 'wscript', pid: 1 }), finishFn: () => ({ ok: true }), onQuit: () => {},
   });
@@ -862,7 +964,7 @@ test('auto(2.0.22): with --auto the server starts the update by itself -- no bro
     relayRecheckFn: async () => ({ at: 't', items: [] }),
     autoSelfStart: true,
     port: 0, precheckFn: async () => OK_PRECHECK, zipRoot, nodeDir: path.join(tmp, 'node'),
-    stateFile: path.join(tmp, 'state-auto-self.json'), soulName: SOUL, auto: true,
+    stateFile: path.join(tmp, 'state-auto-self.json'), soulName: SOUL, soulRoot: SOUL_ROOT, auto: true,
     readReceiptFn: store.readReceiptFn, writeReceiptFn: store.writeReceiptFn, setupRunner: engine.runner,
     relaunchFaceFn: (o) => { relaunchCalls.push(o); return { ok: true, how: 'wscript', pid: 5 }; }, finishFn: () => ({ ok: true }), onQuit: () => {},
   });

@@ -5,7 +5,7 @@
     "skipUnder 항목은 글롭이다. '/'가 없으면 경로의 아무 마디에나 걸리는 마디 글롭(하위 트리 전체), '/'가 있으면 논리경로 전체를 맞추는 전경로 글롭이다.",
     "zip 안은 '<zip 이름>!/<안쪽 경로>'로 표기된다(.hwpx 도 zip 으로 풀어 안쪽 XML 까지 본다)."
   ],
-  "forbiddenNames": ["**/.env", "**/secrets/**", "**/auth.json", "**/teamclaude.json", "**/*.token", "**/credentials*", "**/.git/**", "**/auth.bin", "**/keys.bin", "**/modules/*/state/**", "**/.stack", "**/.supa"],
+  "forbiddenNames": ["**/.env", "**/secrets/**", "**/auth.json", "**/teamclaude.json", "**/*.token", "**/credentials*", "**/.git/**", "**/auth.bin", "**/keys.bin", "**/modules/*/state/**", "**/.stack", "**/.supa", "**/*.log"],
   "forbiddenStrings": [],
   "forbiddenRegex": [
     {

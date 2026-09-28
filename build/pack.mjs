@@ -33,6 +33,13 @@ const DEFAULT_PRESETS_FILE = path.join(ROOT_DIR, 'installer', 'ui', 'presets.jso
 const PATCH_RULES_REL = path.join('patches', 'teamclaude', 'rules.json');
 const DEFAULT_PATCH_RULES_FILE = path.join(ROOT_DIR, PATCH_RULES_REL);
 const CMD_NAME = 'IRIS-설치.cmd';
+// (2.0.39, docs/설계-삭제기.md) The uninstaller launcher sits at the zip root
+// next to the install .cmd, so "extract, double-click to remove" needs nothing
+// else. It also travels inside installer\ with the rest of that folder (the
+// installed copy under <root>\_agent\setup\installer\installer\ uses that one).
+// Optional here so tests can pack a fake installerDir without it;
+// verify/static.mjs requires it in the real zip.
+const UNINSTALL_CMD_NAME = 'IRIS-삭제.cmd';
 // 설계 4-1: the SAC two-ways notice sits at the zip root under a name the
 // person reads without opening anything, and is the SAME text the homepage
 // shows -- one source (payload-src/policy/install-notice.txt), two places.
@@ -440,6 +447,12 @@ export async function pack({
   if (!fs.existsSync(cmdSrc)) throw new Error(`pack: ${CMD_NAME} not found under installerDir ${installerDir}`);
   fs.copyFileSync(cmdSrc, path.join(root, CMD_NAME));
   forceCRLF(path.join(root, CMD_NAME));
+
+  const uninstallCmdSrc = path.join(installerDir, UNINSTALL_CMD_NAME);
+  if (fs.existsSync(uninstallCmdSrc)) {
+    fs.copyFileSync(uninstallCmdSrc, path.join(root, UNINSTALL_CMD_NAME));
+    forceCRLF(path.join(root, UNINSTALL_CMD_NAME));
+  }
 
   // 설치가 안 되면.txt -- a byte copy of payload-src\policy\install-notice.txt.
   // copyFileSync, never a read/write round trip: the file starts with a UTF-8

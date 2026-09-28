@@ -369,6 +369,8 @@ export function startServer({
   relayRecheckFn = null,
   // 2.0.38: 업데이트가 Claude Code 를 채울지 가르는 유무 검사(root → boolean) — 시험은 가짜를 넣는다.
   claudePresentFn = (root) => fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', 'claude.cmd')),
+  // 2.0.39: 업데이트가 설치기 사본(_agent\setup\installer)을 새 판으로 바꿔 끼우는 함수(ctx → 결과) — 시험은 가짜를 넣는다.
+  copyInstallerFn = null,
   faceDir,
   faceNodeExe,
   workDir,
@@ -1519,6 +1521,22 @@ export function startServer({
         }
       }
 
+      // 2.0.39: 업데이트도 설치기 사본(_agent\setup\installer)을 새 판으로 바꿔 끼운다. 사본을 만드는 곳은
+      // `checks` 단계뿐인데 업데이트는 그 단계를 건너뛰므로(KEEP_DONE), 없으면 업데이트한 PC 의 사본에
+      // `IRIS-삭제.cmd` 같은 새 파일이 영영 생기지 않는다(2026-09-29 예행연습에서 발견).
+      // 영수증 파일이 디스크에 있는 진짜 영혼에서만(`_agent\setup` 폴더만으로는 안 된다 — 이 서버의 기록 파일도
+      // 거기 생긴다) — 시험의 가짜 영수증으로 엉뚱한 곳에 폴더를 만들지 않는다.
+      // 실패해도 업데이트는 끝난다(기록만) — 설치된 IRIS 는 사본 없이도 돈다.
+      if (fs.existsSync(path.join(root, '_agent', 'setup', 'package-receipt.json'))) {
+        try {
+          const copyFn = copyInstallerFn ?? (await import('./setup/handoff.mjs')).copyInstallerProgram;
+          const copied = copyFn(buildSetupContext(root));
+          log(`update installer copy: ok=${copied?.ok} replaced=${copied?.replaced} ${copied?.previousVersion ?? '-'} -> ${copied?.version ?? '-'}`);
+        } catch (err) {
+          log(`update installer copy failed (optional): ${String(err?.stack ?? err)}`);
+        }
+      }
+
       // 업데이트 경로도 검사 12·13 을 다시 잰다(2.0.21, 2026-09-19). 업데이트는 `checks` 단계를 건너뛰고(KEEP_DONE)
       // 온라인 단계도 없으므로, 2.0.20 의 "⑦ 뒤 재측정"만으로는 이미 설치된 PC 가 「업데이트」를 눌러도
       // 코덱스 CA 번들이 끝내 만들어지지 않는다. 계정 연결이 끝난 PC 에서만: 중계기를 띄우고(살아 있으면 무접촉)
@@ -1720,6 +1738,12 @@ export function startServer({
       }
     }
   });
+  // The setup engine does synchronous file work in this process, so the event
+  // loop can freeze for seconds. With Node's default keep-alive (5 s + 1 s) the
+  // idle timer then fires before the poll phase reads a request that arrived
+  // during the freeze, and the socket is destroyed with it unread -> RST ->
+  // fetch() "ECONNRESET" (2.0.39 e2e). Keep it long, but under headersTimeout.
+  server.keepAliveTimeout = 55_000;
 
   return new Promise((resolve, reject) => {
     server.on('error', reject);

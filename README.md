@@ -42,18 +42,33 @@
 
 **2.0 은 설치 방식이 바뀌어 새로 설치합니다.** 1.x 영수증이 있는 PC에서 자동 업데이트(`--auto`)를 돌리면 설치기가 그것을 알아보고 "새로 설치 필요" 안내를 띄운 뒤 아무것도 바꾸지 않습니다. 기존 자료(R/D/P 폴더·기억·설정·시크릿)는 그대로 두고 설치기를 실행하면 되고, 1.x 영수증은 `_agent\setup\package-receipt.v1.json` 으로 보존됩니다. 2.x 안에서의 업데이트는 예전처럼 IRIS 창의 「설정 → 업데이트」 단추 하나로 끝나며, 바뀐 부품만 교체되고 옛 판은 `.prev` 로 남습니다.
 
+## 지우기
+
+zip을 푼 폴더에서 **`IRIS-삭제.cmd`** 를 두 번 클릭합니다(2.0.39부터. 2.0.39 이상으로 설치하거나 업데이트한 PC에는 `C:\IRIS` 안의 `_agent\setup\installer\installer` 폴더에도 있습니다). 한국어 창이 무엇을 지우고 무엇을 남기는지 먼저 보여 주고, 고른 대로 지운 뒤 결과를 알려 줍니다.
+
+| 고르는 것 | 내 작업(R 폴더·직접 만든 파일) | IRIS가 깐 것 |
+|---|---|---|
+| **내 작업은 남기기**(기본·추천) | `C:\IRIS-보관-YYYY-MM-DD` 로 옮겨 둠 | 지움 |
+| **전부 지우기** | 한 번 더 확인한 뒤 지움 | 지움 |
+
+- IRIS가 깐 것 = `C:\IRIS` 안의 프로그램·설정·**API 키·로그인 정보·비서의 기억과 대화 기록**, 그리고 바깥의 환경변수·PATH 한 칸·로그온 자동 시작·바탕화면 「IRIS」 바로가기·설치기 작업 폴더. 사용자가 원래 쓰던 환경변수 값은 설치 전 값으로 되돌립니다.
+- **설치 영수증(`_agent\setup\package-receipt.json`)이 있는 폴더만** 지웁니다. 영수증이 없거나 드라이브 뿌리·Windows·Program Files·사용자 프로필 같은 위치, 연결 폴더는 어떤 경우에도 건드리지 않습니다.
+- 파일을 붙잡은 프로그램이 있으면 그 이름을 알려 주고 남은 것만 [다시 시도]로 마저 지웁니다. 옮기지 못한 내 작업은 지우지 않고 제자리에 둡니다.
+- 구독 해지는 PC에서 할 수 없으므로 claude.ai·chatgpt.com 에서 따로 합니다.
+- 설계와 안전 장치 = `docs/설계-삭제기.md`. 창 없이 돌리는 옵션과 종료 코드는 `installer/uninstall.ps1` 머리말에 있습니다.
+
 ## 저장소 구조
 
 | 폴더 | 정체 |
 |---|---|
-| `installer/` | zip에 들어가는 설치기 — `IRIS-설치.cmd`·`bootstrap.ps1`(겉옷, ASCII 전용) · `server.mjs`+`lib/`(속옷, 127.0.0.1:3460) · `setup/`(세팅 엔진 아홉 단계) · `ui/index.html`(단일 파일 화면) |
+| `installer/` | zip에 들어가는 설치기 — `IRIS-설치.cmd`·`bootstrap.ps1`(겉옷, ASCII 전용) · `server.mjs`+`lib/`(속옷, 127.0.0.1:3460) · `setup/`(세팅 엔진 아홉 단계) · `ui/index.html`(단일 파일 화면) · 삭제기 `IRIS-삭제.cmd`·`uninstall.ps1`·`uninstall-ko.json` |
 | `build/` | 공장 — `lock.json`대로 부품 수집 → 로컬 패치 → 개인정보 정화 → 매니페스트(SHA-256) → 포장 |
 | `verify/` | 검사소 — `static.mjs` · `reproduce.mjs` · `extract-matrix.mjs` · `offline.mjs` · `e2e.mjs`(가상 영혼 전 구간) · `vm/`(시험 행렬 자동화) |
 | `updater/` | 적용기 — `apply.mjs` 한 파일(의존성 0). 설치되면 `_agent\shared\tools\updater\` |
 | `patches/` | 중계기 로컬 패치 규칙(앵커→치환)과 관리 스크립트 |
 | `payload-src/` | zip에 그대로 실리는 원본 — 지침 템플릿·정책 문서·훅 스크립트·파이썬 잠금 파일 |
 | `lock.json` | 부품 잠금표 — 판·URL·SHA-256(`latest` 금지). 형식 = `docs/lock-schema.md` |
-| `docs/` | 설계 정본 `설계-v2.md`, 계약 3종(`세팅엔진-계약-v2.md`·`설치기-API-v2.md`·`인수문서-handoff-v2.md`), `시험행렬.md`, 검증기록 |
+| `docs/` | 설계 정본 `설계-v2.md`, 계약 3종(`세팅엔진-계약-v2.md`·`설치기-API-v2.md`·`인수문서-handoff-v2.md`), `시험행렬.md`, 검증기록, 삭제기 설계 `설계-삭제기.md` |
 | `_build/` | 자동 출력(캐시·스테이지·zip). git 제외 |
 
 ## 빌드와 검증 (개발 PC)

@@ -144,6 +144,52 @@ test('health 200 with name:iris-installer; POST /api/quit closes the server', as
   await assert.rejects(fetch(`${handle.url}/api/health`), 'server should have stopped listening');
 });
 
+// 2.0.39 e2e 의 간헐 "fetch failed"(ECONNRESET) 원인. 세팅 엔진의 동기 파일 작업으로
+// 서버 이벤트 루프가 몇 초 멈추면, 멈춘 동안 쌓인 타이머가 먼저 돌아 Node 기본
+// keep-alive 시한(5 초 + 여유 1 초)이 지난 연결을 끊는다 — 그 연결에 막 도착한 요청을
+// 읽지도 않은 채. fetch(undici)는 재시도하지 않으므로 시험 도구·업데이트 게이트가 실패한다.
+// 같은 프로세스에서 재현: 연결을 한 번 쓰고, 멈춘 뒤 가장 먼저 도는 타이머에서 같은
+// 연결로 다음 요청을 보내게 걸어 둔 다음 7 초 동안 이벤트 루프를 막는다.
+test('keep-alive: 시한이 길고(≥30 초) 머리글 시한보다는 짧다', async () => {
+  const handle = await start();
+  try {
+    assert.ok(handle.server.keepAliveTimeout >= 30_000,
+      `keepAliveTimeout ${handle.server.keepAliveTimeout} ms 는 너무 짧다`);
+    assert.ok(handle.server.headersTimeout > handle.server.keepAliveTimeout,
+      'headersTimeout 이 keepAliveTimeout 보다 길어야 한다');
+  } finally {
+    await handle.close();
+  }
+});
+
+test('keep-alive: 이벤트 루프가 7 초 멈춰도 서버가 쓰던 연결을 먼저 끊지 않는다', async () => {
+  const handle = await start();
+  try {
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    const get = () => new Promise((resolve, reject) => {
+      const req = http.get(`${handle.url}/api/health`, { agent }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      req.on('error', reject);
+    });
+    try {
+      assert.equal(await get(), 200);
+      await new Promise((r) => setImmediate(r));
+      const second = new Promise((resolve) => {
+        setTimeout(() => get().then((s) => resolve(`status ${s}`), (e) => resolve(`${e.code ?? e.message}`)), 1);
+      });
+      const end = Date.now() + 7_000;
+      while (Date.now() < end) { /* 서버의 동기 작업 흉내 */ }
+      assert.equal(await second, 'status 200');
+    } finally {
+      agent.destroy();
+    }
+  } finally {
+    await handle.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // ② 정상 전이 전체
 // ---------------------------------------------------------------------------
