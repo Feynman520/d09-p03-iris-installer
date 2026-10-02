@@ -162,7 +162,7 @@
     "dash": {
       "kind": "dir",
       "source": "C:/IRIS/_agent/claude/tools/teamclaude-dash",
-      "exclude": ["design", "tests", "AGENTS.md", "CLAUDE.md", "teamclaude-manage.last.log"],
+      "exclude": ["design", "tests", "AGENTS.md", "CLAUDE.md", "teamclaude-manage.last.log", "teamclaude-login.last.log"],
       "redact": [
         {
           "file": "dashboard.html",
