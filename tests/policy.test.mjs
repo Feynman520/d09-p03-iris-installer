@@ -84,6 +84,8 @@ test('policy: every expected source file exists', () => {
     path.join('hooks', 'block-blanket-kill.test.py'),
     path.join('hooks', 'guard-iris-path.py'),
     path.join('hooks', 'guard-iris-path.test.py'),
+    path.join('hooks', 'bg-leftover-guard.py'),
+    path.join('hooks', 'bg-leftover-guard.test.py'),
   ]) {
     assert.ok(fs.existsSync(path.join(POLICY, rel)), `missing policy file: ${rel}`);
   }

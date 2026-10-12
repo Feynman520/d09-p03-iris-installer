@@ -127,6 +127,7 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
     ['claude', 'plugins', 'marketplaces', 'iris-local', '.claude-plugin', 'marketplace.json'],
     ['claude', 'scripts', 'block-blanket-kill.ps1'],
     ['claude', 'scripts', 'guard-iris-path.py'],
+    ['claude', 'scripts', 'bg-leftover-guard.py'],
     ['claude', 'secrets', '.env'],
     ['claude', 'secrets', 'README.md'],
     ['codex', 'config.toml'],
@@ -157,8 +158,14 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   const start = settings.hooks.SessionStart;
   assert.equal(start.length, 1);
   assert.ok(start[0].hooks[0].command.includes(path.join(root, '_ontology', 'check_fresh.py')));
+  // 2.0.42: 안 끈 배경 명령 가드(클로드 전용 Stop 훅, matcher 없음)
+  const stop = settings.hooks.Stop;
+  assert.equal(stop.length, 1);
+  assert.equal(stop[0].matcher, undefined);
+  assert.ok(stop[0].hooks[0].command.includes(path.join(root, '_agent', 'shared', 'shims', 'python.cmd')));
+  assert.ok(stop[0].hooks[0].command.includes('bg-leftover-guard.py'));
   // 새 PC 에는 시스템 파이썬이 없다 -> 맨 `python` 으로 시작하면 안 된다
-  for (const group of [...pre, ...start]) {
+  for (const group of [...pre, ...start, ...stop]) {
     for (const h of group.hooks) assert.ok(!/^python\b/.test(h.command), `shim 절대경로가 아님: ${h.command}`);
   }
 

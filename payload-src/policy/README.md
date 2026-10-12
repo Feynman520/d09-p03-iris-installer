@@ -8,5 +8,5 @@
 - `policy-summary.md` → `_agent\setup\`. 설치기가 지키는 약속(무삭제·질문 경계·바탕화면 금지·대기의 뜻·재실행 안전·로그 위치)을 사람이 읽는 글.
 - `install-notice.txt`(UTF-8 BOM) → zip 루트의 「설치가 안 되면.txt」이자 홈페이지 `install.html#sac` 문구의 단일 원본.
 - `ontology-registry-template.yml` → `_ontology\registry.yml`. 항목 0개인 빈 등록부(구조와 주의만).
-- `hooks\` → `_agent\claude\scripts\`. 전역 PreToolUse 훅 2종(일괄 킬 차단·경로 실존 가드)과 각각의 `.test.py`.
+- `hooks\` → `_agent\claude\scripts\`. 전역 PreToolUse 훅 2종(일괄 킬 차단·경로 실존 가드 — 경로 가드는 루트 낱개 파일 차단 포함)과 클로드 Stop 훅 1종(안 끈 배경 명령 가드, 2.0.42), 각각의 `.test.py`.
 - `licenses\` → zip의 `payload\policy\licenses\`. 부품별 허가서 사본이 모이는 자리 — 대부분 부품 수집(T07)이 자동으로 채우고, 원문 파일이 없는 부품(예: 비상업 조건이 README에만 적힌 `ui-ux-pro-max`)만 사람이 여기에 직접 넣는다. 규칙과 현재 수동 항목은 `licenses\README.md`.

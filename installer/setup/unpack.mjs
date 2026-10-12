@@ -389,7 +389,7 @@ export function v2Verifiers(ctx) {
   };
   V.hooks = async () => {
     const d = dest('hooks');
-    const need = ['block-blanket-kill.ps1', 'guard-iris-path.py'];
+    const need = ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py'];
     const gone = need.filter((f) => !exists(fs, d, f));
     return { ok: gone.length === 0, detail: gone.length ? `없음: ${gone.join(',')}` : need.join(',') };
   };

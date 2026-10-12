@@ -13,7 +13,14 @@ r"""PreToolUse guard: IRIS 경로 실존 가드 (전역 규칙).
      (Write/Edit류는 항상, Bash/PowerShell은 mkdir·cp·mv·리다이렉션 등 생성 동사가 있을 때만)
   C. Write/Edit류가 존재하지 않는 R/D/P/S/T 코드 폴더를 암묵적으로 만들려 하면 차단.
      새 위계 폴더는 mkdir로 명시적으로 만든 뒤에 써야 한다.
-면제: `_trash`, `_agent` 아래 경로(격리물·세션 기록에는 유령 이름이 남아 있을 수 있음).
+  D. IRIS 루트 바로 밑에 **새 낱개 파일**을 만들려 하면 차단(이미 있는 루트 파일 수정은 통과).
+     배경: 보조 에이전트가 임시 폴더 저장에 실패한 뒤 `cd <IRIS 루트> && curl -o …`로 조회 결과 임시 파일
+     여러 개를 루트에 흘린 일이 있었다(글 규칙 "임시 파일은 %TEMP%만"이 있었는데도).
+     Write류는 경로로, 셸은 cd 추적(훅 cwd 포함) + 저장 대상(>·>>, curl -o/-O, wget, tee, touch,
+     cp/mv 목적지, Out-File·Set-Content·New-Item·-OutFile, python/node 인라인·heredoc의 open(...,'w') 등)으로 판정.
+     한계: 스크립트 파일 **내부**의 저장은 못 본다.
+     허용 새 루트 파일 = ROOT_ALLOW_NEW(전역 문서류). 새 루트 문서가 정말 필요하면 여기에 추가.
+면제: `_trash\`, `_agent\` 아래 경로(격리물·세션 기록에는 유령 이름이 남아 있을 수 있음).
 
 출력: 차단 시 hookSpecificOutput.permissionDecision=deny JSON 한 줄. 그 외 아무것도 출력하지 않는다.
 오류가 나면 조용히 통과시킨다(가드가 정상 작업을 막아서는 안 된다).
@@ -28,7 +35,7 @@ IRIS_ROOT = os.environ.get("IRIS_ROOT") or os.path.join(
     os.environ.get("SystemDrive", "C:") + os.sep, "IRIS"
 )
 EXEMPT_TOP = {"_trash", "_agent"}
-CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿]")
+CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 CODE_DIR = re.compile(r"^(〖[^〗]*〗)?[RDPST]\d")
 PATH_IN_TEXT = re.compile(
     r"(?:[A-Za-z]:[\\/]{1,4}IRIS|/[A-Za-z]/IRIS)[\\/]{1,4}([^\"'\r\n;|&<>]*)"
@@ -39,6 +46,237 @@ CREATE_VERBS = re.compile(
 )
 EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
+
+# --- 규칙 D: 루트 낱개 파일 ---
+ROOT_ALLOW_NEW = re.compile(r"(?i)^(AGENTS\.md|CLAUDE\.md|\.gitignore|desktop\.ini|IRIS-[^\\/]+)$")
+NULL_TARGETS = {"/dev/null", "nul", "/dev/stdout", "/dev/stderr", "-"}
+OUT = "OUT"  # 현재 폴더가 IRIS 밖
+CD_CMDS = {"cd", "set-location", "sl", "pushd", "push-location", "chdir"}
+INTERP = {"python", "python3", "py", "node", "deno", "bun"}
+HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w-]*)\1")
+SEP = re.compile(r"&&|\|\||;|\||\n")
+REDIR = re.compile(r"(?<![-=<>])\d?>>?(?![&>])")
+TOKEN = re.compile(r"\"[^\"]*\"|'[^']*'|\S+")
+CODE_WRITES = [
+    re.compile(r"""open\(\s*[rRbBuUfF]{0,2}(["'])([^"'\n]+)\1\s*,\s*(?:mode\s*=\s*)?[rRbB]?(["'])[rbt+]*[wax][^"']*\3"""),
+    re.compile(r"""(?:writeFileSync|appendFileSync|writeFile|appendFile|createWriteStream)\(\s*(["'`])([^"'`\n]+)\1"""),
+    re.compile(r"""Path\(\s*[rR]?(["'])([^"'\n]+)\1\s*\)\.(?:write_text|write_bytes|touch)\("""),
+    re.compile(r"""\.(?:to_csv|to_json|to_excel|to_parquet|savefig|save)\(\s*[rR]?(["'])([^"'\n]+)\1"""),
+]
+
+
+def root_file_block(name: str, shown: str):
+    """루트 바로 밑 파일 name을 새로 만들면 차단 사유, 아니면 None."""
+    if not name or name in (".", "..") or ROOT_ALLOW_NEW.match(name):
+        return None
+    if os.path.exists(os.path.join(IRIS_ROOT, name)):
+        return None
+    return (
+        f"BLOCKED - IRIS 루트 낱개 파일 가드: {IRIS_ROOT} 바로 밑에 새 파일 '{name}'을(를) 만들려 합니다 ({shown[:160]}). "
+        "IRIS 루트에는 전역 문서만 둡니다. "
+        "임시·중간 파일은 세션 스크래치패드(시스템 프롬프트의 Scratchpad directory, 없으면 %TEMP%\\<작업명>\\) 절대경로에, "
+        "산출물은 해당 R/D/P 폴더에 쓰세요. 루트로 cd한 뒤 상대경로로 저장하는 것도 같은 행위입니다. "
+        "정말 새 루트 문서가 필요하면 사용자 승인 후 guard-iris-path.py의 ROOT_ALLOW_NEW에 추가하세요. "
+        "(BLOCKED: new loose file directly under the IRIS root. Write temp files to your scratchpad or %TEMP%, outputs to the project folder.)"
+    )
+
+
+def mask_quotes(s: str) -> str:
+    """따옴표 안 글자를 '_'로 가려 같은 길이의 문자열을 돌려준다(따옴표 속 > ; | 를 연산자로 오인하지 않게)."""
+    out, q = list(s), None
+    for i, ch in enumerate(s):
+        if q:
+            if ch == q:
+                q = None
+            elif ch != "\n":
+                out[i] = "_"
+        elif ch in "\"'":
+            q = ch
+    return "".join(out)
+
+
+def split_heredocs(cmd: str):
+    """heredoc·PS here-string 본문을 떼어 내고 여는 자리에 __HEREDOC_k__ 표시를 남긴다."""
+    lines, out, bodies, i = cmd.split("\n"), [], [], 0
+    while i < len(lines):
+        line = lines[i]
+        m = HEREDOC_OPEN.search(line)
+        ps = re.search(r"@['\"]\s*$", line)
+        if m or ps:
+            end_ok = (lambda l, t=m.group(2): l.strip() == t) if m else (lambda l: l.lstrip().startswith(("'@", '"@')))
+            body, i = [], i + 1
+            while i < len(lines) and not end_ok(lines[i]):
+                body.append(lines[i])
+                i += 1
+            k = len(bodies)
+            bodies.append("\n".join(body))
+            pos = m.end() if m else ps.start()
+            out.append(line[:pos] + f" __HEREDOC_{k}__ " + line[pos:])
+            i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out), bodies
+
+
+def strip_q(t: str) -> str:
+    return t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t
+
+
+def resolve(t: str, cur):
+    """저장 대상 t → IRIS 상대 조각 목록, 판정 불가·IRIS 밖이면 None."""
+    t = strip_q(t.strip()).rstrip(")")
+    if not t or t.lower() in NULL_TARGETS or t[0] in "$&~%(":
+        return None
+    segs = norm_rel(t)
+    if segs is not None:
+        return segs
+    if re.match(r"^[A-Za-z]:[\\/]|^[\\/]", t):
+        return None
+    if cur is None or cur == OUT:
+        return None
+    res = list(cur)
+    for p in re.split(r"[\\/]+", t):
+        if p in ("", "."):
+            continue
+        if p == "..":
+            if not res:
+                return None
+            res.pop()
+        else:
+            res.append(p)
+    return res
+
+
+def cmd_name(tokens):
+    """앞의 환경변수 대입·& 호출 연산자를 건너뛴 명령 이름(소문자, .exe 제거)과 그 위치."""
+    for idx, tok in enumerate(tokens):
+        if tok in ("&", ".", "sudo", "time", "exec") or re.match(r"^\w+=", tok):
+            continue
+        name = re.split(r"[\\/]", strip_q(tok))[-1].lower()
+        return (name[:-4] if name.endswith(".exe") else name), idx
+    return "", -1
+
+
+def seg_targets(seg: str, mseg: str, tokens, name: str, ci: int):
+    """세그먼트의 저장 대상 목록: (대상문자열, 'file'|'remote'|'dest', 원본파일)."""
+    found = []
+    for m in REDIR.finditer(mseg):
+        rest = seg[m.end():].lstrip()
+        tm = re.match(r"\"[^\"]*\"|'[^']*'|[^\s;&|<>]+", rest)
+        if tm:
+            found.append((tm.group(0), "file", None))
+    args = [t for t in tokens[ci + 1:]] if ci >= 0 else []
+    plain = [a for a in args if not a.startswith("-") and not a.startswith(">") and not re.match(r"^\d?>", a)]
+    if name == "curl":
+        for j, a in enumerate(args):
+            if a in ("-o", "--output") or re.match(r"^-[A-Za-z]*o$", a):
+                if j + 1 < len(args):
+                    found.append((args[j + 1], "file", None))
+            elif a in ("-O", "--remote-name", "--remote-name-all") or re.match(r"^-[A-Za-z]*O[A-Za-z]*$", a):
+                found.append(("", "remote", None))
+    elif name == "wget":
+        if "-O" in args:
+            j = args.index("-O")
+            if j + 1 < len(args):
+                found.append((args[j + 1], "file", None))
+        elif "-P" not in args and not any(a.startswith(("--directory-prefix", "-O")) for a in args):
+            found.append(("", "remote", None))
+    elif name in ("touch", "tee", "tee-object"):
+        found += [(a, "file", None) for a in plain]
+    elif name in ("cp", "mv", "copy-item", "move-item", "copy", "move", "cpi", "mi", "cpp"):
+        dest = None
+        for j, a in enumerate(args):
+            if a.lower() == "-destination" and j + 1 < len(args):
+                dest = args[j + 1]
+        if dest is None and len(plain) >= 2:
+            dest = plain[-1]
+        if dest is not None and plain:
+            found.append((dest, "dest", plain[0]))
+    elif name in ("out-file", "set-content", "add-content", "new-item", "export-csv", "export-clixml", "ni", "sc", "ac"):
+        low = [a.lower() for a in args]
+        if name in ("new-item", "ni") and any(v in ("directory", "dir") for v in low):
+            return found
+        tgt = None
+        for j, a in enumerate(low):
+            if a in ("-filepath", "-path", "-literalpath") and j + 1 < len(args):
+                tgt = args[j + 1]
+        if tgt is None:
+            skip_next = False
+            for a in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a.startswith("-"):
+                    skip_next = a.lower() in ("-encoding", "-itemtype", "-value", "-width", "-name", "-type")
+                    continue
+                tgt = a
+                break
+        if tgt is not None:
+            found.append((tgt, "file", None))
+    elif name in ("invoke-webrequest", "iwr", "invoke-restmethod", "irm"):
+        for j, a in enumerate(args):
+            if a.lower() == "-outfile" and j + 1 < len(args):
+                found.append((args[j + 1], "file", None))
+    return found
+
+
+def check_root_shell(cmd: str, cwd_raw: str):
+    """셸 명령이 IRIS 루트 바로 밑에 새 파일을 만들면 차단 사유."""
+    cur = norm_rel(cwd_raw) if cwd_raw else None
+    if cwd_raw and cur is None:
+        cur = OUT
+    text, bodies = split_heredocs(cmd)
+    text = re.sub(r"[\\`]\r?\n", " ", text)  # 줄 이어쓰기(bash \ · PowerShell `)를 한 줄로
+    masked = mask_quotes(text)
+    starts = [0] + [m.end() for m in SEP.finditer(masked)]
+    ends = [m.start() for m in SEP.finditer(masked)] + [len(text)]
+    for s, e in zip(starts, ends):
+        seg, mseg = text[s:e], masked[s:e]
+        tokens = TOKEN.findall(seg)
+        name, ci = cmd_name(tokens)
+        if name in CD_CMDS:
+            rest = [t for t in tokens[ci + 1:] if not t.startswith(("-", "/d", "/D"))]
+            if not rest:
+                cur = OUT
+            else:
+                tgt = strip_q(rest[0])
+                segs = norm_rel(tgt)
+                if segs is not None:
+                    cur = segs
+                elif re.match(r"^[A-Za-z]:[\\/]|^/", tgt):
+                    cur = OUT
+                elif tgt.startswith(("$", "~", "-", "%")):
+                    cur = None
+                else:
+                    cur = resolve(tgt, cur) if cur not in (None, OUT) else cur
+            continue
+        cands = seg_targets(seg, mseg, tokens, name, ci)
+        if name in INTERP:
+            code = seg
+            for k in re.findall(r"__HEREDOC_(\d+)__", seg):
+                code += "\n" + bodies[int(k)]
+            for pat in CODE_WRITES:
+                for m in pat.finditer(code):
+                    cands.append((m.group(2), "file", None))
+        for tgt, kind, src in cands:
+            if kind == "remote":
+                if cur == []:
+                    return root_file_block("(원격 파일명 그대로 저장)", seg.strip())
+                continue
+            r = resolve(tgt, cur)
+            if r is None:
+                continue
+            if kind == "dest" and r == []:
+                base = re.split(r"[\\/]", strip_q(src).rstrip("\\/"))[-1]
+                why = root_file_block(base, seg.strip())
+            elif len(r) == 1:
+                why = root_file_block(r[0], seg.strip())
+            else:
+                why = None
+            if why:
+                return why
+    return None
 
 
 def norm_rel(raw: str):
@@ -128,12 +366,20 @@ def main():
         if segs is None:
             return
         r = check(tool, segs, True, False, p)
+        # D. 루트 낱개 파일(Edit/MultiEdit는 없는 파일을 만들 수 없으므로 Write·NotebookEdit만)
+        if not r and len(segs) == 1 and tool in ("Write", "NotebookEdit"):
+            r = root_file_block(segs[0], p)
         if r:
             deny(r)
         return
     if tool in SHELL_TOOLS:
         cmd = inp.get("command") or ""
-        if "IRIS" not in cmd.upper():
+        cwd_raw = j.get("cwd") or ""
+        if "IRIS" not in cmd.upper() and norm_rel(cwd_raw) != []:
+            return
+        r = check_root_shell(cmd, cwd_raw)
+        if r:
+            deny(r)
             return
         has_verb = bool(CREATE_VERBS.search(cmd))
         for m in PATH_IN_TEXT.finditer(cmd):

@@ -41,8 +41,9 @@ export const CLEANUP_PERIOD_DAYS = 3650;
 
 // 훅 스크립트(부품 `hooks`)와 그 이름. `.test.py` 짝은 스크립트 옆에 같이 두되
 // 훅으로 등록하지는 않는다(시험 파일이다).
-export const HOOK_SCRIPTS = ['block-blanket-kill.ps1', 'guard-iris-path.py'];
-export const HOOK_EXTRAS = ['block-blanket-kill.test.py', 'guard-iris-path.test.py'];
+// bg-leftover-guard.py(2.0.42)는 클로드 전용 Stop 훅이다 — 코덱스 hooks.json 에는 넣지 않는다.
+export const HOOK_SCRIPTS = ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py'];
+export const HOOK_EXTRAS = ['block-blanket-kill.test.py', 'guard-iris-path.test.py', 'bg-leftover-guard.test.py'];
 
 // 클로드 플러그인 5종. `part` = 잠금표 부품 id(= 도구 폴더 위치), `name` = 플러그인
 // 이름(`<name>@iris-local` 로 켜진다). document-skills 만 허가서상 내려받기라
@@ -349,6 +350,17 @@ export function claudeHookGroups(root) {
         }],
       },
     ],
+    // 답을 마치기 직전: 이번 차례에 띄우고 안 끈 배경 명령이 있으면 한 번 멈춰 세운다(2.0.42).
+    // 끄지 않은 배경 명령은 IRIS 창에 '작업 중'(파란 고리)을 계속 남긴다. Stop 은 matcher 가 없다.
+    Stop: [
+      {
+        hooks: [{
+          type: 'command',
+          command: `"${py}" "${path.join(scripts, 'bg-leftover-guard.py')}"`,
+          timeout: 15,
+        }],
+      },
+    ],
   };
 }
 
@@ -450,12 +462,12 @@ function mergeHooks(data, groups, added, prefix, root = null) {
       const existing = findHookEntry(hooks[event], entry);
       if (existing) {
         if (root && updateOwnedHook(root, existing, entry)) {
-          added.push(`${prefix}${event}[${entry.matcher}](updated)`);
+          added.push(`${prefix}${event}[${entry.matcher ?? '*'}](updated)`);
         }
         continue;
       }
       hooks[event].push(entry);
-      added.push(`${prefix}${event}[${entry.matcher}]`);
+      added.push(`${prefix}${event}[${entry.matcher ?? '*'}]`);
     }
   }
 }
@@ -729,7 +741,7 @@ function writeClaudeSettings(ctx, { fs, root, recorded, note, log }) {
   const perms = seedClaudePermissions(root);
   const file = claudeSettingsPath(root);
   const groups = claudeHookGroups(root);
-  recorded.claude.hooks = Object.entries(groups).flatMap(([event, entries]) => entries.map((e) => `${event}:${e.matcher}`));
+  recorded.claude.hooks = Object.entries(groups).flatMap(([event, entries]) => entries.map((e) => `${event}:${e.matcher ?? '*'}`));
 
   const superEnv = lockField(ctx, 'superpowers', 'env') ?? { SUPERPOWERS_DISABLE_TELEMETRY: '1' };
 

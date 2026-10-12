@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -45,7 +46,7 @@ cases = [
      {"file_path": os.path.join(TOP, "P99-없는 프로젝트(Nope)", "AGENTS.md"), "content": "x"}),
     ("차단: 그룹 접두 D 암묵 생성", True, "Write",
      {"file_path": os.path.join(TOP, "〖교양〗D99-없음(None)", "AGENTS.md"), "content": "x"}),
-    ("정상: IRIS 루트 직접 파일", False, "Write", {"file_path": os.path.join(IRIS_ROOT, "새문서.md"), "content": "x"}),
+    ("차단(D): IRIS 루트 새 낱개 파일 Write", True, "Write", {"file_path": os.path.join(IRIS_ROOT, "새문서-가드시험.md"), "content": "x"}),
     ("정상: IRIS 밖 경로", False, "Write", {"file_path": os.path.join(os.environ.get("TEMP", "."), "開発者.txt"), "content": "x"}),
     ("정상: _trash 안 일본어(격리물)", False, "Bash",
      {"command": 'rm -rf "' + os.path.join(IRIS_ROOT, "_trash", "R07-開発者(Developer)").replace("\\", "/") + '"'}),
@@ -65,12 +66,55 @@ cases = [
     ("정상: NotebookEdit 실존 경로", False, "NotebookEdit", {"notebook_path": os.path.join(TOP, "a.ipynb")}),
 ]
 
+# --- 규칙 D: IRIS 루트 낱개 파일 --- 다섯째 칸 = 훅이 받는 cwd(없으면 cwd 를 보내지 않는다)
+SCR = os.path.join(tempfile.gettempdir(), "guard-iris-path-test")  # IRIS 밖 임시 폴더(만들지 않는다, 이름만 쓴다)
+R = IRIS_ROOT
+RU = IRIS_ROOT.replace("\\", "/")
+TOPU = TOP.replace("\\", "/")
+cases += [
+    ("차단(D): cd 루트 후 curl -o(줄 이어쓰기)", True, "Bash",
+     {"command": f'cd "{RU}" && BASE="https://example.com"\ncurl -fsS --get "${{BASE}}/v1/search" \\\n  --data-urlencode \'q=1\' -o result_tmp.json\nls -la result_tmp.json'}, SCR),
+    ("차단(D): for 루프 curl -o 변수 파일명", True, "Bash",
+     {"command": f'cd "{RU}" && for kw in a b; do\n  curl -fsS "$B/v1/x?q=${{kw}}" -o "kw_${{kw}}.json"\ndone'}, SCR),
+    ("차단(D): cwd 루트에서 리다이렉션", True, "Bash", {"command": "echo hi > notes.txt"}, R),
+    ("차단(D): cwd 루트에서 curl -O(원격 이름)", True, "Bash", {"command": "curl -fsSLO https://example.com/a.zip"}, R),
+    ("차단(D): cp 목적지가 루트 폴더", True, "Bash", {"command": f"cp /tmp/a.json {RU}/"}, SCR),
+    ("차단(D): PowerShell Invoke-WebRequest -OutFile (cwd 루트)", True, "PowerShell", {"command": "Invoke-WebRequest https://a.b/c -OutFile c.json"}, R),
+    ("차단(D): PowerShell Set-Content 루트 절대경로", True, "PowerShell", {"command": f"Set-Content -Path {os.path.join(R, 'x-guard.txt')} -Value 1 -Encoding utf8"}, SCR),
+    ("차단(D): heredoc 파이썬 open(w) (cd 루트)", True, "Bash",
+     {"command": f"cd \"{RU}\" && PYTHONUTF8=1 python - <<'EOF'\nimport json\nif 3 > 2: pass\njson.dump({{}}, open('out.json','w'))\nEOF"}, SCR),
+    ("차단(D): node -e writeFileSync (cwd 루트)", True, "Bash", {"command": "node -e \"require('fs').writeFileSync('x.json','1')\""}, R),
+    ("정상(D): cwd 루트 → /dev/null·2>&1", False, "Bash", {"command": "python x.py > /dev/null 2>&1"}, R),
+    ("정상(D): cwd 루트 → 하위 폴더로 저장", False, "Bash", {"command": "python _ontology/build_graph.py --compile > _ontology/log.txt"}, R),
+    ("정상(D): heredoc 안 > 비교만", False, "Bash", {"command": f"cd \"{RU}\" && python - <<'EOF'\nprint(3 > 2)\nEOF"}, SCR),
+    ("정상(D): 허용 이름 새 루트 문서 IRIS-*", False, "Write", {"file_path": os.path.join(R, "IRIS-새문서.md"), "content": "x"}, SCR),
+    ("정상(D): cd 하위 폴더 후 상대 저장", False, "Bash", {"command": f'cd "{TOPU}" && echo x > a.txt'}, SCR),
+    ("정상(D): cwd 스크래치 상대 저장(IRIS 언급 있음)", False, "Bash", {"command": f"grep -r x {RU}/_ontology > hits.txt"}, SCR),
+    ("정상(D): PowerShell 2>$null (cwd 루트)", False, "PowerShell", {"command": "Get-ChildItem x 2>$null"}, R),
+    ("정상(D): grep 패턴 속 open(w) — 인터프리터 아님", False, "Bash", {"command": "grep -n 'open(\"a\",\"w\")' x.py"}, R),
+    ("정상(D): Out-File 하위 폴더 절대경로", False, "PowerShell", {"command": "$x | Out-File " + os.path.join(TOP, "a.txt") + " -Encoding utf8"}, SCR),
+    ("정상(D): New-Item 디렉터리(루트 새 유틸 폴더)", False, "PowerShell", {"command": f"New-Item -ItemType Directory {os.path.join(R, '_newutil')}"}, SCR),
+    ("정상(D): cwd 루트 → 스크래치 절대경로 저장", False, "Bash", {"command": "curl -fsS https://a.b -o " + SCR.replace("\\", "/") + "/a.json"}, R),
+    ("정상(D): cwd 루트 → cd 스크래치 후 상대 저장", False, "Bash", {"command": 'cd "' + SCR + '" && echo x > a.txt'}, R),
+]
+# 이미 있는 루트 파일이 하나라도 있으면(설치본은 AGENTS.md 가 있다) 덮어쓰기·덧붙이기는 통과해야 한다.
+existing = [f for f in sorted(os.listdir(R)) if os.path.isfile(os.path.join(R, f))]
+if existing:
+    cases += [
+        ("정상(D): 기존 루트 파일에 덧붙이기", False, "Bash", {"command": f'echo x >> "{RU}/{existing[0]}"'}, SCR),
+        ("정상(D): 기존 루트 파일 Write 덮어쓰기", False, "Write", {"file_path": os.path.join(R, existing[0]), "content": "x"}, SCR),
+    ]
+
 fails = 0
-for name, expect_deny, tool, inp in cases:
+for case in cases:
+    name, expect_deny, tool, inp = case[:4]
     if tool is None:
         payload = b"{not json"
     else:
-        payload = json.dumps({"tool_name": tool, "tool_input": inp}, ensure_ascii=False).encode("utf-8")
+        body = {"tool_name": tool, "tool_input": inp}
+        if len(case) > 4:
+            body["cwd"] = case[4]
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     r = subprocess.run([PY, SCRIPT], input=payload, capture_output=True, timeout=20)
     out = r.stdout.decode("utf-8", errors="replace").strip()
     denied = '"deny"' in out
