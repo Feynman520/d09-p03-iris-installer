@@ -8,7 +8,7 @@
     "dest 는 영혼 루트 기준 '폴더' 경로다(POSIX 구분자). '/' 는 영혼 루트 자체."
   ],
   "schema": 2,
-  "package": { "version": "2.0.41" },
+  "package": { "version": "2.0.42" },
   "parts": {
     "node": {
       "kind": "url",
@@ -356,20 +356,21 @@
     "hooks": {
       "kind": "dir",
       "source": "payload-src/policy/hooks",
+      "exclude": ["__pycache__"],
       "asciiRequired": true,
       "file": "tools/hooks.zip",
       "dest": "_agent/claude/scripts",
       "license": "MIT",
-      "note": "PreToolUse 안전 훅 2종(block-blanket-kill.ps1 · guard-iris-path.py)과 각 .test.py. 원본은 이 PC 의 _agent 스크립트지만, T20 이 사고 날짜·이 PC 전용 경로를 일반화한 사본을 저장소 안에 두었으므로 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다). .ps1 은 순수 ASCII -- 2026-09-15 확인. 훅 등록은 클로드·코덱스 양쪽(T14)."
+      "note": "PreToolUse 안전 훅 2종(block-blanket-kill.ps1 · guard-iris-path.py — 2.0.42 부터 루트 낱개 파일 규칙 D 포함)과 클로드 Stop 훅 bg-leftover-guard.py(2.0.42, 코덱스에는 등록 안 함), 각 .test.py. 원본은 이 PC 의 _agent 스크립트지만, T20 이 사고 날짜·이 PC 전용 경로를 일반화한 사본을 저장소 안에 두었으므로 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다). .ps1 은 순수 ASCII -- 2026-09-15 확인. 훅 등록은 클로드·코덱스 양쪽(T14)."
     },
     "hwpx-templates": {
       "kind": "dir",
       "source": "C:/IRIS/_document-templates",
-      "exclude": ["__pycache__", "AGENTS.md", "CLAUDE.md"],
+      "include": ["IRIS-HWPX-기본양식.hwpx", "IRIS-HWPX-기본양식-원형.hwpx", "IRIS-HWPX-기본양식-스타일.md", "iris_hwpx_layout.py", "iris_hwpx_table_widths.py", "test_iris_hwpx_layout.py", "test_iris_hwpx_table_widths.py"],
       "file": "tools/hwpx-templates.zip",
       "dest": "_document-templates",
       "license": "MIT",
-      "note": "기본양식 2개(.hwpx) + 스타일 문서 + iris_hwpx_layout.py·iris_hwpx_table_widths.py 와 각 시험. 양식 안 개인정보 0 검사는 정화(T08) 몫."
+      "note": "기본양식 2개(.hwpx) + 스타일 문서 + iris_hwpx_layout.py·iris_hwpx_table_widths.py 와 각 시험. 원본 폴더는 이 PC 의 작업 폴더라 개인 날인 도구·도장 그림 같은 것이 섞여 들어오므로(2026-10-06 실제 발생) 통째 복사가 아니라 include 허용 목록으로만 담는다(2.0.42). 양식 안 개인정보 0 검사는 정화(T08) 몫."
     },
     "gen-image": {
       "kind": "file",
