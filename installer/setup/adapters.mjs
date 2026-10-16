@@ -755,7 +755,9 @@ function writeClaudeSettings(ctx, { fs, root, recorded, note, log }) {
     // 창고**를 쓰게 된다(실측 2026-09-15: `claude mcp list` 에 두 항목이 함께 뜬다).
     const env = objectAt(data, 'env');
     const selfDir = (lockField(ctx, 'self-improve', 'env') ?? {}).SELF_IMPROVE_DIR ?? '_agent/shared/self-improvement';
-    const wanted = { ENABLE_TOOL_SEARCH: 'true', SELF_IMPROVE_DIR: underRoot(root, selfDir), ...superEnv };
+    // DISABLE_AUTOUPDATER(2.0.45): 클로드 내장 자동 업데이트는 IRIS 밖(%USERPROFILE%\.local)에
+    // 깔려 하고, IRIS 는 판 폴더의 exe 를 부르므로 써먹지도 못한다 — 업데이트는 updater\agents.mjs 몫.
+    const wanted = { ENABLE_TOOL_SEARCH: 'true', SELF_IMPROVE_DIR: underRoot(root, selfDir), DISABLE_AUTOUPDATER: '1', ...superEnv };
     for (const [k, v] of Object.entries(wanted)) {
       if (env[k] === undefined) { env[k] = String(v); added.push(`env.${k}`); }
     }

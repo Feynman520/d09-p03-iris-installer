@@ -104,6 +104,12 @@ export function writeFirstRequest(root, { edition = 'claude', manifest } = {}) {
 // IRIS_FACE_NODE (the bundled node here -- a fresh PC has no `node` on PATH
 // until the shims are picked up). `--console` (or a Face too old to ship the
 // .vbs) falls back to the visible `node launch.mjs` window.
+// 2.0.45: after the window is up, ask the agent updater (tools\updater\agents.mjs,
+// docs\설계-비서자동업데이트.md) whether Claude Code / Codex are due a check. `--kick`
+// returns at once and starts the real work detached and hidden, so opening IRIS
+// is not slowed down; an older updater part without the file is simply skipped.
+export const AGENT_UPDATE_KICK = 'if exist "%~dp0_agent\\shared\\tools\\updater\\agents.mjs" "%IRIS_FACE_NODE%" "%~dp0_agent\\shared\\tools\\updater\\agents.mjs" --kick >nul 2>&1';
+
 export function faceLauncherContent() {
   return [
     '@echo off',
@@ -116,9 +122,11 @@ export function faceLauncherContent() {
     'if "%~1"=="--console" goto console',
     'if not exist "%~dp0_agent\\shared\\tools\\face\\launch-hidden.vbs" goto console',
     'wscript.exe //nologo "%~dp0_agent\\shared\\tools\\face\\launch-hidden.vbs" %*',
+    AGENT_UPDATE_KICK,
     'endlocal',
     'exit /b 0',
     ':console',
+    AGENT_UPDATE_KICK,
     '"%IRIS_FACE_NODE%" "%~dp0_agent\\shared\\tools\\face\\launch.mjs" %*',
     'endlocal',
     '',

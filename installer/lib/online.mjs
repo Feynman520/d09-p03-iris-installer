@@ -283,13 +283,15 @@ export async function checkNet({
 // `%~dp0..\tools\claude\claude.cmd`) works for source 1 exactly as it does for
 // the npm layout of source 2. ASCII + CRLF, same two hard constraints as
 // shims.mjs (a .cmd is read in the console's OEM codepage).
+//
+// 2.0.45: one parsed line ending in `&exit/b` + 40 spaces, byte-identical to
+// updater/agents.mjs claudeForwarder() -- the agent updater rewrites this file
+// under running sessions, and cmd.exe re-reads a batch file by offset after
+// the child exits (reasoning and measurements there; tests/agent-update.test.mjs
+// pins the two copies together). The updater is shipped as its own part, so
+// this is a copy, not an import.
 export function claudeForwarderText(version, binName = 'claude.exe') {
-  return [
-    '@echo off',
-    'setlocal',
-    `"%~dp0${version}\\${binName}" %*`,
-    'exit /b %errorlevel%',
-  ].join('\r\n') + '\r\n';
+  return ['@echo off', `"%~dp0${version}\\${binName}" %*&exit/b${' '.repeat(40)}`].join('\r\n') + '\r\n';
 }
 
 async function sha256File(file, { createReadStream = fs.createReadStream } = {}) {
