@@ -574,6 +574,15 @@ export const SYNC_SCRATCH_RE = /^(\.tmp\.drive(upload|download)|~\$.*|.*\.tmp|.*
 // 검사 9 는 있는지만 본다). 목록은 실측된 것만 넣는다 — 넓히면 진짜 이탈을 가린다.
 export const OS_DESKTOP_ITEMS_RE = /^(Microsoft Edge)\.lnk$/i;
 
+// 바탕화면 항목이 "생긴" 시각 = 만든 시각과 수정 시각 중 이른 쪽.
+// 2026-10-16 실사용(다른 학교, 재설치): 폴더는 안에 파일을 넣기만 해도 수정 시각이 바뀐다 →
+// 원래 있던 「3학년부 자료」「scan」 등이 "새 항목 4개"로 잡혀 설치가 멈췄다. 만든 시각을 같이 본다.
+// 수정 시각도 남기는 이유: 압축을 풀거나 복사한 옛 파일은 만든 시각이 새것이어도 원래 그 사람 것이다.
+export function bornAtMs(st) {
+  const times = [st?.birthtimeMs, st?.mtimeMs].filter((n) => Number.isFinite(n) && n > 0);
+  return times.length ? Math.min(...times) : 0;
+}
+
 export async function checkDesktop(ctx, opts = {}) {
   const fs = fsOf(ctx);
   const root = ctx.root;
@@ -581,6 +590,9 @@ export async function checkDesktop(ctx, opts = {}) {
   const dir = await resolveDesktopDir(ctx, opts);
   const allowed = allowedDesktopFiles(root);
   const strays = [];
+  // 설치 중에 새로 생긴 폴더 — IRIS 는 바탕화면에 폴더를 만들지 않으므로(바로가기 .lnk 하나뿐,
+  // lib/handoff.mjs writeFaceLauncher) 그 사람이 만든 것으로 보고 실패로 세지 않는다. 보고에만 적는다.
+  const userFolders = [];
   if (dir && exists(fs, dir)) {
     let entries = [];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
@@ -593,7 +605,9 @@ export async function checkDesktop(ctx, opts = {}) {
       try { st = fs.statSync(full); } catch { continue; }
       // 1초 여유: 파일 시각의 해상도와 시계 오차 때문에 설치 직전 파일이
       // 설치 뒤로 보이는 일이 있다.
-      if (st.mtimeMs > since + 1000) strays.push({ name: e.name, at: new Date(st.mtimeMs).toISOString() });
+      if (bornAtMs(st) <= since + 1000) continue;
+      const found = { name: e.name, at: new Date(bornAtMs(st)).toISOString() };
+      if (e.isDirectory?.() || st.isDirectory?.()) userFolders.push(found); else strays.push(found);
     }
   }
 
@@ -646,10 +660,13 @@ export async function checkDesktop(ctx, opts = {}) {
   const problems = [];
   if (strays.length) problems.push(`바탕화면에 허용되지 않은 새 항목 ${strays.length}개(${strays.map((s) => s.name).join(', ')})`);
   if (outside.length) problems.push(`IRIS 폴더 밖 쓰기 ${outside.length}건(${outside.slice(0, 3).map((o) => `${o.stage}:${o.path}`).join(', ')})`);
+  const folderNote = userFolders.length
+    ? ` · 설치 중 생긴 폴더 ${userFolders.length}개(${userFolders.map((f) => f.name).join(', ')})는 사용자 것으로 보고 제외(IRIS 는 바탕화면에 폴더를 만들지 않음)`
+    : '';
   const detail = problems.length
     ? problems.join(' / ')
-    : `바탕화면 새 항목 0건(허용: ${allowed[0]}) · 단계가 남긴 경로 전부 IRIS 폴더 안${dir ? '' : ' (바탕화면 경로를 찾지 못해 목록 검사만 함)'}`;
-  return item('desktop', 6, '바탕화면 쓰기 0건·폴더 밖 쓰기 없음', problems.length ? 'fail' : 'pass', detail, { strays, outside, desktop: Boolean(dir) });
+    : `바탕화면 새 항목 0건(허용: ${allowed[0]}) · 단계가 남긴 경로 전부 IRIS 폴더 안${dir ? '' : ' (바탕화면 경로를 찾지 못해 목록 검사만 함)'}${folderNote}`;
+  return item('desktop', 6, '바탕화면 쓰기 0건·폴더 밖 쓰기 없음', problems.length ? 'fail' : 'pass', detail, { strays, userFolders, outside, desktop: Boolean(dir) });
 }
 
 // recorded 안에 흩어져 있는 "경로처럼 보이는 문자열"을 모은다. 단계마다 모양이

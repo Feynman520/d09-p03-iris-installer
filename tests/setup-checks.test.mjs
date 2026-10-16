@@ -392,6 +392,45 @@ test('검사6: 윈도가 스스로 놓는 Microsoft Edge.lnk 는 새 항목으�
   assert.deepEqual(c2.strays.map((s) => s.name), ['Some Game.lnk']);
 });
 
+// 2026-10-16 실사용(다른 학교, 재설치): 바탕화면에 원래 있던 업무·스캔 폴더 등이
+// "허용되지 않은 새 항목 4개"로 잡혀 설치가 setup-incomplete 로 멈췄다. 원인 = 폴더는 안에 파일을
+// 넣기만 해도 수정 시각이 바뀌는데 검사가 수정 시각만 봤다. IRIS 는 바탕화면에 폴더를 만들지 않는다.
+test('검사6 (2.0.44): 설치 전부터 있던 폴더는 설치 중에 안을 고쳐도 새 항목이 아니다', async () => {
+  const root = newRoot('desktop-old-folder');
+  const desktop = path.join(tmp, `desk-oldf-${seq}`);
+  fs.mkdirSync(path.join(desktop, '3학년부 자료'), { recursive: true });
+  write(path.join(desktop, 'IRIS.lnk'), 'shortcut');
+  // 폴더는 지금 만들어졌고(만든 시각 < 설치 시작), 설치 중에 안을 고쳐 수정 시각만 설치 뒤로 간다.
+  const later = new Date(Date.now() + 60000);
+  fs.utimesSync(path.join(desktop, '3학년부 자료'), later, later);
+  const ctx = ctxFor(root, {
+    desktopDir: desktop,
+    receipt: { schema: 2, setup: { unpack: { startedAt: new Date(Date.now() + 10000).toISOString() } } },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'pass', c.detail);
+  assert.equal(c.strays.length, 0);
+});
+
+test('검사6 (2.0.44): 설치 중 새로 생긴 폴더는 사용자 것으로 보고 통과(따로 적음), 새 파일은 여전히 실패', async () => {
+  const root = newRoot('desktop-new-folder');
+  const desktop = path.join(tmp, `desk-newf-${seq}`);
+  fs.mkdirSync(path.join(desktop, '새 폴더'), { recursive: true });
+  write(path.join(desktop, 'IRIS.lnk'), 'shortcut');
+  const ctx = ctxFor(root, {
+    desktopDir: desktop,
+    receipt: { schema: 2, setup: { unpack: { startedAt: new Date(Date.now() - 60000).toISOString() } } },
+  });
+  const c = await checkDesktop(ctx);
+  assert.equal(c.status, 'pass', c.detail);
+  assert.deepEqual(c.userFolders.map((f) => f.name), ['새 폴더']);
+  assert.match(c.detail, /새 폴더/);
+  write(path.join(desktop, '설치기가 흘린 파일.txt'), 'oops');
+  const c2 = await checkDesktop(ctx);
+  assert.equal(c2.status, 'fail');
+  assert.deepEqual(c2.strays.map((s) => s.name), ['설치기가 흘린 파일.txt']);
+});
+
 test('검사6: 단계 기록에 루트 밖 경로가 있으면 실패', async () => {
   const root = newRoot('outside');
   const ctx = ctxFor(root, {
