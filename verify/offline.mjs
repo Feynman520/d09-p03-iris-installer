@@ -43,10 +43,16 @@ import { extractZip } from '../lib/zip.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BUILD_MJS = path.join(ROOT_DIR, 'build', 'build.mjs');
-const LAST_BUILD_JSON = path.join(ROOT_DIR, '_build', 'out', 'last-build.json');
+// macOS (docs/설계-macOS.md M5): `--target darwin-arm64` builds the macOS zip, `--out <dir>` says where the
+// zip to test was built (default _build/out). The practice root then lives in _build/ too -- on macOS a
+// soulName maps to ~/<name>, i.e. the real home, which this script must never touch.
+const MAC = process.platform === 'darwin';
+const argValue = (flag) => { const i = process.argv.indexOf(flag); return i >= 0 ? process.argv[i + 1] : null; };
+const OUT_DIR = path.resolve(ROOT_DIR, argValue('--out') || path.join('_build', 'out'));
+const LAST_BUILD_JSON = path.join(OUT_DIR, 'last-build.json');
 const SCRATCH_DIR = path.join(ROOT_DIR, '_build', 'offline-zip');
 const SOUL_NAME = 'IRIS-offline';
-const SOUL_ROOT = `C:\\${SOUL_NAME}`; // must match installer/lib/soulname.mjs's `C:\\${name}` mapping
+const SOUL_ROOT = MAC ? path.join(ROOT_DIR, '_build', 'offline-soul', SOUL_NAME) : `C:\\${SOUL_NAME}`; // Windows: must match installer/lib/soulname.mjs's `C:\\${name}` mapping
 
 // ---------------------------------------------------------------------------
 // --build mode
@@ -55,7 +61,9 @@ const SOUL_ROOT = `C:\\${SOUL_NAME}`; // must match installer/lib/soulname.mjs's
 async function runBuildOffline() {
   console.log(`offline --build: node build/build.mjs with IRIS_INSTALLER_OFFLINE=1`);
   const env = { ...process.env, IRIS_INSTALLER_OFFLINE: '1' };
-  const r = await run(process.execPath, [BUILD_MJS], { cwd: ROOT_DIR, env, timeoutMs: 15 * 60 * 1000 });
+  const target = argValue('--target');
+  const buildArgs = [BUILD_MJS, ...(target ? ['--target', target] : []), ...(argValue('--out') ? ['--out', OUT_DIR] : [])];
+  const r = await run(process.execPath, buildArgs, { cwd: ROOT_DIR, env, timeoutMs: 15 * 60 * 1000 });
   console.log(r.out);
   if (r.err) console.error(r.err);
 
@@ -262,6 +270,8 @@ async function runInstallerOffline() {
   // desktop, which then makes 검사 6 (바탕화면 쓰기 0건) fail on the next run.
   // Measured 2026-09-15 (T23): two stray .lnk files on this PC's desktop.
   process.env.IRIS_INSTALLER_NO_USER_ENV = '1';
+  // macOS reads the work folder from this variable (installer/lib/platform.mjs) -- keep it in scratch too.
+  if (MAC) process.env.IRIS_INSTALLER_WORK_DIR = path.join(SCRATCH_DIR, 'logs');
 
   let handle = null;
   try {
@@ -275,6 +285,7 @@ async function runInstallerOffline() {
       stateFile: path.join(SCRATCH_DIR, 'installer-state.json'),
       workDir: path.join(SCRATCH_DIR, 'logs'),
       soulName: SOUL_NAME,
+      ...(MAC ? { soulRoot: SOUL_ROOT } : {}),
       noUserEnv: true,
     });
     console.log(`offline: installer server up at ${handle.url} (soul root ${SOUL_ROOT})`);
