@@ -31,6 +31,7 @@ import {
 } from './lib/state.mjs';
 import { precheck as defaultPrecheck } from './lib/precheck.mjs';
 import { validateSoulName } from './lib/soulname.mjs';
+import { installerWorkDir } from './lib/platform.mjs';
 import {
   validateNodes, buildDecisions, writeDecisions, readDecisions, decisionsPath,
 } from './lib/structure-rules.mjs';
@@ -400,9 +401,7 @@ export function startServer({
   const version = readPackageVersion(zipRoot);
   const userEnvSkipped = noUserEnv || process.env.IRIS_INSTALLER_NO_USER_ENV === '1';
   const userEnvRecord = [];
-  const logDir = workDir ?? (process.env.LOCALAPPDATA
-    ? path.join(process.env.LOCALAPPDATA, 'IRIS-Installer')
-    : path.join(os.tmpdir(), 'IRIS-Installer'));
+  const logDir = workDir ?? installerWorkDir();
   const serverLog = path.join(logDir, 'server.log');
 
   if (userEnvSkipped) {
@@ -1795,10 +1794,7 @@ function parseArgs(argv) {
 const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 if (isMain) {
   const args = parseArgs(process.argv.slice(2));
-  const work = process.env.LOCALAPPDATA
-    ? path.join(process.env.LOCALAPPDATA, 'IRIS-Installer')
-    : path.join(os.tmpdir(), 'IRIS-Installer');
-  const stateFile = path.join(work, 'state.json');
+  const stateFile = path.join(installerWorkDir(), 'state.json');
   startServer({ ...args, stateFile })
     .then(({ port }) => {
       console.log(`iris-installer server listening on 127.0.0.1:${port}`);

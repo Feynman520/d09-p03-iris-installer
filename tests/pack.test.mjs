@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pack, renderNotices, buildPackManifest } from '../build/pack.mjs';
 import { sha256File, verifyManifest } from '../lib/manifest.mjs';
-import { extractZip } from '../lib/zip.mjs';
+import { extractZip, TAR } from '../lib/zip.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -292,7 +292,7 @@ test('pack: zip entries have no ./ prefix and Windows Explorer can list the arch
   });
 
   const { execFileSync } = await import('node:child_process');
-  const listing = execFileSync('C:\\Windows\\System32\\tar.exe', ['-tf', zipPath], { encoding: 'latin1' })
+  const listing = execFileSync(TAR, ['-tf', zipPath], { encoding: 'latin1' })
     .split(/\r?\n/).filter(Boolean);
   assert.ok(listing.length >= 4, `unexpectedly short listing: ${listing.join(', ')}`);
   const dotted = listing.filter((n) => n === './' || n.startsWith('./') || n.startsWith('/'));

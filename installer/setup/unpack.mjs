@@ -48,6 +48,8 @@ import { portableTeamclaudeConfigPath } from '../lib/login.mjs';
 import { readReceipt, writeReceipt } from '../lib/receipt.mjs';
 import { listHolders, listFileHolders, splitHolders, holdersText } from '../lib/holders.mjs';
 import * as userpathDefault from '../lib/userpath.mjs';
+import * as userenvDarwin from '../lib/userenv-darwin.mjs';
+import { isWindows, toolLayout, pathDelimiter, shimFileName } from '../lib/platform.mjs';
 
 export const id = 'unpack';
 export const envId = 'env';
@@ -786,7 +788,16 @@ export const RELAY_BASE_URL = 'http://127.0.0.1:3456';
 // uv 는 판이 폴더 이름에 들어가는(`uv\0.12.14`) 유일한 shim 이라 `lib\shims.mjs`
 // 의 고정 템플릿에 넣을 수 없다. 여기서 만든다 — 규칙은 같다: **ASCII·CRLF**,
 // 전부 `%~dp0` 상대(영혼 폴더를 옮겨도 살아 있게).
-export function uvShimText(relFromTools) {
+export function uvShimText(relFromTools, { platform = process.platform } = {}) {
+  if (!isWindows(platform)) {
+    // macOS: shims.mjs 의 POSIX 심과 같은 규칙(ASCII·LF·실행 권한, 심 폴더 기준 상대).
+    const rel = String(relFromTools).split('\\').join('/');
+    return [
+      '#!/bin/sh',
+      'D=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+      `exec "$D/../tools/${rel}/uv" "$@"`,
+    ].join('\n') + '\n';
+  }
   return [
     '@echo off',
     'setlocal',
@@ -797,8 +808,12 @@ export function uvShimText(relFromTools) {
 
 // 자식 프로세스용 PATH 앞자리. 순서가 곧 우선순위다 — shim 이 맨 앞이라
 // `claude`·`codex`·`python` 이 늘 이 영혼 것으로 잡힌다.
-export function childPathPrefix(root) {
+export function childPathPrefix(root, { platform = process.platform } = {}) {
   const tools = path.join(root, '_agent', 'shared', 'tools');
+  if (!isWindows(platform)) {
+    // macOS: node/bin · git/bin · python/bin (설계-macOS 2절). python 의 bin 이 Scripts 자리를 겸한다.
+    return [shimsDir(root), ...toolLayout(tools, { platform }).binDirs];
+  }
   return [
     shimsDir(root),
     path.join(tools, 'node'),
@@ -813,7 +828,11 @@ export async function runEnv(ctx) {
   const root = ctx?.root;
   if (!root) throw new StageError('E-ENV', '설치 폴더 경로가 없어 환경을 준비할 수 없습니다.', { ctx: 'root' });
   const log = typeof ctx.log === 'function' ? ctx.log : () => {};
-  const rel = (p) => path.relative(root, p).split(path.sep).join('\\') || '.';
+  // 시험은 ctx.platform 으로 다른 운영체제 판을 돌린다. 진짜 실행은 이 PC.
+  const platform = ctx.platform ?? process.platform;
+  const win = isWindows(platform);
+  const relSep = win ? '\\' : '/';
+  const rel = (p) => path.relative(root, p).split(path.sep).join(relSep) || '.';
   const linkCache = new Map();
 
   const claudeCfg = assertInside(root, path.join(root, '_agent', 'claude'), { fs, cache: linkCache });
@@ -841,9 +860,10 @@ export async function runEnv(ctx) {
   const toolsDir = path.join(root, '_agent', 'shared', 'tools');
   const claudeVersion = lockField(ctx, 'claude', 'version');
   const claudeExe = claudeVersion
-    ? path.join(toolsDir, 'claude', String(claudeVersion), lockField(ctx, 'claude', 'binName') ?? 'claude.exe')
+    ? path.join(toolsDir, 'claude', String(claudeVersion), lockField(ctx, 'claude', 'binName') ?? (win ? 'claude.exe' : 'claude'))
     : null;
-  const claudeCmd = path.join(toolsDir, 'claude', 'claude.cmd');
+  // 전달자(Windows claude.cmd / macOS claude sh) — online 단계가 판 폴더 앞에 만든다.
+  const claudeCmd = toolLayout(toolsDir, { platform }).claude;
   const claudeReady = (claudeExe && fs.existsSync(claudeExe)) || fs.existsSync(claudeCmd);
 
   const agents = ['codex'];
@@ -855,7 +875,7 @@ export async function runEnv(ctx) {
 
   let shims;
   try {
-    shims = writeShims(root, agents);
+    shims = writeShims(root, agents, { platform });
   } catch (err) {
     throw new StageError('E-ENV', '명령 바로가기(shim)를 만들지 못했습니다.', { error: String(err?.message ?? err) });
   }
@@ -865,13 +885,15 @@ export async function runEnv(ctx) {
   // uv 심(판 폴더라 여기서 만든다)
   const uvDest = lockField(ctx, 'uv', 'dest');
   if (uvDest) {
-    const relFromTools = String(uvDest).replace(/^_agent\/shared\/tools\//, '').split('/').join('\\');
-    const uvCmd = path.join(dir, 'uv.cmd');
-    const text = uvShimText(relFromTools);
+    const relFromTools = String(uvDest).replace(/^_agent\/shared\/tools\//, '').split('/').join(win ? '\\' : '/');
+    const uvName = shimFileName('uv', { platform });
+    const uvCmd = path.join(dir, uvName);
+    const text = uvShimText(relFromTools, { platform });
     if (!fs.existsSync(uvCmd) || fs.readFileSync(uvCmd, 'ascii') !== text) {
       fs.writeFileSync(uvCmd, text, 'ascii');
     }
-    recorded.shims.push('uv.cmd');
+    if (!win && (fs.statSync(uvCmd).mode & 0o777) !== 0o755) fs.chmodSync(uvCmd, 0o755);
+    recorded.shims.push(uvName);
   }
 
   // ── 환경변수 ──────────────────────────────────────────────────────────
@@ -893,7 +915,7 @@ export async function runEnv(ctx) {
 
   // 연습(이 개발 PC)에서는 진짜 사용자 PATH·환경변수를 건드리지 않는다.
   const noUserEnv = (ctx.env?.IRIS_INSTALLER_NO_USER_ENV ?? process.env.IRIS_INSTALLER_NO_USER_ENV) === '1';
-  const userpath = ctx.userpath ?? userpathDefault;
+  const userpath = ctx.userpath ?? (win ? userpathDefault : userenvDarwin);
   if (noUserEnv) {
     recorded.userEnv = { applied: false, skippedReason: 'IRIS_INSTALLER_NO_USER_ENV=1', pathAdded: false, previous: {} };
     log('[env] IRIS_INSTALLER_NO_USER_ENV=1 — 사용자 PATH·환경변수는 건드리지 않음(기록만)');
@@ -908,9 +930,12 @@ export async function runEnv(ctx) {
       // 2.0.35: 로그온 자동 시작 — 중계기(3456)가 IRIS 창을 열지 않아도 떠 있게(어느 터미널에서나 claude/codex 가 되게).
       // 실패는 설치를 막지 않는다(기록만). 심 자체도 실행 때 중계기를 확인·기동하므로 이것은 두 번째 안전망이다.
       if (typeof userpath.setRunKey === 'function') {
-        const vbs = path.join(dir, 'relay-autostart.vbs');
+        // Windows = Run 키 문자열(wscript → .vbs), macOS = LaunchAgent 의 ProgramArguments(D-M09).
+        const command = win
+          ? `wscript.exe //nologo "${path.join(dir, 'relay-autostart.vbs')}"`
+          : [toolLayout(toolsDir, { platform }).node, path.join(dir, 'relay-ensure.mjs')];
         try {
-          const r = await userpath.setRunKey('IRIS relay', `wscript.exe //nologo "${vbs}"`);
+          const r = await userpath.setRunKey('IRIS relay', command);
           recorded.userEnv.autostart = { name: 'IRIS relay', changed: !!r?.changed, ...(r?.previous ? { previous: r.previous } : {}) };
         } catch (err) {
           recorded.userEnv.autostart = { name: 'IRIS relay', changed: false, error: String(err?.message ?? err) };
@@ -935,7 +960,7 @@ export async function runEnv(ctx) {
   const childEnv = {
     ...(ctx.env ?? process.env),
     ...vars,
-    PATH: [...childPathPrefix(root), basePath].filter(Boolean).join(';'),
+    PATH: [...childPathPrefix(root, { platform }), basePath].filter(Boolean).join(pathDelimiter(platform)),
   };
   delete childEnv.Path; // 윈도는 대소문자를 안 가리지만 두 키가 같이 있으면 헷갈린다
   recorded.env = { PATH: childEnv.PATH, ...vars };
@@ -968,7 +993,7 @@ export async function runEnv(ctx) {
     state: 'installed',
     version: lockField(ctx, 'codex', 'version') ?? null,
     source: 'bundled',
-    path: lockField(ctx, 'codex', 'dest') ? String(lockField(ctx, 'codex', 'dest')).split('/').join('\\') : null,
+    path: lockField(ctx, 'codex', 'dest') ? String(lockField(ctx, 'codex', 'dest')).split('/').join(relSep) : null,
     verified: true,
     active: true,
   });

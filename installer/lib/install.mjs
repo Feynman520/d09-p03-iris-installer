@@ -915,7 +915,9 @@ export async function install({
   }
 
   // --- 2. shims -----------------------------------------------------------
-  const shims = writeShims(root, activeAgents);
+  // v1 install() is the Windows-only legacy path (v2 runs the setup engine
+  // instead, server.mjs), so it keeps writing the .cmd set on any machine.
+  const shims = writeShims(root, activeAgents, { platform: 'win32' });
   emit({ part: 'shims', pct: 100, status: 'done' });
 
   // --- 3. minimal soul-state (never over an existing one) -----------------

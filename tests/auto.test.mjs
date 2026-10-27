@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../installer/server.mjs';
+import { soulRootFor } from '../installer/lib/platform.mjs';
 import { planUpdateReset, applyUpdateReset, ALWAYS_RESET } from '../installer/lib/update-plan.mjs';
 
 // 자동 업데이트 모드(`IRIS-설치.cmd --auto`).
@@ -674,7 +675,7 @@ test('auto: the soul to update comes from IRIS_INSTALLER_SOUL_NAME, not from a h
     const st = await (await fetch(`${server.url}/api/state`)).json();
     assert.equal(st.auto.eligible, true);
     assert.equal(st.auto.name, 'ALPHA-FROM-ENV');
-    assert.equal(st.auto.root, 'C:\\ALPHA-FROM-ENV');
+    assert.equal(st.auto.root, soulRootFor('ALPHA-FROM-ENV'), 'C:\\<이름> (macOS: ~/<이름>)');
   } finally {
     if (before === undefined) delete process.env.IRIS_INSTALLER_SOUL_NAME;
     else process.env.IRIS_INSTALLER_SOUL_NAME = before;
@@ -682,7 +683,7 @@ test('auto: the soul to update comes from IRIS_INSTALLER_SOUL_NAME, not from a h
   }
   // Which root was probed is the point; how many times is not (the startup
   // also asks detectSoulMode about the same folder).
-  assert.deepEqual([...new Set(seen)], ['C:\\ALPHA-FROM-ENV'], 'eligibility was checked against the soul the env var names');
+  assert.deepEqual([...new Set(seen)], [soulRootFor('ALPHA-FROM-ENV')], 'eligibility was checked against the soul the env var names');
 });
 
 // ---------------------------------------------------------------------------

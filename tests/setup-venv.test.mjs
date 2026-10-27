@@ -18,7 +18,7 @@ import { run as realRun } from '../lib/run.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BUILD_PAYLOAD = path.join(REPO, '_build', 'stage', 'payload');
-const TAR = 'C:\\Windows\\System32\\tar.exe';
+import { TAR } from '../lib/zip.mjs';
 
 // 접두사를 짧게(윈도우 MAX_PATH 여유 확보 -- t17 통합 시험과 같은 이유).
 const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 't15-'));

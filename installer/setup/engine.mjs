@@ -24,6 +24,7 @@ import {
   writeReceipt as defaultWriteReceipt,
   ensureV2Fields,
 } from '../lib/receipt.mjs';
+import { isWindows, pathFor, pathDelimiter, toolLayout } from '../lib/platform.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -142,39 +143,36 @@ export function setupLogPath(root) {
   return path.join(setupDir(root), 'setup.log');
 }
 
-function shimsDir(root) {
-  return path.join(root, '_agent', 'shared', 'shims');
-}
-
 // 자식 프로세스가 볼 PATH. 동봉 부품이 시스템 것보다 **앞**이어야 한다 —
 // 새 PC 에는 시스템 node·python·git 이 아예 없고, 있는 PC 에서는 우리 판이
 // 이겨야 설치 결과가 PC 마다 달라지지 않는다.
-export function toolPathParts(root, { toolsDir } = {}) {
-  const tools = toolsDir ?? path.join(root, '_agent', 'shared', 'tools');
-  return [
-    shimsDir(root),
-    path.join(tools, 'node'),
-    path.join(tools, 'git', 'cmd'),
-    path.join(tools, 'python'),
-  ];
+// 부품 안쪽 자리는 운영체제마다 다르다(installer/lib/platform.mjs toolLayout) —
+// Windows = node · git\cmd · python, macOS = node/bin · git/bin · python/bin.
+export function toolPathParts(root, { toolsDir, platform = process.platform } = {}) {
+  const p = pathFor(platform);
+  const tools = toolsDir ?? p.join(root, '_agent', 'shared', 'tools');
+  return [p.join(root, '_agent', 'shared', 'shims'), ...toolLayout(tools, { platform }).binDirs];
 }
 
-export function buildEnv(root, { base = process.env, toolsDir } = {}) {
-  const parts = toolPathParts(root, { toolsDir });
+export function buildEnv(root, { base = process.env, toolsDir, platform = process.platform } = {}) {
+  const parts = toolPathParts(root, { toolsDir, platform });
   const existing = base?.PATH ?? base?.Path ?? '';
+  const delim = pathDelimiter(platform);
+  // 윈도 경로는 대소문자를 안 가린다 — 같은 칸을 두 번 넣지 않게 낮춰서 비교한다.
+  const fold = isWindows(platform) ? (s) => s.toLowerCase() : (s) => s;
   const seen = new Set();
   const merged = [];
-  for (const p of [...parts, ...String(existing).split(';')]) {
+  for (const p of [...parts, ...String(existing).split(delim)]) {
     const clean = String(p ?? '').trim();
     if (!clean) continue;
-    const key = clean.toLowerCase().replace(/[\\/]+$/, '');
+    const key = fold(clean).replace(/[\\/]+$/, '');
     if (seen.has(key)) continue;
     seen.add(key);
     merged.push(clean);
   }
   const env = { ...base };
   delete env.Path; // 윈도는 대소문자를 안 가리지만 Node 객체는 가린다 — 한 칸만 남긴다
-  env.PATH = merged.join(';');
+  env.PATH = merged.join(delim);
   return env;
 }
 
@@ -200,7 +198,7 @@ export function normalizeContext(ctx = {}, { fs = ctx.fs ?? nodeFs } = {}) {
     fs,
     offline: ctx.offline === undefined ? true : ctx.offline,
     toolsDir,
-    env: ctx.env ?? buildEnv(root, { toolsDir }),
+    env: ctx.env ?? buildEnv(root, { toolsDir, platform: ctx.platform }),
     progress: typeof ctx.progress === 'function' ? ctx.progress : () => {},
   };
   if (typeof out.run !== 'function') out.run = lazyRun;
