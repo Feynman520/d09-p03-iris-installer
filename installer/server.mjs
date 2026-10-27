@@ -369,7 +369,7 @@ export function startServer({
   // ⑦ 뒤 검사 12·13 다시 재기 — 시험은 가짜를 넣어 실제 중계기에 닿지 않게 한다.
   relayRecheckFn = null,
   // 2.0.38: 업데이트가 Claude Code 를 채울지 가르는 유무 검사(root → boolean) — 시험은 가짜를 넣는다.
-  claudePresentFn = (root) => fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', 'claude.cmd')),
+  claudePresentFn = (root) => fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', process.platform === 'win32' ? 'claude.cmd' : 'claude')),
   // 2.0.39: 업데이트가 설치기 사본(_agent\setup\installer)을 새 판으로 바꿔 끼우는 함수(ctx → 결과) — 시험은 가짜를 넣는다.
   copyInstallerFn = null,
   faceDir,

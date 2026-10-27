@@ -224,7 +224,7 @@ test('launchFace spawns the bundled node on <tools>\\face\\launch.mjs --first-se
     return { pid: 4242, unref() {} };
   };
 
-  const res = launchFace({ root, spec: specPath, spawnFn, port: 3458 });
+  const res = launchFace({ root, spec: specPath, spawnFn, port: 3458, platform: 'win32' });
   assert.equal(res.pid, 4242);
   assert.equal(seen.length, 1);
   assert.equal(seen[0].exe, path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe'));

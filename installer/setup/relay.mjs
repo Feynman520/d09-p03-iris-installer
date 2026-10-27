@@ -238,7 +238,7 @@ export async function run(ctx) {
   }
 
   // 관리 스크립트 위치만 기록한다(⑥-4 가 이것으로 중계기를 띄운다).
-  const manage = manageScriptPath(root);
+  const manage = manageScriptPath(root, { platform });
   recorded.manageScript = { path: rel(manage), present: fs.existsSync(manage) };
   if (!recorded.manageScript.present) {
     pending.push({ capability: '사용량 중계기(여러 구독 묶어 쓰기)', reason: '중계기 관리 스크립트가 아직 없습니다' });

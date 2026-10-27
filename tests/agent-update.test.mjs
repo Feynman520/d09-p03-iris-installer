@@ -31,7 +31,7 @@ function newRoot({ claude = '2.1.272', codex = '0.154.0' } = {}) {
   if (claude) {
     fs.mkdirSync(path.join(claudeDir(root), claude), { recursive: true });
     fs.writeFileSync(path.join(claudeDir(root), claude, 'claude.exe'), 'old');
-    fs.writeFileSync(path.join(claudeDir(root), 'claude.cmd'), claudeForwarderText(claude));
+    fs.writeFileSync(path.join(claudeDir(root), 'claude.cmd'), claudeForwarderText(claude, 'claude.exe', { platform: 'win32' }));
   }
   if (codex) {
     const pkg = path.join(codexDir(root), 'node_modules', '@openai', 'codex');
@@ -47,6 +47,8 @@ function fakes({ stable = '2.1.292', sha = EXE_SHA, codexLatest = '0.163.0', now
   return {
     calls,
     deps: {
+      // 이 파일은 Windows 판 갱신(claude.exe·codex.cmd)을 잰다. macOS 에서는 runOnce 가 건너뛴다(아래 시험).
+      platform: 'win32',
       env: {},
       force: false,
       retryDelayMs: 0,
@@ -88,11 +90,13 @@ test('rootFromHere: tools\\updater\\agents.mjs 에서 네 단계 위가 설치 �
 });
 
 test('전달자: 한 줄로 실행하고 바로 끝난다(쓰는 중 바뀌어도 배치가 다시 읽을 것이 없음), 로그인·설치기 정규식과 맞는다', () => {
-  const t = claudeForwarder('2.1.292');
+  const t = claudeForwarder('2.1.292', { platform: 'win32' });
   assert.equal(t, `@echo off\r\n"%~dp02.1.292\\claude.exe" %*&exit/b${' '.repeat(40)}\r\n`);
   assert.match(t, /^[\x20-\x7e\r\n]+$/);
   // 설치기 출처 1 도 같은 전달자를 쓴다(두 곳이 어긋나면 안 됨).
-  assert.equal(claudeForwarderText('2.1.292'), t);
+  assert.equal(claudeForwarderText('2.1.292', 'claude.exe', { platform: 'win32' }), t);
+  // macOS 판 전달자도 두 곳(설치기·업데이터)이 글자까지 같다.
+  assert.equal(claudeForwarderText('2.1.292', 'claude', { platform: 'darwin' }), claudeForwarder('2.1.292', { platform: 'darwin' }));
   const root = newRoot({ claude: '2.1.292' });
   assert.equal(resolveClaudeExe(root), path.join(claudeDir(root), '2.1.292', 'claude.exe'));
   assert.equal(codexForwarder('0.163.0'), '@echo off\r\n"%~dp0..\\codex-versions\\0.163.0\\codex.cmd" %*\r\n');
@@ -269,4 +273,10 @@ test('실행기: IRIS 창을 띄운 뒤 업데이트 확인을 부른다(ASCII·
   const kickAt = lines.findIndex((l) => l.includes('agents.mjs" --kick'));
   assert.ok(kickAt > wscript, '창을 먼저 띄운다');
   assert.match(c, /^[\x20-\x7e\r\n]+$/);
+});
+
+test('macOS: 갱신기는 아직 Windows 전용이라 아무것도 바꾸지 않고 건너뛴다', async () => {
+  const { runOnce, supportedPlatform } = await import('../updater/agents.mjs');
+  assert.equal(supportedPlatform('darwin'), false);
+  assert.deepEqual(await runOnce('/nonexistent-iris-root', { platform: 'darwin' }), { skipped: 'unsupported-os' });
 });

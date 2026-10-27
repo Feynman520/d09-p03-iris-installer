@@ -23,6 +23,7 @@ function tmpRoot(name) {
 test('ensureProxy: already alive -> started:false, manage script NOT invoked', async () => {
   let manageCalls = 0;
   const result = await ensureProxy({
+    platform: 'win32',
     root: 'C:\\FAKE-ROOT',
     nodeDir: 'C:\\FAKE-ROOT\\_agent\\shared\\tools\\node',
     probe: async () => true,
@@ -36,6 +37,7 @@ test('ensureProxy: dead -> start invoked with -NodePath/-EntryPath, becomes aliv
   const calls = [];
   let probeCount = 0;
   const result = await ensureProxy({
+    platform: 'win32',
     root: 'C:\\FAKE-ROOT',
     nodeDir: 'C:\\FAKE-ROOT\\_agent\\shared\\tools\\node',
     probe: async () => {
@@ -51,7 +53,8 @@ test('ensureProxy: dead -> start invoked with -NodePath/-EntryPath, becomes aliv
   assert.equal(calls[0].managePs1, path.join('C:\\FAKE-ROOT', '_agent', 'shared', 'tools', 'teamclaude', 'teamclaude-manage.ps1'));
   assert.deepEqual(calls[0].args.slice(0, 2), ['-Action', 'start']);
   assert.ok(calls[0].args.includes('-NodePath'));
-  assert.ok(calls[0].args.includes(path.join('C:\\FAKE-ROOT', '_agent', 'shared', 'tools', 'node', 'node.exe')));
+  // 구분자는 이 시험을 돌리는 PC 의 path 를 따르므로 모양으로 본다(Windows 판 = node 폴더의 node.exe).
+  assert.ok(calls[0].args.some((x) => /tools[\\/]node[\\/]node\.exe$/.test(x)), JSON.stringify(calls[0].args));
   assert.ok(calls[0].args.includes('-EntryPath'));
   const entryIdx = calls[0].args.indexOf('-EntryPath');
   assert.equal(
@@ -61,7 +64,7 @@ test('ensureProxy: dead -> start invoked with -NodePath/-EntryPath, becomes aliv
   assert.deepEqual(result, { alive: true, started: true });
 });
 
-test('defaultRunManage: 자식이 파이프를 물려받아 열어 둬도 파워셸이 끝나면 돌아온다 (2.0.9)', async () => {
+test('defaultRunManage: 자식이 파이프를 물려받아 열어 둬도 파워셸이 끝나면 돌아온다 (2.0.9)', { skip: process.platform !== 'win32' && 'PowerShell — macOS 판은 아래 .mjs 시험' }, async () => {
   // 2026-09-17 실제 사용자 실측(2.0.8): 관리 스크립트가 띄운 중계기(node)가 stdout 파이프를 물려받아
   // 'close' 가 영원히 안 와 「중계기를 띄우는 중」이 7분 넘게 이어졌다. 파워셸 흉내: 자식을 하나 띄워
   // 두고(파이프 상속) 바로 끝난다 — 그래도 2초 안에 돌아와야 한다.
@@ -80,6 +83,38 @@ test('defaultRunManage: 자식이 파이프를 물려받아 열어 둬도 파워
   assert.match(r.out, /manage-started/);
   assert.ok(took < 6000, `파이프를 쥔 손자 때문에 기다리면 안 된다(걸린 시간 ${took}ms)`);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('defaultRunManage(macOS): .mjs 관리 스크립트는 node 로 돌리고, 파이프를 쥔 자식이 있어도 끝나면 돌아온다', { skip: process.platform === 'win32' && 'POSIX' }, async () => {
+  const { defaultRunManage } = await import('../installer/lib/proxy.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-runmanage-mjs-'));
+  const mjs = path.join(dir, 'fake-manage.mjs');
+  // 관리 스크립트 흉내: 파이프를 물려받은 손자(8초 잠)를 남기고 곧 끝난다.
+  fs.writeFileSync(mjs, [
+    "import { spawn } from 'node:child_process';",
+    "spawn('/bin/sleep', ['8'], { stdio: 'inherit' }).unref();",
+    "console.log('manage-started ' + process.argv.slice(2).join(' '));",
+  ].join('\n'), 'utf8');
+  const t0 = Date.now();
+  const r = await defaultRunManage(mjs, ['-Action', 'start'], { timeoutMs: 20000, nodeExe: process.execPath });
+  const took = Date.now() - t0;
+  assert.equal(r.code, 0);
+  assert.match(r.out, /manage-started -Action start/);
+  assert.ok(took < 6000, `파이프를 쥔 손자 때문에 기다리면 안 된다(걸린 시간 ${took}ms)`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('ensureProxy(macOS): node 판 관리 스크립트와 bin/node 를 넘긴다', async () => {
+  const calls = [];
+  let n = 0;
+  const r = await ensureProxy({
+    platform: 'darwin', root: '/x/IRIS', nodeDir: '/x/IRIS/_agent/shared/tools/node',
+    probe: async () => (n++ > 0),
+    runManage: async (script, args, opts) => { calls.push({ script, args, opts }); return { code: 0, out: '', err: '' }; },
+  });
+  assert.equal(r.alive, true);
+  assert.equal(calls[0].script, path.join('/x/IRIS', '_agent', 'shared', 'tools', 'teamclaude', 'teamclaude-manage.mjs'));
+  assert.equal(calls[0].opts.nodeExe, path.join('/x/IRIS/_agent/shared/tools/node', 'bin', 'node'));
 });
 
 test('ensureRelayConfigDefaults: 빠진 칸만 채우고 있는 값은 그대로, 파일 없으면 아무것도 안 한다 (2.0.8)', async () => {
@@ -128,6 +163,7 @@ test('switchThreshold (2.0.31): 기본 1(100%), 옛 설치가 남긴 0.98 은 1 
 
 test('ensureProxy: dead, start fails, probe still false -> started:true, alive:false', async () => {
   const result = await ensureProxy({
+    platform: 'win32',
     root: 'C:\\FAKE-ROOT',
     nodeDir: 'C:\\FAKE-ROOT\\_agent\\shared\\tools\\node',
     probe: async () => false,
@@ -287,7 +323,7 @@ test('relayImport: claude uses the CLI "import --from" mechanism -> {ok:true, me
   const root = 'C:\\NOVA';
   const nodeDir = 'C:\\NOVA\\_agent\\shared\\tools\\node';
   const runCalls = [];
-  const result = await relayImport({
+  const result = await relayImport({ platform: 'win32', 
     provider: 'claude',
     root,
     nodeDir,
@@ -307,7 +343,7 @@ test('relayImport: claude uses the CLI "import --from" mechanism -> {ok:true, me
 
 test('relayImport: claude falls back to detached login when the import CLI call fails -> method:"login"', async () => {
   const spawnCalls = [];
-  const result = await relayImport({
+  const result = await relayImport({ platform: 'win32', 
     provider: 'claude',
     root: 'C:\\NOVA',
     nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
@@ -336,7 +372,7 @@ test('relayImport: codex reports config-unreadable (and never falls back to logi
   // failure, which still does fall back to login.
   const spawnCalls = [];
   const configDir = tmpRoot('relay-codex-read-fail');
-  const result = await relayImport({
+  const result = await relayImport({ platform: 'win32', 
     provider: 'chatgpt',
     root: 'C:\\NOVA',
     nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
@@ -363,7 +399,7 @@ test('relayImport: codex falls back to detached "login --codex" when the config 
   fs.mkdirSync(`${configPath}.tmp`);
   const spawnCalls = [];
   try {
-    const result = await relayImport({
+    const result = await relayImport({ platform: 'win32', 
       provider: 'chatgpt',
       root: 'C:\\NOVA',
       nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
@@ -395,7 +431,7 @@ test('relayImport: codex reports config-unreadable and leaves the file byte-for-
   fs.writeFileSync(configPath, originalBytes, 'utf8');
   const spawnCalls = [];
   try {
-    const result = await relayImport({
+    const result = await relayImport({ platform: 'win32', 
       provider: 'chatgpt',
       root: 'C:\\NOVA',
       nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
@@ -422,7 +458,7 @@ test('relayImport: codex reload 이 {ok:false} 면 성공으로 적지 않고 �
   fs.writeFileSync(configPath, JSON.stringify({ proxy: { port: 3456 }, accounts: [] }, null, 2), 'utf8');
   const spawned = [];
   try {
-    const result = await relayImport({
+    const result = await relayImport({ platform: 'win32', 
       provider: 'chatgpt',
       root,
       nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
@@ -444,7 +480,7 @@ test('relayImport: codex writes an importFrom config entry and triggers reload (
   fs.writeFileSync(configPath, JSON.stringify({ proxy: { port: 3456 }, accounts: [] }, null, 2), 'utf8');
   let reloaded = 0;
   try {
-    const result = await relayImport({
+    const result = await relayImport({ platform: 'win32', 
       provider: 'chatgpt',
       root,
       nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node',
@@ -591,7 +627,7 @@ test('startCliLogin: the spawned console carries TEAMCLAUDE_CONFIG (and still no
 
 test('relayImport: both the claude import and the detached login spawn carry TEAMCLAUDE_CONFIG', async () => {
   let importEnv = null;
-  await relayImport({
+  await relayImport({ platform: 'win32', 
     provider: 'claude',
     root: FAKE_ROOT,
     nodeDir: FAKE_NODE_DIR,
@@ -601,7 +637,7 @@ test('relayImport: both the claude import and the detached login spawn carry TEA
   assert.equal(importEnv.TEAMCLAUDE_CONFIG, FAKE_PORTABLE_CONFIG);
 
   let spawnEnv = null;
-  await relayImport({
+  await relayImport({ platform: 'win32', 
     provider: 'claude',
     root: FAKE_ROOT,
     nodeDir: FAKE_NODE_DIR,

@@ -26,13 +26,17 @@ export function defaultProbe(port, { timeoutMs = 1500 } = {}) {
   });
 }
 
-export function defaultRunManage(managePs1, args, { timeoutMs = 90000, env = process.env } = {}) {
+export function defaultRunManage(managePs1, args, { timeoutMs = 90000, env = process.env, nodeExe = null } = {}) {
   return new Promise((resolve) => {
-    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', managePs1, ...args], {
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env,
-    });
+    // macOS(D-M14): 관리 스크립트는 node 판(teamclaude-manage.mjs) — 동봉 node 로 돌린다. 인자 철자는 .ps1 과 같다.
+    const isMjs = /\.mjs$/i.test(String(managePs1));
+    const child = isMjs
+      ? spawn(nodeExe ?? process.execPath, [managePs1, ...args], { stdio: ['ignore', 'pipe', 'pipe'], env })
+      : spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', managePs1, ...args], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env,
+      });
     let out = '';
     let err = '';
     let settled = false;
@@ -53,8 +57,8 @@ export function defaultRunManage(managePs1, args, { timeoutMs = 90000, env = pro
   });
 }
 
-export function manageScriptPath(root) {
-  return path.join(root, '_agent', 'shared', 'tools', 'teamclaude', 'teamclaude-manage.ps1');
+export function manageScriptPath(root, { platform = process.platform } = {}) {
+  return path.join(root, '_agent', 'shared', 'tools', 'teamclaude', platform === 'win32' ? 'teamclaude-manage.ps1' : 'teamclaude-manage.mjs');
 }
 
 export function teamclaudeEntryPath(root) {
@@ -80,13 +84,15 @@ export async function ensureProxy({
   teamclaudeConfigPath,
   probe = defaultProbe,
   runManage = defaultRunManage,
+  platform = process.platform,
 } = {}) {
   if (await probe(port)) {
     return { alive: true, started: false };
   }
 
-  const managePs1 = manageScriptPath(root);
-  const nodeExe = path.join(nodeDir, 'node.exe');
+  const managePs1 = manageScriptPath(root, { platform });
+  // macOS: node 압축을 푼 폴더 안 bin/node(설치기 작업 폴더의 node 든 영혼의 node 든 같은 모양).
+  const nodeExe = platform === 'win32' ? path.join(nodeDir, 'node.exe') : path.join(nodeDir, 'bin', 'node');
   const entryPath = teamclaudeEntryPath(root);
   // I2: the manage script resolves its config from $env:TEAMCLAUDE_CONFIG
   // (patches/teamclaude/teamclaude-manage.ps1 line 3) and falls back to
@@ -102,6 +108,7 @@ export async function ensureProxy({
     manage = await runManage(managePs1, ['-Action', 'start', '-NodePath', nodeExe, '-EntryPath', entryPath], {
       env: { ...process.env, TEAMCLAUDE_CONFIG: configPath },
       timeoutMs: 180000,
+      nodeExe,
     });
   } catch (err) {
     manage = { code: -1, out: '', err: String(err?.message ?? err) };

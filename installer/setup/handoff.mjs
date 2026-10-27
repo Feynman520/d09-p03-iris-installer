@@ -22,6 +22,11 @@ export const HANDOFF_SCHEMA = 1;
 
 // 재개 진입점. 계약이 글자 그대로 정한 경로라 다른 이름을 쓰면 Face 가 못 찾는다.
 export const RESUME_INSTALLER_PATH = '_agent/setup/installer/IRIS-설치.cmd';
+// macOS(D-M04): 같은 자리의 .command. IRIS 창(P02)은 인수 문서의 resume.installerPath 를 그대로 연다.
+export const RESUME_INSTALLER_PATH_MAC = '_agent/setup/installer/IRIS-설치.command';
+export function resumeInstallerPath(platform = process.platform) {
+  return platform === 'win32' ? RESUME_INSTALLER_PATH : RESUME_INSTALLER_PATH_MAC;
+}
 export const RESUME_ARGS = Object.freeze(['--resume']);
 
 export function setupDir(root) { return path.join(root, '_agent', 'setup'); }
@@ -252,7 +257,7 @@ export function buildHandoff(ctx, {
     diagnosticsPath: relOf(root, diagnosticsPath),
     firstMessage: firstMessageText({ nameEnMissing, interview }),
     messenger: messengerBlock(ctx, receipt, { fs }),
-    resume: { installerPath: RESUME_INSTALLER_PATH, args: [...RESUME_ARGS] },
+    resume: { installerPath: resumeInstallerPath(ctx?.platform ?? process.platform), args: [...RESUME_ARGS] },
     setupCompletedAt: setup.allDone ? now.toISOString() : null,
   };
 }
@@ -385,6 +390,8 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
     ?? (ctx.payloadDir ? path.dirname(ctx.payloadDir) : null);
   const version = packageVersionOf(ctx);
   const had = readCopyVersion(fs, root);
+  const win = (ctx.platform ?? process.platform) === 'win32';
+  const entryName = win ? 'IRIS-설치.cmd' : 'IRIS-설치.command';
   // 판을 알 수 없으면(꾸러미 표가 없는 시험 등) 갈아 끼우지 않는다 — 모르는
   // 이유로 멀쩡한 사본을 버리는 것이 낡은 사본보다 나쁘다.
   const stale = Boolean(version) && fs.existsSync(finalDir) && had !== version;
@@ -392,7 +399,7 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
 
   const result = {
     dir: relOf(root, finalDir),
-    entry: RESUME_INSTALLER_PATH,
+    entry: resumeInstallerPath(win ? 'win32' : 'darwin'),
     copied: 0,
     kept: 0,
     ok: false,
@@ -434,11 +441,13 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
   }
 
   // ③ 진입점 — 계약이 정한 **정확한** 자리. zip 루트 것이 먼저, 없으면 installer\ 안의 같은 파일.
-  const entryDst = path.join(dest, 'IRIS-설치.cmd');
-  let entry = copyFileIfAbsent(fs, root, path.join(zipRoot, 'IRIS-설치.cmd'), entryDst);
+  const entryDst = path.join(dest, entryName);
+  let entry = copyFileIfAbsent(fs, root, path.join(zipRoot, entryName), entryDst);
   if (!entry.written && !entry.kept) {
-    entry = copyFileIfAbsent(fs, root, path.join(zipRoot, 'installer', 'IRIS-설치.cmd'), entryDst);
+    entry = copyFileIfAbsent(fs, root, path.join(zipRoot, 'installer', entryName), entryDst);
   }
+  // macOS: Finder·IRIS 창이 실행하려면 실행 권한이 있어야 한다(복사는 내용만 옮긴다).
+  if (!win && fs.existsSync(entryDst)) fs.chmodSync(entryDst, 0o755);
   if (entry.written) result.copied += 1;
   if (entry.kept) result.kept += 1;
 
@@ -474,7 +483,7 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
   }
 
   // ⑦ 낡은 사본이었으면 여기서 한 번에 바꿔 끼운다(직전 것은 한 세대만 보관).
-  if (stale && fs.existsSync(path.join(dest, 'IRIS-설치.cmd'))) {
+  if (stale && fs.existsSync(path.join(dest, entryName))) {
     const prev = assertInside(root, `${finalDir}.prev`, { fs });
     try { fs.rmSync(prev, { recursive: true, force: true }); } catch { /* 없으면 그만 */ }
     fs.renameSync(finalDir, prev);
@@ -483,13 +492,13 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
     log(`[handoff] 설치기 사본을 ${version} 판으로 바꿔 끼웠습니다(직전 판은 installer.prev 에 남김).`);
   }
 
-  const entryFinal = path.join(finalDir, 'IRIS-설치.cmd');
+  const entryFinal = path.join(finalDir, entryName);
   result.ok = fs.existsSync(entryFinal);
   if (!result.ok) {
-    result.missing.push('IRIS-설치.cmd');
-    log('[handoff] 설치기 사본에 IRIS-설치.cmd 가 없습니다 — 「설치 이어하기」가 동작하지 않습니다.');
+    result.missing.push(entryName);
+    log(`[handoff] 설치기 사본에 ${entryName} 가 없습니다 — 「설치 이어하기」가 동작하지 않습니다.`);
   } else {
-    log(`[handoff] 설치기 사본 준비 — 새로 ${result.copied}개·그대로 ${result.kept}개 (${RESUME_INSTALLER_PATH})`);
+    log(`[handoff] 설치기 사본 준비 — 새로 ${result.copied}개·그대로 ${result.kept}개 (${result.entry})`);
   }
   return result;
 }

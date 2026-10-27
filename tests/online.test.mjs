@@ -152,7 +152,7 @@ test('checkNet: a 403 answer is reachable, a thrown request is blocked', async (
 test('installClaude: claude not chosen -> still installed, both shims (2.0.38 두 비서 항상 설치)', async () => {
   const root = tmpRoot('skip');
   const shimCalls = [];
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['chatgpt'],
     fetchFn: async (url) => (String(url).endsWith('manifest.json') ? manifestResponse(PAYLOAD_SHA) : fileResponse(PAYLOAD)),
     runFn: async () => ({ code: 0, out: `${VERSION} (Claude Code)`, err: '' }),
@@ -170,7 +170,7 @@ test('installClaude: the locked version is already there -> source:"existing", n
   const exe = toolsPath(root, 'claude', VERSION, 'claude.exe');
   fs.mkdirSync(path.dirname(exe), { recursive: true });
   fs.writeFileSync(exe, 'already here');
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     runFn: async () => ({ code: 0, out: `${VERSION} (Claude Code)`, err: '' }),
     fetchFn: async () => { throw new Error('must not fetch'); },
@@ -184,7 +184,7 @@ test('installClaude: the locked version is already there -> source:"existing", n
 test('installClaude: 출처 1 success -> manifest match, sha256 match, rename, shim, receipt', async () => {
   const root = tmpRoot('src1');
   const shimCalls = [];
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude', 'chatgpt'],
     fetchFn: async (url) => (String(url).endsWith('manifest.json') ? manifestResponse(PAYLOAD_SHA) : fileResponse(PAYLOAD)),
     runFn: async () => ({ code: 0, out: `${VERSION} (Claude Code)`, err: '' }),
@@ -199,7 +199,7 @@ test('installClaude: 출처 1 success -> manifest match, sha256 match, rename, s
   assert.equal(fs.readFileSync(exe).toString(), PAYLOAD.toString());
 
   const cmd = fs.readFileSync(toolsPath(root, 'claude', 'claude.cmd'), 'utf8');
-  assert.equal(cmd, claudeForwarderText(VERSION));
+  assert.equal(cmd, claudeForwarderText(VERSION, 'claude.exe', { platform: 'win32' }));
   assert.ok(cmd.includes('\r\n'), 'a .cmd must be CRLF');
   // eslint-disable-next-line no-control-regex
   assert.ok(/^[\x00-\x7F]*$/.test(cmd), 'a .cmd must be pure ASCII');
@@ -216,7 +216,7 @@ test('installClaude: 출처 1 success -> manifest match, sha256 match, rename, s
 test('installClaude: progress is reported for the download', async () => {
   const root = tmpRoot('progress');
   const seen = [];
-  await installClaude({
+  await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     fetchFn: async (url) => (String(url).endsWith('manifest.json') ? manifestResponse(PAYLOAD_SHA) : fileResponse(PAYLOAD)),
     runFn: async () => ({ code: 0, out: VERSION, err: '' }),
@@ -234,7 +234,7 @@ test('installClaude: manifest disagrees with the lock -> 출처 1 abandoned, 출
   const root = tmpRoot('mismatch');
   const logged = [];
   let downloaded = false;
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     log: (l) => logged.push(l),
     fetchFn: async (url) => {
@@ -261,7 +261,7 @@ test('installClaude: manifest disagrees with the lock -> 출처 1 abandoned, 출
 
 test('installClaude: checksum mismatch -> .part deleted, claude.exe never created, falls back', async () => {
   const root = tmpRoot('badsha');
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     fetchFn: async (url) => (String(url).endsWith('manifest.json')
       ? manifestResponse(PAYLOAD_SHA)
@@ -283,7 +283,7 @@ test('installClaude: checksum mismatch -> .part deleted, claude.exe never create
 
 test('installClaude: both sources fail -> E-ONLINE-CLAUDE with both reasons', async () => {
   const root = tmpRoot('bothfail');
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     fetchFn: async () => { throw new Error('ENOTFOUND downloads.claude.ai'); },
     npmInstall: async () => ({ code: 1, out: '', err: 'ECONNREFUSED registry.npmjs.org' }),
@@ -885,7 +885,7 @@ test('no user-facing message names the relay product', async () => {
     root, subscriptions: ['claude', 'chatgpt'], lock: LOCK, probe: async () => ({ reachable: false }),
   })).message);
 
-  messages.push((await installClaude({
+  messages.push((await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     fetchFn: async () => { throw new Error('down'); },
     npmInstall: async () => ({ code: 1, out: '', err: 'down' }),

@@ -84,9 +84,16 @@ const crlf = (lines) => `${lines.join('\r\n')}\r\n`;
 // live cmd.exe: 1.0.0->10.20.300, 2.1.272->2.1.292, 2.1.99->2.1.100, shorter,
 // old and new forms -- exit code kept, no stray output.
 export const FORWARDER_PAD = ' '.repeat(40);
-export function claudeForwarder(version) {
+export function claudeForwarder(version, { platform = process.platform } = {}) {
+  // macOS: installer/lib/online.mjs claudeForwarderText 의 sh 판과 글자까지 같다(`exec` 라 다시 읽히지 않는다).
+  if (platform !== 'win32') return ['#!/bin/sh', `exec "$(dirname -- "$0")/${version}/claude" "$@"`, ''].join('\n');
   return crlf(['@echo off', `"%~dp0${version}\\claude.exe" %*&exit/b${FORWARDER_PAD}`]);
 }
+
+// macOS 판 갱신(darwin-arm64 판 내려받기·npm darwin 바이너리·sh 전달자)은 아직 옮기지 않았다
+// (docs/설계-macOS.md M5). 그때까지 macOS 에서는 아무것도 바꾸지 않고 끝난다 — 이 파일의
+// Windows 갱신 경로(claude.exe·codex.cmd)를 macOS 설치에 돌리면 안 되기 때문이다.
+export function supportedPlatform(platform = process.platform) { return platform === 'win32'; }
 
 // Calling a .cmd without `call` hands control over for good -- this file is
 // never read again, whatever happens to it afterwards.
@@ -244,7 +251,7 @@ export async function updateClaude(root, deps, log) {
     await sleep(deps.retryDelayMs);
   }
   if (!out.includes(target)) return { status: 'error', detail: `new build did not answer --version (${target})` };
-  writeAtomic(path.join(claudeDir(root), 'claude.cmd'), claudeForwarder(target));
+  writeAtomic(path.join(claudeDir(root), 'claude.cmd'), claudeForwarder(target, { platform: 'win32' }));
   log(`claude: ${cur.version ?? '?'} -> ${target}`);
   return { status: 'updated', from: cur.version, version: target };
 }
@@ -378,6 +385,7 @@ export function kick(root, { env = process.env, now = Date.now(), spawnFn = spaw
 }
 
 export async function runOnce(root, overrides = {}) {
+  if (!supportedPlatform(overrides.platform)) return { skipped: 'unsupported-os' };
   const deps = { ...DEFAULTS, ...overrides };
   const log = overrides.log ?? makeLogger(root);
   const now = deps.now();
@@ -419,6 +427,7 @@ async function main(argv) {
   const at = argv.indexOf('--root');
   const root = at >= 0 && argv[at + 1] ? path.resolve(argv[at + 1]) : rootFromHere();
   if (argv.includes('--kick')) {
+    if (!supportedPlatform()) return 0;
     try { kick(root); } catch { /* never block the launcher */ }
     return 0;
   }

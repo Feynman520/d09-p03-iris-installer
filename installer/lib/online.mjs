@@ -290,8 +290,19 @@ export async function checkNet({
 // the child exits (reasoning and measurements there; tests/agent-update.test.mjs
 // pins the two copies together). The updater is shipped as its own part, so
 // this is a copy, not an import.
-export function claudeForwarderText(version, binName = 'claude.exe') {
+export function claudeForwarderText(version, binName = 'claude.exe', { platform = process.platform } = {}) {
+  if (platform !== 'win32') {
+    // macOS(docs/설계-macOS.md 2절): `<tools>/claude/claude` sh 전달자. `exec` 로 넘기므로 셸이
+    // 이 파일을 다시 읽을 일이 없다 — 업데이터가 세션 중에 바꿔 써도 안전하다(.cmd 의 `&exit/b` 와 같은 목적).
+    // updater/agents.mjs claudeForwarder 와 글자까지 같아야 한다(tests/agent-update.test.mjs).
+    return ['#!/bin/sh', `exec "$(dirname -- "$0")/${version}/${binName === 'claude.exe' ? 'claude' : binName}" "$@"`, ''].join('\n');
+  }
   return ['@echo off', `"%~dp0${version}\\${binName}" %*&exit/b${' '.repeat(40)}`].join('\r\n') + '\r\n';
+}
+
+// downloads.claude.ai manifest 의 platforms 열쇠.
+export function claudeManifestKey(platform = process.platform) {
+  return platform === 'win32' ? 'win32-x64' : 'darwin-arm64';
 }
 
 async function sha256File(file, { createReadStream = fs.createReadStream } = {}) {
@@ -368,9 +379,11 @@ export async function installClaude({
   downloadFn = downloadToFile,
   hashFileFn = sha256File,
   env = process.env,
+  platform = process.platform,
 } = {}) {
   const deps = { readReceiptFn, writeReceiptFn };
   void subscriptions;
+  const win = platform === 'win32';
 
   const theLock = lock ?? readLock({ zipRoot });
   const part = theLock?.parts?.claude;
@@ -381,12 +394,17 @@ export async function installClaude({
   }
 
   const version = part.version;
-  const binName = part.binName ?? 'claude.exe';
+  const binName = part.binName ?? (win ? 'claude.exe' : 'claude');
   const dir = claudeDir(root);
   const versionDir = path.join(dir, version);
   const exePath = path.join(versionDir, binName);
   const partPath = `${exePath}.part`;
-  const cmdPath = path.join(dir, 'claude.cmd');
+  // 전달자: Windows claude.cmd, macOS claude(sh). 심(lib/shims.mjs)이 이것을 부른다.
+  const cmdPath = path.join(dir, win ? 'claude.cmd' : 'claude');
+  const writeForwarder = (text) => {
+    fsImpl.writeFileSync(cmdPath, text, 'ascii');
+    if (!win) fsImpl.chmodSync(cmdPath, 0o755);
+  };
 
   // `--version` only. This is the single process this module ever runs against
   // a model vendor's CLI, and it makes no model request.
@@ -465,7 +483,7 @@ export async function installClaude({
       clearTimeout(timer);
     }
 
-    const officialSha = String(manifest?.platforms?.['win32-x64']?.checksum ?? '').toLowerCase();
+    const officialSha = String(manifest?.platforms?.[claudeManifestKey(platform)]?.checksum ?? '').toLowerCase();
     const lockedSha = String(part.sha256).toLowerCase();
     if (officialSha !== lockedSha) {
       // The official manifest and our lock disagree: the pinned version was
@@ -496,11 +514,13 @@ export async function installClaude({
 
     if (fsImpl.existsSync(exePath)) fsImpl.rmSync(exePath, { force: true });
     fsImpl.renameSync(partPath, exePath);
+    // macOS: 내려받은 파일에는 실행 권한이 없다.
+    if (!win) fsImpl.chmodSync(exePath, 0o755);
 
     const probe = await probeVersion(exePath);
     if (!probe.ok) throw new Error(`--version did not report ${version} (${probe.out})`);
 
-    fsImpl.writeFileSync(cmdPath, claudeForwarderText(version, binName), 'ascii');
+    writeForwarder(claudeForwarderText(version, binName, { platform }));
     const shims = writeShimsFn(root, ALL_AGENTS);
 
     const seconds = Math.round((Date.now() - started) / 100) / 10;
@@ -529,9 +549,12 @@ export async function installClaude({
   try {
     if (!fb.npm || !fb.version) throw new Error('lock.parts.claude.fallback incomplete');
     const soulNode = path.join(toolsDir(root), 'node');
-    const nodeBase = fsImpl.existsSync(path.join(soulNode, 'node.exe')) ? soulNode : (nodeDir ?? soulNode);
-    const nodeExe = path.join(nodeBase, 'node.exe');
-    const npmCli = path.join(nodeBase, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const nodeIn = (base) => (win ? path.join(base, 'node.exe') : path.join(base, 'bin', 'node'));
+    const nodeBase = fsImpl.existsSync(nodeIn(soulNode)) ? soulNode : (nodeDir ?? soulNode);
+    const nodeExe = nodeIn(nodeBase);
+    const npmCli = win
+      ? path.join(nodeBase, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      : path.join(nodeBase, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
     const cacheDir = path.join(root, '_agent', 'runtime', 'host', 'npm-cache');
     fsImpl.mkdirSync(dir, { recursive: true });
     fsImpl.mkdirSync(cacheDir, { recursive: true });
@@ -541,6 +564,8 @@ export async function installClaude({
     const r = await npmInstall({ nodeExe, npmCli, prefix: dir, cacheDir, spec: `${fb.npm}@${fb.version}` });
     if (r.code !== 0) throw new Error((r.err || r.out || 'npm failed').slice(0, 300));
 
+    // macOS 의 `npm -g --prefix` 는 실행 파일을 <prefix>/bin 에 둔다 — 전달자가 그쪽을 가리키게 한다.
+    if (!win) writeForwarder('#!/bin/sh\nexec "$(dirname -- "$0")/bin/claude" "$@"\n');
     const probe = await probeVersion(cmdPath, fb.version);
     if (!probe.ok) throw new Error(`--version did not report ${fb.version} (${probe.out})`);
 

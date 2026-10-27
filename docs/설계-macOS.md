@@ -69,3 +69,25 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | M4 | IRIS 창(P02 포크) | 창이 열린다 |
 | M5 | 앱 바로가기·폴더 아이콘·삭제기·Mac 시험 행렬 | 배포 후보 |
 | M6 | 문서 MCP 대체 처리(각 저장소) | 문서 도구 |
+
+## 5. 진행 상황 (2026-10-27)
+
+| 단계 | 상태 | 근거 |
+|---|---|---|
+| M1 | 끝 | 겉옷(`IRIS-설치.command`→`bootstrap.sh`→`bootstrap.mjs`)·준비 검사·심·사용자 환경. 단위 시험 |
+| M2 | 끝 | `node build/build.mjs --target darwin-arm64` → `IRIS-Setup-macOS-arm64_v<판>_<날짜>.zip`(약 460MB). 임시 폴더 연습 설치에서 세팅 9단계 전부 `done`, 검사 13개 중 통과 10·대기 3(브라우저·중계기 2) |
+| M3 | 코드 끝, 실측 남음 | Claude Code `darwin-arm64` 받기·sh 전달자·창 없는 로그인(lsof)·중계기 시작(`teamclaude-manage.mjs`)·재개 사본. **진짜 구독 로그인은 아직 해 보지 않았다**(아래 미결 ①) |
+| M4 | 시작 전 | IRIS 창(P02 포크) |
+| M5 | 시작 전 | 삭제기·비서 자동 업데이트(macOS 판)·`guard-iris-path.py` macOS 경로·검사소(`verify/*`) macOS 대응 |
+
+연습 설치는 홈 폴더를 건드리지 않는다: `IRIS_INSTALLER_SOUL_ROOT`(설치 폴더)·`IRIS_INSTALLER_WORK_DIR`(작업 폴더)·`IRIS_INSTALLER_NO_USER_ENV=1`·`IRIS_INSTALLER_NO_BROWSER=1`·`IRIS_INSTALLER_OFFLINE=1`.
+원작자 PC 에만 있는 부품(대시보드·온톨로지·HWPX 양식·명세·아이콘)은 `node build/seed-from-release.mjs` 가 공식 zip 에서 꺼내 `IRIS_<부품>_SOURCE` 로 가리킨다.
+
+## 6. 미결
+
+1. **Claude Code 로그인과 키체인.** macOS 의 Claude Code 는 토큰을 `.credentials.json` 이 아니라 키체인에 둔다. 설치기는 로그인 완료를 `.claude.json` 의 `oauthAccount`(토큰 아님)로 알아보고, 중계기 연결은 파일이 있을 때만 `import --from` 하며 없으면 중계기 자신의 브라우저 로그인(원래 설계의 대체 경로)으로 간다 — 키체인 기본 항목을 읽으면 그 Mac 에 원래 있던 **다른** 계정을 가져올 수 있어서다. 실제 계정으로 한 번 확인해야 한다(브라우저 로그인이 두 번 뜨는지).
+2. **D-M08 전역 변수**(원작자 확인).
+3. **비서 자동 업데이트**(`updater/agents.mjs`)는 macOS 에서 아무것도 하지 않고 끝나게 막아 두었다 — Windows 경로(claude.exe·codex.cmd)를 macOS 설치에 돌리지 않기 위해. macOS 판은 M5.
+4. **`guard-iris-path.py`** 는 드라이브 문자 경로만 알아본다 — macOS 경로에서는 아무것도 막지 않는다(해는 없지만 보호도 없다). M5.
+5. **서명·공증**(D-M05) — Gatekeeper 안내문으로 시작. Developer ID 는 별도 결정.
+6. **Windows 회귀 확인** — Windows 판 시험은 Mac 에서도 Windows 판으로 고정해 돌지만, PR 전에 원작자 PC 에서 `npm test`·`npm run verify` 를 한 번 돌려야 한다.

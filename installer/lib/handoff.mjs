@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { run } from '../../lib/run.mjs';
 import { toolsDir } from './install.mjs';
 import { writeReceipt, markStep } from './receipt.mjs';
+import { installerWorkDir } from './platform.mjs';
 
 // Step ⓕ of the wizard: hand the finished soul over to IRIS-Face and get out
 // of the way. Nothing here is interactive -- the person has already logged in
@@ -25,7 +26,9 @@ export function setupDir(root) { return path.join(root, '_agent', 'setup'); }
 export function firstRequestPath(root) { return path.join(setupDir(root), 'first-request.txt'); }
 export function firstSessionSpecPath(root) { return path.join(setupDir(root), 'first-session.json'); }
 export function faceDirFor(root) { return path.join(toolsDir(root), 'face'); }
-export function nodeExeFor(root) { return path.join(toolsDir(root), 'node', 'node.exe'); }
+export function nodeExeFor(root, { platform = process.platform } = {}) {
+  return platform === 'win32' ? path.join(toolsDir(root), 'node', 'node.exe') : path.join(toolsDir(root), 'node', 'bin', 'node');
+}
 export function faceLogPath(root) { return path.join(setupDir(root), 'face-launch.log'); }
 
 // ---------------------------------------------------------------------------
@@ -331,8 +334,9 @@ export function launchFace({
   env,
   spawnFn = spawn,
   logFile,
+  platform = process.platform,
 } = {}) {
-  const exe = nodeExe ?? (nodeDir ? path.join(nodeDir, 'node.exe') : nodeExeFor(root));
+  const exe = nodeExe ?? (nodeDir ? (platform === 'win32' ? path.join(nodeDir, 'node.exe') : path.join(nodeDir, 'bin', 'node')) : nodeExeFor(root, { platform }));
   const dir = faceDir ?? faceDirFor(root);
   const specPath = spec ?? firstSessionSpecPath(root);
   const args = [
@@ -385,6 +389,15 @@ export function relaunchFace({
     windowsHide: true,
     env: env ? { ...process.env, ...env } : process.env,
   };
+  if (process.platform !== 'win32') {
+    // macOS: 영혼의 `<이름> Face.command` 가 정본 실행기다(IRIS_FACE_NODE·TEAMCLAUDE_CONFIG·PATH 를 건다).
+    const launcher = faceLauncherPath(root, path.basename(root), { platform: 'darwin' });
+    if (fs.existsSync(launcher)) {
+      const child = spawnFn('/bin/sh', [launcher], { ...spawnOpts, stdio: 'ignore' });
+      child.unref?.();
+      return { ok: true, how: 'command', pid: child.pid, launcher };
+    }
+  }
   if (fs.existsSync(vbs)) {
     // Same line as the desktop .cmd (faceLauncherContent): the .vbs uses
     // IRIS_FACE_NODE and otherwise a bare "node" looked up on PATH -- and this
@@ -483,9 +496,7 @@ export async function waitFaceReady({
 // ---------------------------------------------------------------------------
 
 export function defaultWorkDir(env = process.env) {
-  return env.LOCALAPPDATA
-    ? path.join(env.LOCALAPPDATA, 'IRIS-Installer')
-    : path.join(os.tmpdir(), 'IRIS-Installer');
+  return installerWorkDir({ env });
 }
 
 // The unpacked node under %LOCALAPPDATA%\IRIS-Installer\node is ~100 MB of

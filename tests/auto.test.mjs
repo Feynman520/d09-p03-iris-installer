@@ -453,11 +453,13 @@ test('auto: 업데이트가 설치기 사본을 새 판으로 바꿔 끼운다(I
   const zipRoot = makeZipRoot('zip-auto-copy');
   fs.mkdirSync(path.join(zipRoot, 'installer'), { recursive: true });
   fs.mkdirSync(path.join(zipRoot, 'lib'), { recursive: true });
-  for (const f of ['IRIS-설치.cmd', 'IRIS-삭제.cmd', 'uninstall.ps1', 'server.mjs']) {
+  for (const f of ['IRIS-설치.cmd', 'IRIS-설치.command', 'IRIS-삭제.cmd', 'uninstall.ps1', 'server.mjs']) {
     fs.writeFileSync(path.join(zipRoot, 'installer', f), `new ${f}\n`, 'utf8');
   }
   fs.writeFileSync(path.join(zipRoot, 'lib', 'run.mjs'), 'new run\n', 'utf8');
+  // 진입점은 이 시험을 돌리는 PC 의 것을 쓴다(Windows .cmd · macOS .command) — 둘 다 둔다.
   fs.writeFileSync(path.join(zipRoot, 'IRIS-설치.cmd'), 'new entry\n', 'utf8');
+  fs.writeFileSync(path.join(zipRoot, 'IRIS-설치.command'), 'new entry\n', 'utf8');
 
   // 1.9.0 사본이 이미 있는 가짜 영혼(임시 폴더 — 진짜 C:\ 아래가 아니다).
   const soulRoot = path.join(tmp, 'soul-auto-copy');

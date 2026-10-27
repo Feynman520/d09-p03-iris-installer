@@ -1129,6 +1129,12 @@ function writeCodexConfig(ctx, specs, { fs, root, log }) {
     topLines.push(`model_provider = ${tomlString(CODEX_PROVIDER_ID)}`);
     added.push('model_provider');
   }
+  // macOS: 코덱스가 로그인을 키체인에 두면 중계기가 읽을 auth.json 이 생기지 않는다(중계기 importFrom 은
+  // 파일만 본다). Windows 의 기본(파일)과 같게 파일 저장을 못 박는다. 사용자가 이미 정했으면 그대로.
+  if (!isWindows(ctx.platform ?? process.platform) && !hasTopKey(text, 'cli_auth_credentials_store')) {
+    topLines.push(`cli_auth_credentials_store = ${tomlString('file')}`);
+    added.push('cli_auth_credentials_store');
+  }
   if (topLines.length) {
     const block = `${topLines.join('\n')}\n`;
     text = text.length === 0 ? block : `${block}${text.startsWith('\n') ? text : `\n${text}`}`;

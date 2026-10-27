@@ -71,6 +71,8 @@ function ctxFor(root, extra = {}) {
     precheck: { recorded: { edge: { present: true }, os: { build: 26200 } } },
     receipt: doneReceipt(),
     offline: true,
+    // 이 파일은 Windows 판(IRIS-설치.cmd)을 잰다 — macOS 판은 맨 끝 시험.
+    platform: 'win32',
     ...extra,
   };
 }
@@ -459,4 +461,21 @@ test('진단 파일: 단계별 결과와 실패 코드가 아홉 칸 전부 있�
   assert.deepEqual(Object.keys(d.stages), [...SETUP_STAGE_IDS]);
   assert.equal(d.failed, null);
   assert.equal(d.environment.offline, true);
+});
+
+test('macOS: 재개 진입점은 IRIS-설치.command(실행 권한)이고 인수 문서도 그 글자다', { skip: process.platform === 'win32' && 'POSIX 실행 비트' }, async () => {
+  const root = newRoot('mac-resume');
+  const { handoff } = writeHandoff(ctxFor(root, { platform: 'darwin' }), { assumeDone: ['checks'] });
+  assert.equal(handoff.resume.installerPath, '_agent/setup/installer/IRIS-설치.command');
+  const zipRoot = path.join(tmp, 'mac-zip');
+  fs.mkdirSync(path.join(zipRoot, 'installer'), { recursive: true });
+  fs.mkdirSync(path.join(zipRoot, 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(zipRoot, 'installer', 'server.mjs'), '//');
+  fs.writeFileSync(path.join(zipRoot, 'lib', 'run.mjs'), '//');
+  fs.writeFileSync(path.join(zipRoot, 'IRIS-설치.command'), '#!/bin/sh\n');
+  fs.writeFileSync(path.join(zipRoot, 'lock.json'), '{}');
+  const r = copyInstallerProgram(ctxFor(root, { platform: 'darwin', zipRoot }));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const entry = path.join(root, '_agent', 'setup', 'installer', 'IRIS-설치.command');
+  assert.equal(fs.statSync(entry).mode & 0o777, 0o755);
 });

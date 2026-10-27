@@ -603,7 +603,7 @@ export const defaultNpmInstall = ({ nodeExe, npmCli, prefix, spec, cacheDir }) =
   const basePath = process.env.PATH ?? process.env.Path ?? '';
   const env = { ...process.env, npm_config_cache: cacheDir };
   for (const k of Object.keys(env)) if (k.toLowerCase() === 'path') delete env[k];
-  env.PATH = basePath ? `${nodeDir};${basePath}` : nodeDir;
+  env.PATH = basePath ? `${nodeDir}${path.delimiter}${basePath}` : nodeDir;
   return run(
     nodeExe,
     [npmCli, 'install', '-g', '--prefix', prefix, spec, '--no-fund', '--no-audit'],

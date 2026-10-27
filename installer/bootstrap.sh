@@ -64,6 +64,21 @@ log 'Location check passed.'
 NODE_FILE="$(/usr/bin/plutil -extract parts.node.file raw -o - "$MANIFEST" 2>/dev/null)"
 NODE_SHA="$(/usr/bin/plutil -extract parts.node.sha256 raw -o - "$MANIFEST" 2>/dev/null)"
 NODE_ARCHIVE="$ZIP_ROOT/payload/$NODE_FILE"
+# The resume copy inside an install (<root>/_agent/setup/installer, made by
+# setup/handoff.mjs copyInstallerProgram) carries no parts at all. It reuses
+# the node already unpacked in $WORK, else the soul's own bundled node.
+if [ -z "$NODE_FILE" ] && [ "$(/usr/bin/plutil -extract resumeOnly raw -o - "$MANIFEST" 2>/dev/null)" = "true" ]; then
+  for CANDIDATE in "$WORK/node" "$ZIP_ROOT/../../shared/tools/node"; do
+    if [ -x "$CANDIDATE/bin/node" ]; then
+      log "Resume copy: reusing node at $CANDIDATE."
+      # shellcheck disable=SC2086 # PASS is a list of plain flags
+      exec "$CANDIDATE/bin/node" "$ZIP_ROOT/installer/bootstrap.mjs" \
+        --zip-root "$ZIP_ROOT" --port "$PORT" --node-dir "$CANDIDATE" --work-dir "$WORK" $PASS
+    fi
+  done
+  log 'Resume copy: no node found to reuse. Run the installer from the downloaded zip again.'
+  exit 12
+fi
 if [ -z "$NODE_FILE" ] || [ ! -f "$NODE_ARCHIVE" ]; then
   log "Integrity check failed: node part missing. Download the zip again."
   exit 11
