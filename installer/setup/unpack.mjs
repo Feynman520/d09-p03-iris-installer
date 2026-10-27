@@ -246,7 +246,7 @@ function countFiles(fs, dir) {
 // 실행 파일을 실제로 돌려 보는 검증. `ctx.run` 을 쓰므로 시험에서 가짜 주입이
 // 된다. 판 문자열이 출력 어딘가에 있으면 통과(예: `git --version` 은
 // `git version 2.55.0.windows.1`, 잠금표는 `2.55.0.5`).
-function versionProbe(ctx, exe, args, wanted, { timeoutMs = 120000 } = {}) {
+function versionProbe(ctx, exe, args, wanted, { timeoutMs = 120000, env = null } = {}) {
   return async () => {
     const fs = ctx.fs ?? nodeFs;
     if (!fs.existsSync(exe)) return { ok: false, detail: `${exe} 없음` };
@@ -258,7 +258,7 @@ function versionProbe(ctx, exe, args, wanted, { timeoutMs = 120000 } = {}) {
     // 쓰는 검증기를 그대로 빌려 쓴다 — 아래 v2Verifiers 참조.
     let r;
     try {
-      r = await runner(exe, args, { timeoutMs, env: ctx.env });
+      r = await runner(exe, args, { timeoutMs, env: env ?? ctx.env });
     } catch (err) {
       return { ok: false, detail: `실행 실패: ${String(err?.message ?? err)}`.slice(0, 200) };
     }
@@ -441,7 +441,9 @@ function macVerifiers(ctx, { V, fs, dest, want }) {
   V.git = versionProbe(ctx, path.join(dest('git'), 'bin', 'git'), ['--version'], String(want('git')).split(/[.-]/).slice(0, 3).join('.'));
   // codex 는 npm 의 .bin 링크 대신 진입 파일을 동봉 node 로 부른다(심과 같은 방식).
   const codexJs = path.join(dest('codex'), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
-  const codexProbe = versionProbe(ctx, node, [codexJs, '--version'], want('codex'));
+  // CODEX_HOME = 이 영혼의 것: 없으면 코덱스가 사용자 홈에 ~/.codex/tmp 를 만든다(2026-10-27 연습 설치에서 발견).
+  const codexHome = ctx.root ? path.join(ctx.root, '_agent', 'codex') : null;
+  const codexProbe = versionProbe(ctx, node, [codexJs, '--version'], want('codex'), codexHome ? { env: { ...(ctx.env ?? process.env), CODEX_HOME: codexHome } } : {});
   V.codex = async () => (fs.existsSync(codexJs) ? codexProbe() : { ok: false, detail: `${codexJs} 없음` });
   for (const [k, file] of [['uv', path.join('bin', 'uv')], ['age', 'age'], ['manage', 'teamclaude-manage.mjs']]) {
     V[k] = async () => {
