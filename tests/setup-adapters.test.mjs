@@ -240,6 +240,9 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   assert.match(toml, /\[features\]\nmulti_agent = true/);
   // 2026-09-19: 윈도 샌드박스는 관리자 설정 없이(unelevated) — "Couldn't set up your sandbox with Administrator permissions" 물음 예방
   assert.match(toml, /\[windows\]\nsandbox = "unelevated"/);
+  // 2.0.49(2026-10-27): 코덱스 = 중계기 주소 직접 지정 + 웹소켓 끔(가로채기 길의 "Reconnecting 5/5" 와 0.163+ 실패 대체)
+  assert.match(top, /^model_provider = "iris"$/m);
+  assert.match(toml, /\[model_providers\.iris\]\nname = "OpenAI"\nbase_url = "http:\/\/127\.0\.0\.1:3456\/backend-api\/codex"\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n/);
   // 2026-09-19: 첫 실행 물음(폴더 신뢰) 선답 — v2 엔진이 빠뜨려 2.0.0~2.0.19 신규 설치에서 영어 물음이 떴다
   assert.match(toml, /\[projects\.'[^']+'\]\ntrust_level = "trusted"/);
   assert.equal(recorded.codex.firstRun.written, 'appended', 'config.toml 은 6단계가 먼저 만들었으니 신뢰 표는 덧붙는다');
@@ -315,6 +318,26 @@ test('adapters: 두 번 실행해도 변경 0', async () => {
   await adapters.run(ctx);
   assert.deepEqual(snapshot(path.join(ctx.root, '_agent')), before);
   assert.equal(second.recorded.claude.mcp.length, 6);
+});
+
+test('adapters(2.0.49): 업데이트 = 옛 config.toml 에 provider iris 를 더하고, 사람이 고른 model_provider 는 그대로', async () => {
+  const old = makeCtx('provider-add');
+  fs.mkdirSync(agentFile(old.root, 'codex'), { recursive: true });
+  fs.writeFileSync(agentFile(old.root, 'codex', 'config.toml'), 'model = "gpt-6"\n\n[features]\nmulti_agent = true\n');
+  await adapters.run(old);
+  const t1 = fs.readFileSync(agentFile(old.root, 'codex', 'config.toml'), 'utf8');
+  assert.match(t1.slice(0, t1.search(/^\s*\[/m)), /^model_provider = "iris"$/m, '옛 설정(기본 provider)에도 더해진다');
+  assert.equal((t1.match(/\[model_providers\.iris\]/g) || []).length, 1);
+  await adapters.run(old);
+  assert.equal(fs.readFileSync(agentFile(old.root, 'codex', 'config.toml'), 'utf8'), t1, '두 번째 실행은 그대로');
+
+  const mine = makeCtx('provider-keep');
+  fs.mkdirSync(agentFile(mine.root, 'codex'), { recursive: true });
+  fs.writeFileSync(agentFile(mine.root, 'codex', 'config.toml'), 'model_provider = "mine"\n\n[model_providers.mine]\nbase_url = "http://x"\n');
+  await adapters.run(mine);
+  const t2 = fs.readFileSync(agentFile(mine.root, 'codex', 'config.toml'), 'utf8');
+  assert.match(t2, /^model_provider = "mine"$/m);
+  assert.ok(!/^model_provider = "iris"$/m.test(t2), '사람이 고른 provider 를 바꾸지 않는다');
 });
 
 test('adapters: 기존 설정의 다른 키·훅·MCP 를 보존한다', async () => {

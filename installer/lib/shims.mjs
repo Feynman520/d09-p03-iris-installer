@@ -96,10 +96,24 @@ function pyShim() {
 // SSL_CERT_FILE 은 rustls 에서 시스템 신뢰 목록을 **대체**하므로 CA 하나만 주면
 // 가로채지 않고 통과시키는 호스트(auth.openai.com 등)의 진짜 인증서가 실패한다.
 // 세션의 다른 도구(git·npm·curl)는 프록시를 모른 채 그대로 둔다(설계 A', 2026-09-18).
-export const CODEX_PROXY_LINES = Object.freeze([
-  'set "HTTPS_PROXY=http://127.0.0.1:3456"',
-  'set "NO_PROXY=localhost,127.0.0.1,::1"',
-  'set "SSL_CERT_FILE=%~dp0..\\portable-state\\teamclaude\\codex-ca-bundle.pem"',
+//
+// → 2.0.49(2026-10-27 실측으로 위 설계를 대체): 묶인 중계기(1.1.16 + 패치)는 코덱스를 **주소 직접 지정**
+// (`<중계기>/backend-api/codex`, provider.js CODEX_PATHS)으로도 받는다. 가로채기 방식은 chatgpt.com 의
+// `/backend-api/codex` 밖 요청(웹소켓 업그레이드·0.16x 의 workspace routing discovery·플러그인 목록)을
+// 전부 Anthropic 으로 넘겨, 새 세션마다 "Reconnecting 1/5~5/5" 뒤 HTTPS 로 넘어가고(다른 선생님 PC 신고)
+// 코덱스 0.163·0.164 에서는 그 뒤에도 "workspace routing discovery failed" 로 끝까지 실패했다(이 PC 같은 조건 재현).
+// 그래서 코덱스 심에는 프록시 줄을 두지 않고, config.toml 의 provider(아래 CODEX_PROVIDER_*)가 중계기를 가리킨다.
+// 옛 심의 프록시 줄 이름 = CODEX_STALE_PROXY_KEYS(검사 13 이 남아 있으면 실패로 잡는다).
+export const CODEX_STALE_PROXY_KEYS = Object.freeze(['HTTPS_PROXY', 'SSL_CERT_FILE']);
+export const CODEX_PROVIDER_ID = 'iris';
+export const CODEX_RELAY_BASE_URL = 'http://127.0.0.1:3456/backend-api/codex';
+/** config.toml `[model_providers.iris]` 본문 — 웹소켓을 끈다(중계기는 HTTP 응답 흐름만 받는다). */
+export const CODEX_PROVIDER_LINES = Object.freeze([
+  'name = "OpenAI"',
+  `base_url = "${CODEX_RELAY_BASE_URL}"`,
+  'wire_api = "responses"',
+  'requires_openai_auth = true',
+  'supports_websockets = false',
 ]);
 
 export function agentShim(agent) {
@@ -108,7 +122,6 @@ export function agentShim(agent) {
     '@echo off',
     'setlocal',
     'set "ANTHROPIC_BASE_URL=http://127.0.0.1:3456"',
-    ...(agent === 'codex' ? CODEX_PROXY_LINES : []),
     `set "${envName}=%~dp0..\\..\\${envDir}"`,
     'set "PATH=%~dp0..\\tools\\node;%PATH%"',
     'if exist "%~dp0relay-ensure.cmd" call "%~dp0relay-ensure.cmd"',

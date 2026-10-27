@@ -75,7 +75,7 @@ test('shims: 에이전트 심은 중계기 확인 줄을 갖고, relay-ensure 3�
   const claude = fs.readFileSync(path.join(dir, 'claude.cmd'), 'ascii');
   assert.ok(claude.includes('if exist "%~dp0relay-ensure.cmd" call "%~dp0relay-ensure.cmd"'), '심이 중계기 확인을 먼저 한다');
   assert.ok(claude.indexOf('relay-ensure.cmd') < claude.indexOf('claude\\claude.cmd'), '중계기 확인이 CLI 호출보다 앞');
-  assert.equal(agentShim('codex').includes('HTTPS_PROXY=http://127.0.0.1:3456'), true, '코덱스 프록시 줄은 그대로');
+  assert.equal(/HTTPS_PROXY|SSL_CERT_FILE/.test(agentShim('codex')), false, '2.0.49: 코덱스 심에 가로채기 줄이 없다(중계기는 config.toml provider 로)');
   // 두 번째 실행은 아무것도 바꾸지 않는다
   assert.deepEqual(writeShims(root, ['claude', 'codex']).changed, []);
   fs.rmSync(root, { recursive: true, force: true });

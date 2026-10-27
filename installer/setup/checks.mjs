@@ -20,10 +20,7 @@ import nodePath from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { StageError } from '../lib/errors.mjs';
 import { readUserEnv } from '../lib/userpath.mjs';
-import { CODEX_PROXY_LINES } from '../lib/shims.mjs';
-import { portableTeamclaudeConfigDir } from '../lib/login.mjs';
-import { writeCaBundle, CA_FILE, BUNDLE_FILE } from '../lib/cabundle.mjs';
-import { mitmProbe, MITM_TEST_HOST } from '../lib/mitmprobe.mjs';
+import { CODEX_STALE_PROXY_KEYS, CODEX_PROVIDER_ID, CODEX_RELAY_BASE_URL } from '../lib/shims.mjs';
 import { SETUP_STAGE_IDS, receiptPath } from '../lib/receipt.mjs';
 import { writeHandoff, copyInstallerProgram } from './handoff.mjs';
 import { writeReport, writeDiagnostics, reportPath, diagnosticsPath } from './report.mjs';
@@ -990,28 +987,42 @@ export async function checkRelayRoute(ctx, {
 }
 
 // ---------------------------------------------------------------------------
-// 13. 중계기 경유(코덱스) — 코덱스 세션이 TeamClaude 의 MITM 프록시를 거치는가
+// 13. 중계기 경유(코덱스) — 코덱스 세션이 TeamClaude 를 거치는가
 // ---------------------------------------------------------------------------
 //
-// 설계 A'(2026-09-18, 사용자 확정). TeamClaude 는 코덱스를 base-URL 로 받지 못하고
-// 전달 프록시(MITM) 방식으로만 중계한다: 코덱스 심이 HTTPS_PROXY 를 중계기로 두고,
-// 중계기의 CA 를 담은 번들을 SSL_CERT_FILE 로 넘긴다. 이 검사는 그 길을 잰다.
+// 2.0.49(2026-10-27, 설계 A' 를 대체): 코덱스는 config.toml 의 provider `iris`
+// (base_url = 중계기 `/backend-api/codex`, 웹소켓 끔)로 중계기를 거치고, 코덱스 심에는
+// 프록시 줄(HTTPS_PROXY·SSL_CERT_FILE)을 두지 않는다. 가로채기 방식은 웹소켓·작업공간
+// 확인 요청을 Anthropic 으로 넘겨 "Reconnecting 1/5~5/5" 와 0.163+ 의 연결 실패를 냈다
+// (사연 = lib/shims.mjs CODEX_PROVIDER_* 주석).
 //
-//   ⓐ 배선: codex.cmd 심에 CODEX_PROXY_LINES 세 줄이 그대로 있는가.
+//   ⓐ 배선: config.toml 최상위 model_provider = "iris" + [model_providers.iris] 의
+//      base_url 이 중계기 · supports_websockets = false · 심에 옛 프록시 줄이 없음.
 //   ⓑ 중계기 응답 + 코덱스 계정 수(/teamclaude/status).
-//   ⓒ 가로채기 실측: 내장 시험 호스트(www.example.org)로 CONNECT → TLS → 200 +
-//      `mitm-proxy-ok`. CA 가 아직 없으면 첫 CONNECT 가 만들게 하고(지연 생성) 그 CA 로
-//      다시 검증한다. 계정·토큰 없이도 "프록시 + CA" 가 이어졌는지 증명한다.
-//   ⓓ CA 번들(공인 루트 + TeamClaude CA)을 만들거나 갱신한다 — 코덱스 심이 가리키는 파일.
 //   코덱스 계정 0 이면: 코덱스를 골랐으면 실패(⑦ 에서 ChatGPT 로그인), 아니면 기록만.
-//   코덱스를 고르지 않은 설치는 심이 없으니 "해당 없음" 으로 통과.
-export const RELAY_MITM_TEST_HOST = MITM_TEST_HOST;
+//   코덱스를 고르지 않은 설치는 "해당 없음" 으로 통과.
+
+/** 아주 작은 TOML 읽기 — 최상위 문자열 키 하나, 또는 `[표]` 안의 키 하나의 값(따옴표·true/false 그대로 풀기). */
+function tomlTopValue(text, key) {
+  const first = text.search(/^\s*\[/m);
+  const top = first === -1 ? text : text.slice(0, first);
+  const m = new RegExp(`^\\s*${key}\\s*=\\s*(.+?)\\s*$`, 'm').exec(top);
+  return m ? m[1].replace(/^"(.*)"$/, '$1') : null;
+}
+function tomlTableValue(text, table, key) {
+  const esc = table.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const h = new RegExp(`^\\s*\\[${esc}\\]\\s*$`, 'm').exec(text);
+  if (!h) return undefined;
+  const after = text.slice(h.index + h[0].length);
+  const next = after.search(/^\s*\[/m);
+  const body = next === -1 ? after : after.slice(0, next);
+  const m = new RegExp(`^\\s*${key}\\s*=\\s*(.+?)\\s*$`, 'm').exec(body);
+  return m ? m[1].replace(/^"(.*)"$/, '$1') : null;
+}
 
 export async function checkRelayCodex(ctx, {
   // 검사 12 와 같은 이유(IRIS_INSTALLER_OFFLINE=1 이면 살아 있는 중계기를 두드리지 않는다, 2.0.31).
   fetchImpl = process.env.IRIS_INSTALLER_OFFLINE === '1' ? null : (ctx?.fetch ?? globalThis.fetch),
-  mitmProbeImpl = ctx?.mitmProbe ?? mitmProbe,
-  writeBundleImpl = ctx?.writeCaBundle ?? writeCaBundle,
   baseUrl = RELAY_ROUTE_URL,
   timeoutMs = 4000,
 } = {}) {
@@ -1027,7 +1038,7 @@ export async function checkRelayCodex(ctx, {
   if (!wantsCodex) {
     return item('relayCodex', 13, '중계기 경유(코덱스 세션 → TeamClaude)', 'pass',
       'ChatGPT 구독을 고르지 않은 설치라 이번에는 재지 않음(코덱스 명령은 깔려 있음). 나중에 대시보드에서 ChatGPT 계정을 추가하면 IRIS 창에서 바로 씁니다.',
-      { wiring: { shim: null }, relay: null, mitm: null, bundle: null, skipped: 'no-codex' });
+      { wiring: { shim: null, provider: null }, relay: null, skipped: 'no-codex' });
   }
 
   // ⓐ 배선
@@ -1035,9 +1046,23 @@ export async function checkRelayCodex(ctx, {
   const shim = readText(shimPath(root, 'codex.cmd'));
   if (shim == null) { wiring.shim = null; problems.push('codex.cmd 심이 없음'); }
   else {
-    const missing = CODEX_PROXY_LINES.filter((l) => !shim.includes(l));
-    wiring.shim = missing.length === 0;
-    if (missing.length) problems.push(`codex.cmd 심에 프록시 설정 ${missing.length}줄이 없음(${missing.map((l) => l.split('=')[0].replace(/^set "/, '')).join(', ')}) — 그 심으로 연 코덱스는 직행한다`);
+    const stale = CODEX_STALE_PROXY_KEYS.filter((k) => new RegExp(`^\\s*set\\s+"?${k}=`, 'mi').test(shim));
+    wiring.shim = stale.length === 0;
+    if (stale.length) problems.push(`codex.cmd 심에 옛 가로채기 줄(${stale.join(', ')})이 남아 있음 — 코덱스가 연결을 5번 다시 시도하거나 실패합니다`);
+  }
+  const toml = readText(path.join(root, '_agent', 'codex', 'config.toml'));
+  if (toml == null) { wiring.provider = null; problems.push('코덱스 config.toml 이 없음'); }
+  else {
+    const chosen = tomlTopValue(toml, 'model_provider');
+    const base = tomlTableValue(toml, `model_providers.${CODEX_PROVIDER_ID}`, 'base_url');
+    const ws = tomlTableValue(toml, `model_providers.${CODEX_PROVIDER_ID}`, 'supports_websockets');
+    wiring.provider = chosen === CODEX_PROVIDER_ID && base === CODEX_RELAY_BASE_URL && ws === 'false';
+    if (chosen !== CODEX_PROVIDER_ID) problems.push(`config.toml 의 model_provider 가 "${CODEX_PROVIDER_ID}" 가 아님(${chosen == null ? '없음' : `"${chosen}"`}) — 코덱스가 중계기를 거치지 않습니다`);
+    else if (base === undefined) problems.push(`config.toml 에 [model_providers.${CODEX_PROVIDER_ID}] 표가 없음`);
+    else {
+      if (base !== CODEX_RELAY_BASE_URL) problems.push(`[model_providers.${CODEX_PROVIDER_ID}] base_url 이 중계기(${CODEX_RELAY_BASE_URL})가 아님(${base ?? '없음'})`);
+      if (ws !== 'false') problems.push(`[model_providers.${CODEX_PROVIDER_ID}] supports_websockets = false 가 아님 — 새 세션마다 재연결 5번`);
+    }
   }
 
   // ⓑ 중계기 + 계정
@@ -1054,49 +1079,17 @@ export async function checkRelayCodex(ctx, {
       relay = { up: false, status: null, accounts: null };
     }
   }
-
-  // ⓒ 가로채기 실측 + ⓓ 번들
-  let mitm = null;
-  let bundle = null;
-  const dir = portableTeamclaudeConfigDir(root);
-  const caPath = path.join(dir, CA_FILE);
-  if (!relay.up) {
-    notes.push('중계기가 응답하지 않음(⑦ 계정 연결 뒤 시작됨) — 가로채기 실측은 다음에');
-  } else {
-    let ca = readText(caPath);
-    if (ca == null) {
-      // 지연 생성: 첫 CONNECT 가 CA 를 만든다(검증 없이 한 번 맺는다).
-      const mint = await mitmProbeImpl({ ca: null });
-      ca = readText(caPath);
-      if (ca == null) problems.push(`중계기가 CA 를 만들지 않음(${mint?.error ?? `HTTP ${mint?.status}`}) — MITM 이 꺼진 중계기(--no-mitm)이거나 설정 폴더에 쓸 수 없음`);
-    }
-    if (ca != null) {
-      mitm = await mitmProbeImpl({ ca });
-      const okBody = /mitm-proxy-ok/.test(String(mitm?.body ?? ''));
-      if (!(mitm?.ok && mitm?.verified && okBody)) {
-        problems.push(`가로채기 실측 실패(${RELAY_MITM_TEST_HOST}): ${mitm?.error ?? (mitm?.ok ? (mitm?.verified ? '응답 본문이 다름' : 'CA 검증 실패') : `HTTP ${mitm?.status}`)}`);
-      }
-      try {
-        bundle = writeBundleImpl(dir, { fs });
-        if (!bundle?.ok) problems.push(`CA 번들(${BUNDLE_FILE})을 만들지 못함: ${bundle?.reason ?? '?'}`);
-      } catch (e) {
-        bundle = { ok: false, reason: String(e?.message ?? e) };
-        problems.push(`CA 번들(${BUNDLE_FILE})을 만들지 못함: ${bundle.reason}`);
-      }
-    }
-    if (relay.accounts.codex === 0) {
-      problems.push(`중계기에 코덱스 계정 0개(클로드 ${relay.accounts.anthropic}개) — 코덱스 세션은 중계기가 429 로 막습니다. IRIS 창 ⑦ 계정 연결에서 ChatGPT 로그인을 추가하세요`);
-    }
+  if (!relay.up) notes.push('중계기가 응답하지 않음(⑦ 계정 연결 뒤 시작됨) — 계정 수는 다음에');
+  else if (relay.accounts.codex === 0) {
+    problems.push(`중계기에 코덱스 계정 0개(클로드 ${relay.accounts.anthropic}개) — 코덱스 세션은 중계기가 429 로 막습니다. IRIS 창 ⑦ 계정 연결에서 ChatGPT 로그인을 추가하세요`);
   }
 
   const status = problems.length ? 'fail' : (relay.up ? 'pass' : 'pending');
   const detailParts = [];
-  detailParts.push(problems.length ? `배선·경유 문제 ${problems.length}건: ${problems.join(' / ')}` : '코덱스 심이 중계기 프록시(3456) + CA 번들을 가리킴');
+  detailParts.push(problems.length ? `배선·경유 문제 ${problems.length}건: ${problems.join(' / ')}` : `코덱스 = 중계기 주소 직접 지정(${CODEX_RELAY_BASE_URL}) · 웹소켓 끔 · 심에 가로채기 줄 없음`);
   if (relay.up) detailParts.push(`중계기 응답 OK(코덱스 ${relay.accounts.codex}·클로드 ${relay.accounts.anthropic})`);
-  if (mitm?.ok && mitm?.verified) detailParts.push(`가로채기 실측 통과(${RELAY_MITM_TEST_HOST} → 중계기 리프, CA 검증됨)`);
-  if (bundle?.ok) detailParts.push(bundle.changed ? `CA 번들 ${bundle.changed ? '갱신' : '유지'}(공인 루트 ${bundle.roots ?? '?'}개 + 중계기 CA)` : 'CA 번들 최신');
   if (notes.length) detailParts.push(notes.join(' · '));
-  return item('relayCodex', 13, '중계기 경유(코덱스 세션 → TeamClaude)', status, detailParts.join(' · '), { wiring, relay, mitm, bundle });
+  return item('relayCodex', 13, '중계기 경유(코덱스 세션 → TeamClaude)', status, detailParts.join(' · '), { wiring, relay });
 }
 
 // ---------------------------------------------------------------------------

@@ -1245,6 +1245,7 @@ export function startServer({
       // 검사 13 이 "대기"로 끝나고 CA 번들(codex-ca-bundle.pem)이 만들어지지 않는다. 그런데 ⑦ 뒤에 아무도 다시
       // 재지 않아 코덱스 심의 SSL_CERT_FILE 이 **없는 파일**을 가리킨 채 남았다 — 대시보드에 코덱스 활동이 안 잡힌 원인.
       // 중계기가 살아 있는 지금 다시 재면 CA 를 만들고(첫 CONNECT) 번들을 쓴다. 실패해도 설치를 막지 않는다(기록만).
+      // (2.0.49 부터 코덱스는 가로채기·CA 번들을 쓰지 않는다 — 다시 재기는 계정 수·배선 확인으로 남는다.)
       try {
         const rc = await (relayRecheckFn ?? defaultRelayRecheck)(root);
         state.online.recheck = rc;

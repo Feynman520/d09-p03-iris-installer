@@ -28,6 +28,7 @@ import {
   seedClaudePermissions, seedCodexPermissions, seedClaudeFirstRun, seedCodexFirstRun,
   claudeSettingsPath, claudeConfigJsonPath, codexConfigTomlPath,
 } from '../lib/firstrun.mjs';
+import { CODEX_PROVIDER_ID, CODEX_PROVIDER_LINES } from '../lib/shims.mjs';
 
 export const id = 'adapters';
 
@@ -1075,6 +1076,12 @@ function writeCodexConfig(ctx, specs, { fs, root, log }) {
     topLines.push('bypass_hook_trust = true');
     added.push('bypass_hook_trust');
   }
+  // 2.0.49(2026-10-27): 코덱스는 중계기를 주소 직접 지정으로 거친다(웹소켓 끔) — 사연은 lib/shims.mjs CODEX_PROVIDER_*.
+  // 사용자가 이미 다른 provider 를 골라 두었으면 건드리지 않는다(검사 13 이 알려 준다).
+  if (!hasTopKey(text, 'model_provider')) {
+    topLines.push(`model_provider = ${tomlString(CODEX_PROVIDER_ID)}`);
+    added.push('model_provider');
+  }
   if (topLines.length) {
     const block = `${topLines.join('\n')}\n`;
     text = text.length === 0 ? block : `${block}${text.startsWith('\n') ? text : `\n${text}`}`;
@@ -1090,6 +1097,12 @@ function writeCodexConfig(ctx, specs, { fs, root, log }) {
       text = `${endWithBlankLine(text)}[features]\n${line}\n`;
       added.push('features.multi_agent');
     }
+  }
+
+  // ── [model_providers.iris] — 중계기 주소 + 웹소켓 끔. 표가 이미 있으면 그대로 둔다.
+  if (!hasTable(text, `model_providers.${CODEX_PROVIDER_ID}`)) {
+    text = `${endWithBlankLine(text)}[model_providers.${CODEX_PROVIDER_ID}]\n${CODEX_PROVIDER_LINES.join('\n')}\n`;
+    added.push(`model_providers.${CODEX_PROVIDER_ID}`);
   }
 
   // ── [windows] sandbox — 코덱스 0.154 는 윈도에서 첫 실행 때 "관리자 권한 샌드박스"를 만들려다
