@@ -192,7 +192,8 @@ export function relayAutostartVbs() {
 // 부품 안쪽 자리는 설계-macOS 2절 표(installer/lib/platform.mjs toolLayout)와 같다:
 //   node   = tools/node/bin/node          python = tools/python/bin/python3
 //   git    = tools/git/bin/git(동봉 dugite) → 없으면 /usr/bin/git
-//   claude = tools/claude/claude(sh 전달자) codex  = tools/codex/bin/codex(npm -g 의 bin)
+//   claude = tools/claude/claude(sh 전달자)
+//   codex  = tools/codex/node_modules/@openai/codex/bin/codex.js(동봉 node 로)
 // 에이전트 심은 설정 폴더를 `..` 없는 절대 경로로 넘긴다(에이전트가 그 문자열을 저장한다).
 // ---------------------------------------------------------------------------
 function lf(lines) {
@@ -204,10 +205,19 @@ const POSIX_HEAD = ['#!/bin/sh', 'D=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 function posixNodeShim() {
   return lf([...POSIX_HEAD, 'exec "$D/../tools/node/bin/node" "$@"']);
 }
+// 동봉 Git = dugite-native(D-M13). 그 git 은 어디서든 돌지만 하위 명령(git-remote-https 등)·
+// 시스템 설정·템플릿 자리는 환경변수로 알려 줘야 한다 — dugite 자신(lib/git-environment.ts)이
+// macOS 에서 하는 것과 같은 세 값. 그래서 PATH 에는 git/bin 을 넣지 않고 늘 이 심을 거친다.
 function posixGitShim() {
   return lf([
     ...POSIX_HEAD,
-    'if [ -x "$D/../tools/git/bin/git" ]; then exec "$D/../tools/git/bin/git" "$@"; fi',
+    'if [ -x "$D/../tools/git/bin/git" ]; then',
+    '  G=$(CDPATH= cd -- "$D/../tools/git" && pwd)',
+    '  export GIT_EXEC_PATH="$G/libexec/git-core"',
+    '  export GIT_TEMPLATE_DIR="$G/share/git-core/templates"',
+    '  if [ -z "${GIT_CONFIG_SYSTEM:-}" ]; then export GIT_CONFIG_SYSTEM="$G/etc/gitconfig"; fi',
+    '  exec "$G/bin/git" "$@"',
+    'fi',
     'exec /usr/bin/git "$@"',
   ]);
 }
@@ -219,7 +229,10 @@ function posixPythonShim() {
 // `$A` = <root>/_agent (정리된 절대 경로) — 설정 폴더·PATH·CLI 를 모두 여기서 잇는다.
 export function posixAgentShim(agent) {
   const { envName, envDir } = AGENT_SHIMS[agent];
-  const target = agent === 'claude' ? '"$A/shared/tools/claude/claude"' : '"$A/shared/tools/codex/bin/codex"';
+  // codex 는 npm 의 .bin 링크·`#!/usr/bin/env node` 에 기대지 않고 동봉 node 로 진입 파일을 부른다.
+  const target = agent === 'claude'
+    ? '"$A/shared/tools/claude/claude"'
+    : '"$A/shared/tools/node/bin/node" "$A/shared/tools/codex/node_modules/@openai/codex/bin/codex.js"';
   return lf([
     ...POSIX_HEAD,
     'A=$(CDPATH= cd -- "$D/../.." && pwd)',
@@ -259,7 +272,7 @@ export function posixRelayEnsureMjs() {
     'if (await probe()) process.exit(0);',
     "const manage = process.env.IRIS_RELAY_MANAGE || path.join(shared, 'tools', 'teamclaude', 'teamclaude-manage.mjs');",
     "const node = path.join(shared, 'tools', 'node', 'bin', 'node');",
-    "const entry = path.join(shared, 'tools', 'teamclaude', 'lib', 'node_modules', '@karpeleslab', 'teamclaude', 'src', 'index.js');",
+    "const entry = path.join(shared, 'tools', 'teamclaude', 'node_modules', '@karpeleslab', 'teamclaude', 'src', 'index.js');",
     "if (!fs.existsSync(manage)) { process.stderr.write('[IRIS] relay helper missing - open the IRIS window once to start the relay\\n'); process.exit(0); }",
     'const env = { ...process.env };',
     "if (!env.TEAMCLAUDE_CONFIG) env.TEAMCLAUDE_CONFIG = path.join(shared, 'portable-state', 'teamclaude', 'teamclaude.json');",

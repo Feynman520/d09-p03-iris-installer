@@ -262,7 +262,7 @@ test('정리: 쓰는 판 + 직전 판 하나만 남긴다', () => {
 });
 
 test('실행기: IRIS 창을 띄운 뒤 업데이트 확인을 부른다(ASCII·CRLF 유지)', () => {
-  const c = faceLauncherContent();
+  const c = faceLauncherContent({ platform: 'win32' });
   assert.ok(c.includes('"%IRIS_FACE_NODE%" "%~dp0_agent\\shared\\tools\\updater\\agents.mjs" --kick'));
   const lines = c.split('\r\n');
   const wscript = lines.findIndex((l) => l.startsWith('wscript.exe'));

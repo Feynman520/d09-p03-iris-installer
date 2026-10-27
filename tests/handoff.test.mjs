@@ -123,7 +123,7 @@ test('firstRequestText is a single line (the prompt is typed into a terminal)', 
 // ---------------------------------------------------------------------------
 
 test('faceLauncherContent: ASCII-only, CRLF, chcp 65001, %~dp0-relative, no absolute soul path', () => {
-  const content = faceLauncherContent();
+  const content = faceLauncherContent({ platform: 'win32' });
 
   assert.ok(/^[\x20-\x7e\r\n\t]*$/.test(content), 'launcher content must be ASCII-only');
   // Every LF is part of a CRLF pair and there is no bare CR.
@@ -156,10 +156,10 @@ test('writeFaceLauncher writes "<name> Face.cmd" at the soul root and a desktop 
   const calls = [];
   const runPs = async (script) => { calls.push(script); return { code: 0, out: '', err: '' }; };
 
-  const res = await writeFaceLauncher(root, 'NOVA', { desktopDir, runPs });
+  const res = await writeFaceLauncher(root, 'NOVA', { desktopDir, runPs, platform: 'win32' });
 
   assert.equal(res.cmdPath, path.join(root, 'NOVA Face.cmd'));
-  assert.equal(fs.readFileSync(res.cmdPath, 'utf8'), faceLauncherContent());
+  assert.equal(fs.readFileSync(res.cmdPath, 'utf8'), faceLauncherContent({ platform: 'win32' }));
   // Desktop shortcut is just "<name>.lnk" -- "IRIS" on a real install.
   assert.equal(res.lnkPath, path.join(desktopDir, 'NOVA.lnk'));
   assert.ok(!calls[0].includes('Face.lnk'), 'the shortcut name must not carry the internal "Face" word');
@@ -178,7 +178,7 @@ test('writeFaceLauncher: a failing shortcut is reported, not fatal (the .cmd sti
   fs.mkdirSync(desktopDir, { recursive: true });
   const runPs = async () => ({ code: 1, out: '', err: 'access denied' });
 
-  const res = await writeFaceLauncher(root, 'NOVA', { desktopDir, runPs });
+  const res = await writeFaceLauncher(root, 'NOVA', { desktopDir, runPs, platform: 'win32' });
   assert.ok(fs.existsSync(res.cmdPath));
   assert.equal(res.shortcut.ok, false);
   assert.ok(String(res.shortcut.detail).includes('access denied'));

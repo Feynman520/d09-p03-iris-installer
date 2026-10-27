@@ -42,13 +42,12 @@ test('부품 실행 파일 자리: 설계-macOS 2절 표와 같다', () => {
   assert.equal(m.node, '/Users/u/IRIS/_agent/shared/tools/node/bin/node');
   assert.equal(m.python, '/Users/u/IRIS/_agent/shared/tools/python/bin/python3');
   assert.equal(m.git, '/Users/u/IRIS/_agent/shared/tools/git/bin/git');
-  assert.equal(m.codex, '/Users/u/IRIS/_agent/shared/tools/codex/bin/codex');
+  assert.equal(m.codex, '/Users/u/IRIS/_agent/shared/tools/codex/node_modules/@openai/codex/bin/codex.js');
   assert.equal(m.claude, '/Users/u/IRIS/_agent/shared/tools/claude/claude');
   assert.deepEqual(m.binDirs, [
     '/Users/u/IRIS/_agent/shared/tools/node/bin',
-    '/Users/u/IRIS/_agent/shared/tools/git/bin',
     '/Users/u/IRIS/_agent/shared/tools/python/bin',
-  ]);
+  ], 'git/bin 은 넣지 않는다 — git 은 늘 심을 거친다');
 });
 
 test('node·venv·심 이름·PATH 구분자', () => {

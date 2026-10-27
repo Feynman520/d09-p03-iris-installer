@@ -37,6 +37,8 @@ function ctxFor(root, extra = {}) {
   return {
     root,
     fs,
+    // 이 파일은 Windows 판 검사표(.cmd 심·파워셸 훅·바탕화면 .lnk)를 잰다. macOS 판은 맨 끝 시험.
+    platform: 'win32',
     env: { PATH: 'C:\\windows' },
     log: () => {},
     precheck: { recorded: { edge: { present: true }, office: true, hancom: true } },
@@ -104,7 +106,7 @@ test('검사1: 심이 있으면 심을 부른다(사용자가 실제로 쓰는 �
   write(path.join(root, '_agent', 'shared', 'shims', 'python.cmd'), '@echo off');
   const r = resolveExe(ctxFor(root), 'python');
   assert.equal(r.via, 'shim');
-  assert.ok(r.path.endsWith('shims\\python.cmd'));
+  assert.match(r.path, /shims[\\/]python\.cmd$/);
 });
 
 // ---------------------------------------------------------------------------
@@ -431,7 +433,7 @@ test('검사6 (2.0.44): 설치 중 새로 생긴 폴더는 사용자 것으로 �
   assert.deepEqual(c2.strays.map((s) => s.name), ['설치기가 흘린 파일.txt']);
 });
 
-test('검사6: 단계 기록에 루트 밖 경로가 있으면 실패', async () => {
+test('검사6: 단계 기록에 루트 밖 경로가 있으면 실패', { skip: process.platform !== 'win32' && 'C:\\ 절대 경로는 Windows 에서만 절대 경로다 — macOS 판은 맨 끝 시험' }, async () => {
   const root = newRoot('outside');
   const ctx = ctxFor(root, {
     desktopDir: null,
@@ -968,4 +970,34 @@ test('검사12·13 (2.0.31): IRIS_INSTALLER_OFFLINE=1 이면 살아 있는 중�
   } finally {
     if (prev === undefined) delete process.env.IRIS_INSTALLER_OFFLINE; else process.env.IRIS_INSTALLER_OFFLINE = prev;
   }
+});
+
+test('검사(macOS): 심 이름·파이썬 훅·바깥 허용 자리·sh 배선을 macOS 규칙으로 본다', { skip: process.platform === 'win32' && 'POSIX 경로' }, async () => {
+  const root = newRoot('mac-checks');
+  const home = newRoot('mac-home');
+  const mac = (extra = {}) => ctxFor(root, { platform: 'darwin', env: { HOME: home }, ...extra });
+
+  write(path.join(root, '_agent', 'shared', 'shims', 'python'), '#!/bin/sh\n');
+  assert.equal(resolveExe(mac(), 'python').path, path.join(root, '_agent', 'shared', 'shims', 'python'));
+
+  const outside = await checkDesktop(mac({
+    receipt: {
+      schema: 2,
+      setup: {
+        relay: { recorded: { desktopShortcut: { path: path.join(home, 'Applications', 'IRIS.app') } } },
+        env: { recorded: { userEnv: { autostart: { previous: path.join(home, 'Library', 'LaunchAgents', 'com.iris-workspace.relay.plist') } } } },
+        skeleton: { recorded: { files: { created: ['/somewhere/else/x.json'] } } },
+      },
+    },
+  }));
+  assert.equal(outside.status, 'fail');
+  assert.deepEqual(outside.outside.map((o) => o.stage), ['skeleton'], '허용된 바깥 자리(앱·LaunchAgent)는 세지 않는다');
+  assert.equal(outside.desktop, false, '바탕화면 목록은 읽지 않는다');
+
+  const shimText = '#!/bin/sh\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:3456"\n';
+  write(path.join(root, '_agent', 'shared', 'shims', 'claude'), shimText);
+  write(path.join(root, '소환하기.command'), shimText);
+  const relayItem = await checkRelayRoute(mac({ receipt: { schema: 2, setup: {}, online: {}, env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:3456', applied: true } } }), { fetchImpl: null });
+  assert.equal(relayItem.status, 'pending', relayItem.detail);
+  assert.equal(relayItem.wiring.userEnv, 'shims');
 });

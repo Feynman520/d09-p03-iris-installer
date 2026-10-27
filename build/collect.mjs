@@ -9,6 +9,7 @@ import { extractZip, extractMembers, listArchive, zipDir } from '../lib/zip.mjs'
 import { sha256File } from '../lib/manifest.mjs';
 import { assertOnline, isOffline } from '../lib/net.mjs';
 import { applyPatches } from './patch-teamclaude.mjs';
+import { nodeBinIn, isWindows } from '../installer/lib/platform.mjs';
 
 // Project root (one level up from this file, build/), independent of the
 // caller's process.cwd() -- lock.json's `patches` paths (e.g.
@@ -271,8 +272,12 @@ async function ensureCached(name, p, cacheDir, log, skipDownload, download, noCa
   return { cached, hit };
 }
 
+// The Windows Node zip keeps npm at <dir>\node_modules\npm; the macOS tarball
+// at <dir>/lib/node_modules/npm (with bin/node beside it).
 function npmCliPath(nodeDir) {
-  return path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  return isWindows()
+    ? path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+    : path.join(nodeDir, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
 }
 
 // Resolve which Node executable / npm-cli.js to use for every `npm install`/`npm ci`
@@ -281,7 +286,7 @@ function npmCliPath(nodeDir) {
 // explicit `nodeDir` overrides that; a bare fallback to this PC's own Node only
 // exists so unit tests with fake locks (no node part, no npmCi/npm-prefix use) work.
 async function resolveNode({ lock, cacheDir, stageDir, nodeDir, log, skipDownload, download }) {
-  if (nodeDir) return { nodeExe: path.join(nodeDir, 'node.exe'), npmCli: npmCliPath(nodeDir), nodeDir };
+  if (nodeDir) return { nodeExe: nodeBinIn(nodeDir), npmCli: npmCliPath(nodeDir), nodeDir };
   const p = lock.parts?.node;
   if (p && p.kind === 'url') {
     // Deliberately NOT passing noCache: this call is bootstrapping the
@@ -291,7 +296,7 @@ async function resolveNode({ lock, cacheDir, stageDir, nodeDir, log, skipDownloa
     const { cached } = await ensureCached('node', p, cacheDir, log, skipDownload, download);
     const runtimeDir = path.join(stageDir, 'node-runtime');
     await extractZip(cached, runtimeDir, { strip: 1 });
-    return { nodeExe: path.join(runtimeDir, 'node.exe'), npmCli: npmCliPath(runtimeDir), nodeDir: runtimeDir };
+    return { nodeExe: nodeBinIn(runtimeDir), npmCli: npmCliPath(runtimeDir), nodeDir: runtimeDir };
   }
   const fallbackDir = path.dirname(process.execPath);
   return {
@@ -318,6 +323,14 @@ function redactFile(absPath, entry, log, label) {
     const re = new RegExp(entry.findRegex, 'g');
     const matches = text.match(re);
     const actualCount = matches ? matches.length : 0;
+    // A source that already carries the replacement and none of the original
+    // (a copy taken out of a shipped, already-redacted zip -- the macOS build
+    // seeds dash/ontology that way) is clean as it stands; anything else that
+    // misses still fails loudly.
+    if (actualCount === 0 && entry.replace && text.includes(entry.replace)) {
+      log(`already redacted ${label}`);
+      return;
+    }
     if (actualCount !== expectedCount) {
       throw new Error(
         `redact: findRegex matched ${actualCount} time(s), expected ${expectedCount}, in ${label} (source may have changed): ${entry.findRegex}`,
@@ -325,6 +338,10 @@ function redactFile(absPath, entry, log, label) {
     }
     fs.writeFileSync(absPath, text.replace(re, entry.replace), 'utf8');
   } else {
+    if (!text.includes(entry.find) && entry.replace && text.includes(entry.replace)) {
+      log(`already redacted ${label}`);
+      return;
+    }
     if (!text.includes(entry.find)) throw new Error(`redact: pattern not found in ${label} (source may have changed)`);
     fs.writeFileSync(absPath, text.split(entry.find).join(entry.replace), 'utf8');
   }
@@ -543,7 +560,10 @@ async function collectGit({ name, p, cacheDir, log, noCache, skipDownload, run, 
 async function ensureElectronBinary({ work, name, run, nodeExe, cacheDir, npmEnv, log }) {
   const pkg = path.join(work, 'node_modules', 'electron');
   if (!fs.existsSync(path.join(pkg, 'package.json'))) return { present: false, reason: 'no-electron-dependency' };
-  const exe = path.join(pkg, 'dist', 'electron.exe');
+  // macOS ships the binary inside an app bundle.
+  const exe = isWindows()
+    ? path.join(pkg, 'dist', 'electron.exe')
+    : path.join(pkg, 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron');
   if (fs.existsSync(exe)) { log(`  ${name}: electron.exe present`); return { present: true, ran: false }; }
   const electronCache = path.join(cacheDir, 'electron');
   fs.mkdirSync(electronCache, { recursive: true });
@@ -582,9 +602,15 @@ async function collectNpmPrefix({ name, p, cacheDir, log, noCache, skipDownload,
     // Windows' own Edge channel instead).
     const env = { ...npmEnv, ...(p.env ?? {}) };
     log(`npm install ${name} ${p.npm}@${p.version}`);
+    // Windows: `-g --prefix` puts the package at <prefix>\node_modules. On macOS
+    // `-g` would put it at <prefix>/lib/node_modules, so the install there is
+    // local (`--prefix` only) -- the package lands at <prefix>/node_modules, the
+    // same relative place on both, and every entry path / patch rule stays one
+    // value (docs/설계-macOS.md 2절).
+    const globalFlag = isWindows() ? ['-g'] : [];
     const r = await run(
       nodeExe,
-      [npmCli, 'install', '-g', '--prefix', paths.content, `${p.npm}@${p.version}`, '--no-fund', '--no-audit'],
+      [npmCli, 'install', ...globalFlag, '--prefix', paths.content, `${p.npm}@${p.version}`, '--no-fund', '--no-audit'],
       { env, timeoutMs: LONG_TIMEOUT_MS },
     );
     if (r.code !== 0) throw new Error(`npm install ${name}: ${r.err || r.out}`);
@@ -610,11 +636,11 @@ async function collectNpmPrefix({ name, p, cacheDir, log, noCache, skipDownload,
 // ---------------------------------------------------------------------------
 
 async function resolvePython(run) {
-  for (const [exe, pre] of [['python', []], ['py', ['-3.12']]]) {
+  for (const [exe, pre] of [['python', []], ['py', ['-3.12']], ['python3', []]]) {
     const r = await run(exe, [...pre, '-c', 'import sys; print("%d.%d" % sys.version_info[:2])']);
     if (r.code === 0 && r.out.trim()) return { exe, pre, version: r.out.trim() };
   }
-  throw new Error('wheelhouse: no python found on this build PC (tried `python`, `py -3.12`)');
+  throw new Error('wheelhouse: no python found on this build PC (tried `python`, `py -3.12`, `python3`)');
 }
 
 async function collectWheelhouse({ name, p, cacheDir, log, noCache, skipDownload, run, licensesDir }) {
@@ -861,6 +887,12 @@ export async function collect({
       if (p.include) copySelected(source, work, p.include, p.exclude ?? []);
       else copyTree(source, work, p.exclude ?? []);
       if (p.redact) applyRedactions(work, p.redact, log);
+      // Anchor->replace rules on the staged copy (same format and all-or-nothing
+      // contract as the TeamClaude patches). Used by the macOS lock overlay for
+      // the dashboard, whose source lives outside this repository.
+      if (p.patches) {
+        await applyPatches(work, JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, p.patches), 'utf8')), log);
+      }
       if (p.asciiRequired) assertAsciiPs1(work, name);
       if (p.npmCi) {
         // Not part-cached: a `dir` part's source is a live working tree that

@@ -1795,7 +1795,11 @@ const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).h
 if (isMain) {
   const args = parseArgs(process.argv.slice(2));
   const stateFile = path.join(installerWorkDir(), 'state.json');
-  startServer({ ...args, stateFile })
+  // IRIS_INSTALLER_SOUL_ROOT: rehearsal-only absolute root (macOS design doc,
+  // M2) -- puts a whole practice install inside a scratch folder instead of
+  // ~/<name> or C:\<name>. Never set by the launchers.
+  const soulRoot = process.env.IRIS_INSTALLER_SOUL_ROOT || null;
+  startServer({ ...args, stateFile, ...(soulRoot ? { soulRoot } : {}) })
     .then(({ port }) => {
       console.log(`iris-installer server listening on 127.0.0.1:${port}`);
     })

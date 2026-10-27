@@ -110,7 +110,8 @@ export function writeFirstRequest(root, { edition = 'claude', manifest } = {}) {
 // is not slowed down; an older updater part without the file is simply skipped.
 export const AGENT_UPDATE_KICK = 'if exist "%~dp0_agent\\shared\\tools\\updater\\agents.mjs" "%IRIS_FACE_NODE%" "%~dp0_agent\\shared\\tools\\updater\\agents.mjs" --kick >nul 2>&1';
 
-export function faceLauncherContent() {
+export function faceLauncherContent({ platform = process.platform } = {}) {
+  if (platform !== 'win32') return macFaceLauncherContent();
   return [
     '@echo off',
     'chcp 65001 >nul',
@@ -133,7 +134,68 @@ export function faceLauncherContent() {
   ].join('\r\n');
 }
 
-export function faceLauncherPath(root, name) { return path.join(root, `${name} Face.cmd`); }
+export function faceLauncherPath(root, name, { platform = process.platform } = {}) {
+  return path.join(root, `${name} Face${platform === 'win32' ? '.cmd' : '.command'}`);
+}
+
+// ---- macOS (docs/설계-macOS.md D-M10) ----------------------------------------
+// `<영혼>/<이름> Face.command` = 같은 일을 하는 sh(ASCII·LF·실행 권한). Finder 에서 두 번
+// 누르면 터미널이 잠깐 뜬다 — 사람이 보통 여는 문은 ~/Applications 의 `<이름>.app`
+// (아래 writeMacAppLauncher)이고, 이 파일은 그 앱이 부르는 실체다.
+// 전역 환경변수를 걸지 않으므로(D-M08) 여기서 IRIS 창에 필요한 값을 건다.
+export const MAC_AGENT_UPDATE_KICK = 'if [ -f "$R/_agent/shared/tools/updater/agents.mjs" ]; then "$IRIS_FACE_NODE" "$R/_agent/shared/tools/updater/agents.mjs" --kick >/dev/null 2>&1; fi';
+
+export function macFaceLauncherContent() {
+  return [
+    '#!/bin/sh',
+    '# IRIS: Claude Code / Codex sessions in one window.',
+    '# Daemon 127.0.0.1:3458 + window. Usage: this file [--browser] [--no-open]',
+    'R=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+    'export IRIS_ROOT="$R"',
+    'export IRIS_FACE_NODE="$R/_agent/shared/tools/node/bin/node"',
+    'export TEAMCLAUDE_CONFIG="${TEAMCLAUDE_CONFIG:-$R/_agent/shared/portable-state/teamclaude/teamclaude.json}"',
+    'export PATH="$R/_agent/shared/shims:$R/_agent/shared/tools/node/bin:$PATH"',
+    MAC_AGENT_UPDATE_KICK,
+    'exec "$IRIS_FACE_NODE" "$R/_agent/shared/tools/face/launch.mjs" "$@"',
+    '',
+  ].join('\n');
+}
+
+function xmlText(v) {
+  return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * `<appsDir>/<이름>.app` — 영혼의 `<이름> Face.command` 를 부르기만 하는 작은 앱 꾸러미.
+ * LSUIElement 라 앱 자신은 Dock 에 남지 않는다(창은 IRIS 창 자신이 띄운다). 이 PC 에서
+ * 만든 파일이라 격리 표식이 없어 Gatekeeper 검사를 받지 않는다.
+ */
+export function writeMacAppLauncher(root, name, { appsDir = path.join(os.homedir(), 'Applications') } = {}) {
+  const app = path.join(appsDir, `${name}.app`);
+  const contents = path.join(app, 'Contents');
+  const exe = path.join(contents, 'MacOS', name);
+  fs.mkdirSync(path.dirname(exe), { recursive: true });
+  fs.writeFileSync(path.join(contents, 'Info.plist'), [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    `  <key>CFBundleName</key><string>${xmlText(name)}</string>`,
+    `  <key>CFBundleDisplayName</key><string>${xmlText(name)}</string>`,
+    '  <key>CFBundleIdentifier</key><string>com.iris-workspace.launcher</string>',
+    `  <key>CFBundleExecutable</key><string>${xmlText(name)}</string>`,
+    '  <key>CFBundlePackageType</key><string>APPL</string>',
+    '  <key>CFBundleVersion</key><string>1</string>',
+    '  <key>LSUIElement</key><true/>',
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n'), 'utf8');
+  const target = faceLauncherPath(root, name, { platform: 'darwin' });
+  fs.writeFileSync(exe, `#!/bin/sh\nexec '${String(target).replace(/'/g, "'\\''")}' "$@"\n`, { encoding: 'utf8', mode: 0o755 });
+  fs.chmodSync(exe, 0o755);
+  return { appPath: app };
+}
 
 // PowerShell is run from a temp .ps1 written as UTF-8 *with BOM* rather than
 // through -Command: a Korean soul name in a -Command string arrives mangled
@@ -157,13 +219,23 @@ const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // of the real desktop. When it is null the script asks Windows itself
 // ([Environment]::GetFolderPath) -- the desktop is often redirected (OneDrive)
 // and guessing %USERPROFILE%\Desktop would silently create a dead shortcut.
-export async function writeFaceLauncher(root, name, { desktopDir = null, runPs = defaultRunPs, skipShortcut = false } = {}) {
-  const cmdPath = faceLauncherPath(root, name);
+export async function writeFaceLauncher(root, name, { desktopDir = null, runPs = defaultRunPs, skipShortcut = false, platform = process.platform } = {}) {
+  const cmdPath = faceLauncherPath(root, name, { platform });
   fs.mkdirSync(root, { recursive: true });
-  fs.writeFileSync(cmdPath, faceLauncherContent(), 'utf8');
+  fs.writeFileSync(cmdPath, faceLauncherContent({ platform }), 'utf8');
+  if (platform !== 'win32') fs.chmodSync(cmdPath, 0o755);
 
   if (skipShortcut) {
     return { cmdPath, lnkPath: null, shortcut: { ok: false, detail: 'skipped' } };
+  }
+  if (platform !== 'win32') {
+    // macOS: 바탕화면 대신 ~/Applications 의 앱 꾸러미(D-M10). desktopDir 은 시험·연습용 자리.
+    try {
+      const { appPath } = writeMacAppLauncher(root, name, desktopDir ? { appsDir: desktopDir } : {});
+      return { cmdPath, lnkPath: appPath, shortcut: { ok: true, detail: appPath } };
+    } catch (err) {
+      return { cmdPath, lnkPath: null, shortcut: { ok: false, detail: String(err?.message ?? err) } };
+    }
   }
 
   // Desktop shortcut = "<name>.lnk" ("IRIS" -- the one thing that lives

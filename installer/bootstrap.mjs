@@ -9,9 +9,9 @@
 //   ⑤ 브라우저를 연다 — 실패해도 주소를 알려 주고 성공으로 끝낸다
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyManifest } from '../lib/manifest.mjs';
 import { nodeBinIn } from './lib/platform.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +31,26 @@ export function parseBootstrapArgs(argv) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The zip ships only lib/{run,zip,net}.mjs (build/pack.mjs LIB_FILES), so the
+// check lib/manifest.mjs does at build time is repeated here in a few lines --
+// the same rule bootstrap.ps1 applies: every part file must match its sha256.
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    fs.createReadStream(file).on('data', (d) => h.update(d)).on('end', () => resolve(h.digest('hex'))).on('error', reject);
+  });
+}
+
+export async function verifyPayload(payloadDir, manifest) {
+  const mismatches = [];
+  for (const p of Object.values(manifest.parts ?? {})) {
+    const abs = path.join(payloadDir, p.file);
+    const actual = fs.existsSync(abs) ? await sha256File(abs) : null;
+    if (actual !== p.sha256) mismatches.push({ file: p.file, expected: p.sha256, actual });
+  }
+  return { ok: mismatches.length === 0, mismatches };
+}
 
 async function health(port, timeoutMs = 2000) {
   try {
@@ -104,7 +124,7 @@ export async function bootstrap({ zipRoot, port = 3460, nodeDir, workDir, auto =
     return 11;
   }
   console.log('파일을 확인하는 중입니다(1~2분 걸릴 수 있습니다)…');
-  const verdict = await verifyManifest(path.join(zipRoot, 'payload'), manifest);
+  const verdict = await verifyPayload(path.join(zipRoot, 'payload'), manifest);
   if (!verdict.ok) {
     log(`Integrity check failed: ${verdict.mismatches[0]?.file}. zip 을 다시 받아 주세요.`);
     return 11;

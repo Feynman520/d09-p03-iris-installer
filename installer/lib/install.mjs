@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { run } from '../../lib/run.mjs';
 import { extractZip } from '../../lib/zip.mjs';
@@ -173,6 +173,13 @@ export async function checkRootPath(root, fsutil = defaultFsutil) {
 export function stripMotw(target) {
   let stat;
   try { stat = fs.statSync(target); } catch { return 0; }
+  // macOS: the "came from the internet" mark is the com.apple.quarantine
+  // xattr, which Gatekeeper checks before a bundled binary may run
+  // (docs/설계-macOS.md D-M05). One recursive xattr call clears a whole tree.
+  if (process.platform === 'darwin') {
+    const r = spawnSync('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', target], { stdio: 'ignore' });
+    return r.status === 0 ? 1 : 0;
+  }
   if (stat.isFile()) {
     try { fs.rmSync(`${target}:Zone.Identifier`, { force: true }); } catch { /* not NTFS / no stream */ }
     return 1;

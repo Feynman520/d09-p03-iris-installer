@@ -1,0 +1,100 @@
+{
+  "$comment": [
+    "macOS(Apple Silicon) 잠금표 덮어쓰기 (docs/설계-macOS.md D-M12). lock.json(= Windows) 위에 이 파일이 '다른 칸만' 덮는다 -- 펼치는 규칙은 build/lock-target.mjs.",
+    "부품 값 = 이 대상에서 바뀌는 칸만(칸 하나는 통째로 바뀐다). null 부품 = 이 대상에는 싣지 않는다. 칸 값 null = 그 칸을 뺀다.",
+    "잠금 원칙은 lock.json 과 같다: 판·URL·SHA-256 고정, latest/main/HEAD 금지. 지문 출처는 각 sha256Source.",
+    "npm 부품(codex·teamclaude·playwright-mcp·ui-ux-pro-max)은 칸이 같다 -- Mac 에서 빌드하면 npm 이 그 대상의 선택 의존(예: @openai/codex-darwin-arm64)을 고른다. 빌드는 대상과 같은 운영체제에서 한다."
+  ],
+  "target": "darwin-arm64",
+  "parts": {
+    "node": {
+      "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+      "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+      "sha256Source": "vendor SHASUMS256.txt (2026-10-27)",
+      "bytes": 52909993,
+      "file": "runtime/node-v24.21.0-darwin-arm64.tar.gz",
+      "note": "Node 24 LTS macOS arm64. 압축 안에 node-v24.21.0-darwin-arm64/ 한 겹(strip 1) -> bin/node."
+    },
+    "python": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-aarch64-apple-darwin-install_only.tar.gz",
+      "sha256": "3ee3ee547cedfeb7c2b16b2b7156039f7b470bb8f857e226fd3d2eb11db83c76",
+      "sha256Source": "vendor release SHA256SUMS (2026-10-27)",
+      "bytes": 25135464,
+      "file": "runtime/cpython-3.12.14+20260901-aarch64-apple-darwin-install_only.tar.gz",
+      "note": "Windows 와 같은 python-build-standalone 판의 macOS arm64 묶음. 최상위 python/ 한 겹(strip 1) -> bin/python3, lib/python3.12/site-packages."
+    },
+    "pyyaml": {
+      "url": "https://files.pythonhosted.org/packages/89/a0/6cf41a19a1f2f3feab0e9c0b74134aa2ce6849093d5517a0c550fe37a648/pyyaml-6.0.3-cp312-cp312-macosx_11_0_arm64.whl",
+      "sha256": "fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0",
+      "sha256Source": "PyPI JSON API digests.sha256 (2026-10-27)",
+      "bytes": 173973,
+      "file": "runtime/pyyaml-6.0.3-cp312-cp312-macosx_11_0_arm64.whl",
+      "dest": "_agent/shared/tools/python/lib/python3.12/site-packages"
+    },
+    "uv": {
+      "url": "https://files.pythonhosted.org/packages/ce/c7/00f207b279547db0ed7dd519d6c505358eda7e976811ba2c0ac58b8e79c6/uv-0.12.14-py3-none-macosx_11_0_arm64.whl",
+      "sha256": "54ba5330871a025b3e44bde14e60bc8a182e7a50510be05c580637a9d8410099",
+      "sha256Source": "PyPI JSON API digests.sha256 (2026-10-27)",
+      "bytes": 16677928,
+      "file": "runtime/uv-0.12.14-py3-none-macosx_11_0_arm64.whl",
+      "fallback": {
+        "version": "0.11.21",
+        "url": "https://files.pythonhosted.org/packages/a5/f7/31d62c17837c9ae79cc6d5351fc5d54e8926e78b0315b4b6c187e0d1d50d/uv-0.11.21-py3-none-macosx_11_0_arm64.whl",
+        "sha256": "9c11169a049ec8bf9ddc6a9f55fba9a240942ec8005faaaf4393f00ff7a4c16e",
+        "note": "Windows 잠금표의 대체 판과 같은 0.11.21 의 macOS arm64 바퀴."
+      }
+    },
+    "age": {
+      "url": "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-darwin-arm64.tar.gz",
+      "sha256": "e2020b073c44f692685a24d6abc378817eb81ffaaf49fd0531ef8565f767f2f5",
+      "sha256Source": "computed 2026-10-27 from official release URL (릴리스에 SHA256SUMS 자산이 없다 -- Windows 판과 같은 사정)",
+      "bytes": 18106798,
+      "file": "runtime/age-v1.3.2-darwin-arm64.tar.gz"
+    },
+    "git": {
+      "version": "2.53.0-4",
+      "url": "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283-macOS-arm64.tar.gz",
+      "sha256": "f9dc64635a5b62fbd7ad95db73268bbb8912255ac516d65d37bf7af22fcb8ffe",
+      "sha256Source": "vendor release asset .sha256 (2026-10-27)",
+      "bytes": 62348987,
+      "file": "runtime/dugite-native-v2.53.0-4098283-macOS-arm64.tar.gz",
+      "note": "D-M13: macOS 에는 공식 이동식 Git(MinGit) 이 없어 GitHub Desktop 이 쓰는 dugite-native 를 싣는다. 겉껍질 없음(strip 0) -> bin/git, libexec/git-core. 쓰려면 GIT_EXEC_PATH 등이 필요해 늘 심(shims/git)으로 부른다."
+    },
+    "claude": {
+      "url": "https://downloads.claude.ai/claude-code-releases/2.1.272/darwin-arm64/claude",
+      "sha256": "195e24e8e1f9bf46f1eaee72d434a33e18f9f5796f29a6348a00d16c5f8aee75",
+      "sha256Source": "official manifest.json platforms.darwin-arm64.checksum (2026-10-27)",
+      "bytes": 210702192,
+      "binName": "claude"
+    },
+    "manage": {
+      "source": "patches/teamclaude/teamclaude-manage.mjs",
+      "file": "relay/teamclaude-manage.mjs",
+      "note": "D-M14: PowerShell 관리 스크립트의 macOS 판(node). 3456 을 잡은 프로세스가 동봉 node + TeamClaude 진입 파일일 때만 멈춘다."
+    },
+    "hooks-posix": {
+      "kind": "dir",
+      "source": "payload-src/macos/hooks",
+      "exclude": ["__pycache__"],
+      "file": "tools/hooks-posix.zip",
+      "dest": "_agent/claude/scripts",
+      "license": "MIT",
+      "note": "D-M18: block-blanket-kill.ps1 의 macOS 판(파이썬). hooks 와 같은 폴더에 섞여 산다(merge) -- 따로 둔 까닭은 Windows zip 의 hooks.zip 을 바꾸지 않기 위해서다."
+    },
+    "dash": {
+      "patches": "patches/dash/rules.darwin.json"
+    },
+    "hwp-automation": null,
+    "excel-automation": null,
+    "ppt-automation": null,
+    "word-automation": null,
+    "document-mcp-wheelhouse": {
+      "requirementsIn": "payload-src/manifests/python-locks/document-mcp-darwin/requirements.in",
+      "requirementsInSha256": "952d2f8ed61568de373a778eebf586ff57446af7966343ca4a19860f05d65992",
+      "requirementsLock": "payload-src/manifests/python-locks/document-mcp-darwin/requirements.lock",
+      "sha256": "9e23f7d515d23522a41f01db7ca6558aea7be0bb2f6704cd79c46430786011fe",
+      "platform": "macosx_13_0_arm64",
+      "expectedCount": 32
+    }
+  }
+}

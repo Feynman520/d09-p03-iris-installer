@@ -29,6 +29,7 @@ import {
   claudeSettingsPath, claudeConfigJsonPath, codexConfigTomlPath,
 } from '../lib/firstrun.mjs';
 import { CODEX_PROVIDER_ID, CODEX_PROVIDER_LINES } from '../lib/shims.mjs';
+import { isWindows } from '../lib/platform.mjs';
 
 export const id = 'adapters';
 
@@ -45,6 +46,9 @@ export const CLEANUP_PERIOD_DAYS = 3650;
 // bg-leftover-guard.py(2.0.42)는 클로드 전용 Stop 훅이다 — 코덱스 hooks.json 에는 넣지 않는다.
 export const HOOK_SCRIPTS = ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py'];
 export const HOOK_EXTRAS = ['block-blanket-kill.test.py', 'guard-iris-path.test.py', 'bg-leftover-guard.test.py'];
+// macOS(D-M18): 일괄 킬 가드는 파이썬 판(부품 hooks-posix 가 같은 scripts 폴더에 놓는다).
+export const HOOK_SCRIPTS_POSIX = ['block-blanket-kill-posix.py', 'guard-iris-path.py', 'bg-leftover-guard.py'];
+export const HOOK_EXTRAS_POSIX = ['block-blanket-kill-posix.test.py', 'guard-iris-path.test.py', 'bg-leftover-guard.test.py'];
 
 // 클로드 플러그인 5종. `part` = 잠금표 부품 id(= 도구 폴더 위치), `name` = 플러그인
 // 이름(`<name>@iris-local` 로 켜진다). document-skills 만 허가서상 내려받기라
@@ -111,9 +115,14 @@ export function toolVersion(ctx, partId) {
   return last || 'unknown';
 }
 
-export const nodeExePath = (root) => path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe');
-export const pythonShimPath = (root) => path.join(root, '_agent', 'shared', 'shims', 'python.cmd');
-export const venvPythonPath = (root) => path.join(root, '_agent', 'runtime', 'venvs', 'document-mcp', 'Scripts', 'python.exe');
+// 운영체제마다 실행 파일 자리가 다르다(docs/설계-macOS.md 2절). 기본값은 이 PC.
+export const nodeExePath = (root, { platform = process.platform } = {}) => (isWindows(platform)
+  ? path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')
+  : path.join(root, '_agent', 'shared', 'tools', 'node', 'bin', 'node'));
+export const pythonShimPath = (root, { platform = process.platform } = {}) => path.join(root, '_agent', 'shared', 'shims', isWindows(platform) ? 'python.cmd' : 'python');
+export const venvPythonPath = (root, { platform = process.platform } = {}) => (isWindows(platform)
+  ? path.join(root, '_agent', 'runtime', 'venvs', 'document-mcp', 'Scripts', 'python.exe')
+  : path.join(root, '_agent', 'runtime', 'venvs', 'document-mcp', 'bin', 'python'));
 export const claudeScriptsDir = (root) => path.join(root, '_agent', 'claude', 'scripts');
 export const checkFreshPath = (root) => path.join(root, '_ontology', 'check_fresh.py');
 export const codexHomeDir = (root) => path.join(root, '_agent', 'codex');
@@ -125,7 +134,7 @@ export const pluginCacheDir = (root, name, version) => path.join(root, '_agent',
 // MCP 설정에는 "실행 폴더" 항목이 없기 때문이다.
 export const playwrightWrapDir = (root) => path.join(root, '_agent', 'shared', 'tools', 'playwright-mcp');
 export const playwrightWorkDir = (root) => path.join(playwrightWrapDir(root), 'work');
-export const playwrightWrapper = (root) => path.join(playwrightWrapDir(root), 'playwright-mcp.cmd');
+export const playwrightWrapper = (root, { platform = process.platform } = {}) => path.join(playwrightWrapDir(root), isWindows(platform) ? 'playwright-mcp.cmd' : 'playwright-mcp');
 
 // ---------------------------------------------------------------------------
 // 작은 유틸
@@ -211,11 +220,12 @@ export function installerOwnedDirs(root) {
 export function isInstallerOwnedPath(root, value) {
   if (!root || typeof value !== 'string' || !value.trim()) return false;
   const text = value.replace(/"/g, '');
-  const dirs = installerOwnedDirs(root).map((d) => d.toLowerCase().replace(/[\\/]+$/, ''));
   // 명령 한 줄 안에 여러 경로가 섞여 있을 수 있어(powershell -File "<경로>")
-  // 부분 문자열로 본다 — 슬래시 방향만 맞춰 준다.
-  const hay = text.toLowerCase().split('/').join('\\');
-  return dirs.some((d) => hay.includes(`${d}\\`));
+  // 부분 문자열로 본다 — 양쪽 슬래시 방향을 하나로 맞춘다(Windows 의 \ 와 macOS 의 /).
+  const fold = (s) => s.toLowerCase().split('\\').join('/');
+  const dirs = installerOwnedDirs(root).map((d) => fold(d).replace(/\/+$/, ''));
+  const hay = fold(text);
+  return dirs.some((d) => hay.includes(`${d}/`));
 }
 
 // 플러그인 쪽 "우리 것" 판정. 플러그인 캐시(`_agent\claude\plugins\cache\
@@ -224,8 +234,9 @@ export function isInstallerOwnedPath(root, value) {
 // 플러그인은 옛 판 폴더를 계속 가리킨다.
 export function isOurPluginCache(root, p) {
   if (!root || typeof p !== 'string' || !p.trim()) return false;
-  const base = path.join(root, '_agent', 'claude', 'plugins', 'cache', MARKETPLACE).toLowerCase();
-  return p.toLowerCase().split('/').join('\\').startsWith(`${base}\\`);
+  const fold = (s) => s.toLowerCase().split('\\').join('/');
+  const base = fold(path.join(root, '_agent', 'claude', 'plugins', 'cache', MARKETPLACE));
+  return fold(p).startsWith(`${base}/`);
 }
 
 // marketplace.json 의 `source` 는 marketplace 폴더 기준 **상대경로**다
@@ -260,13 +271,14 @@ const nowIso = () => new Date().toISOString();
 
 export function mcpServerSpecs(ctx) {
   const root = ctx.root;
+  const platform = ctx.platform ?? process.platform;
   const out = [];
 
   // 플레이라이트: 엣지 채널(D2-11). 래퍼 .cmd 가 작업 폴더로 옮겨 간 뒤 실행한다.
   out.push({
     name: 'playwright',
     part: 'playwright-mcp',
-    command: playwrightWrapper(root),
+    command: playwrightWrapper(root, { platform }),
     args: [],
     env: { ...(lockField(ctx, 'playwright-mcp', 'env') ?? { PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }) },
     entryFile: toolEntry(ctx, 'playwright-mcp'),
@@ -283,7 +295,7 @@ export function mcpServerSpecs(ctx) {
   out.push({
     name: 'self-improve',
     part: 'self-improve',
-    command: nodeExePath(root),
+    command: nodeExePath(root, { platform }),
     args: [toolEntry(ctx, 'self-improve')].filter(Boolean),
     env: selfEnvAbs,
     entryFile: toolEntry(ctx, 'self-improve'),
@@ -292,12 +304,14 @@ export function mcpServerSpecs(ctx) {
     claude: false,
   });
 
-  // 문서 MCP 5종: venv 파이썬 + server.py.
+  // 문서 MCP 5종: venv 파이썬 + server.py. 그 대상 잠금표에 없는 도구는 등록하지 않는다 —
+  // macOS 잠금표는 COM 이 필요한 넷을 싣지 않는다(docs/설계-macOS.md D-M16).
   for (const doc of DOCUMENT_MCPS) {
+    if (ctx.lock?.parts && !ctx.lock.parts[doc.part]) continue;
     out.push({
       name: doc.name,
       part: doc.part,
-      command: venvPythonPath(root),
+      command: venvPythonPath(root, { platform }),
       args: [toolEntry(ctx, doc.part)].filter(Boolean),
       env: { PYTHONUTF8: '1' },
       entryFile: toolEntry(ctx, doc.part),
@@ -316,16 +330,20 @@ export function mcpServerSpecs(ctx) {
 
 // 새 PC에는 시스템 파이썬이 없다. 그래서 훅의 파이썬은 동봉 shim 의 **절대경로**다
 // (`python` 만 적으면 PATH 반영 전 첫 세션에서 훅이 통째로 실패한다).
-export function claudeHookGroups(root) {
+export function claudeHookGroups(root, { platform = process.platform } = {}) {
   const scripts = claudeScriptsDir(root);
-  const py = pythonShimPath(root);
+  const py = pythonShimPath(root, { platform });
+  // macOS: 훅 명령은 sh 가 돌린다 — 일괄 킬 가드도 동봉 파이썬으로(D-M18).
+  const killGuard = isWindows(platform)
+    ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(scripts, 'block-blanket-kill.ps1')}"`
+    : `"${py}" "${path.join(scripts, 'block-blanket-kill-posix.py')}"`;
   return {
     PreToolUse: [
       {
         matcher: 'Bash|PowerShell',
         hooks: [{
           type: 'command',
-          command: `powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(scripts, 'block-blanket-kill.ps1')}"`,
+          command: killGuard,
           timeout: 15,
           statusMessage: '일괄 킬 가드 검사 중',
         }],
@@ -368,9 +386,15 @@ export function claudeHookGroups(root) {
 // 코덱스 `hooks.json` — 개발 PC 의 살아 있는 `_agent\codex\hooks.json` 형식.
 // 같은 두 훅이지만 ⓐ 도구 이름이 다르고(`Bash` 만) ⓑ 명령 앞에 파워셸 호출
 // 연산자 `&` 가 붙는다.
-export function codexHookConfig(root) {
+export function codexHookConfig(root, { platform = process.platform } = {}) {
   const scripts = claudeScriptsDir(root); // 훅 스크립트는 한 벌만 둔다(양쪽이 같은 파일을 부른다)
-  const py = pythonShimPath(root);
+  const py = pythonShimPath(root, { platform });
+  // Windows 의 코덱스 훅은 파워셸이 돌려 호출 연산자 `&` 가 붙는다. macOS 는 sh 라 붙이지 않는다.
+  const win = isWindows(platform);
+  const call = win ? '& ' : '';
+  const killGuard = win
+    ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(scripts, 'block-blanket-kill.ps1')}"`
+    : `"${py}" "${path.join(scripts, 'block-blanket-kill-posix.py')}"`;
   return {
     hooks: {
       PreToolUse: [
@@ -378,7 +402,7 @@ export function codexHookConfig(root) {
           matcher: 'Bash',
           hooks: [{
             type: 'command',
-            command: `powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(scripts, 'block-blanket-kill.ps1')}"`,
+            command: killGuard,
             timeout: 15,
             statusMessage: '일괄 킬 가드 검사 중',
           }],
@@ -387,7 +411,7 @@ export function codexHookConfig(root) {
           matcher: 'Bash',
           hooks: [{
             type: 'command',
-            command: `& "${py}" "${path.join(scripts, 'guard-iris-path.py')}"`,
+            command: `${call}"${py}" "${path.join(scripts, 'guard-iris-path.py')}"`,
             timeout: 10,
             statusMessage: 'IRIS 경로 실존 가드 검사 중',
           }],
@@ -398,7 +422,7 @@ export function codexHookConfig(root) {
           matcher: 'startup|resume|clear|compact',
           hooks: [{
             type: 'command',
-            command: `& "${py}" "${checkFreshPath(root)}" --hook session`,
+            command: `${call}"${py}" "${checkFreshPath(root)}" --hook session`,
             timeout: 30,
             statusMessage: '온톨로지 신선도 점검',
           }],
@@ -602,7 +626,9 @@ export async function run(ctx) {
     seen.add(key);
     pending.push({ capability, reason });
   };
-  const rel = (p) => path.relative(root, p).split(path.sep).join('\\') || '.';
+  const platform = ctx.platform ?? process.platform;
+  const relSep = isWindows(platform) ? '\\' : '/';
+  const rel = (p) => path.relative(root, p).split(path.sep).join(relSep) || '.';
   const note = (side, p) => recorded[side].files.push(rel(p));
 
   ensureDir(assertInside(root, path.join(root, '_agent', 'claude')), { fs });
@@ -655,7 +681,7 @@ export async function run(ctx) {
   // 첫 세션에서 "Do you trust the files in this folder?" 가 영어로 떴다(2026-09-19 실제 사용자 실측).
   // 두 헬퍼 모두 빠진 키만 더한다(있는 값 무접촉) — 두 번 실행해도 변경 0.
   recorded.claude.firstRun = seedClaudeFirstRun(root);
-  recorded.codex.firstRun = seedCodexFirstRun(root);
+  recorded.codex.firstRun = seedCodexFirstRun(root, { platform });
   if (recorded.claude.firstRun.written !== 'unchanged') note('claude', recorded.claude.firstRun.path);
   if (recorded.codex.firstRun.written !== 'unchanged') note('codex', recorded.codex.firstRun.path);
 
@@ -685,7 +711,11 @@ export async function run(ctx) {
     }
   }
   const edge = ctx?.precheck?.edge?.present ?? ctx?.precheck?.recorded?.edge?.present;
-  if (edge === false) addPending('브라우저 조작(Playwright)', '엣지 브라우저를 찾지 못함 — 엣지를 설치하면 바로 쓰입니다');
+  if (edge === false) {
+    addPending('브라우저 조작(Playwright)', isWindows(platform)
+      ? '엣지 브라우저를 찾지 못함 — 엣지를 설치하면 바로 쓰입니다'
+      : 'Chrome·Edge 브라우저를 찾지 못함 — 둘 중 하나를 설치하면 바로 쓰입니다');
+  }
 
   // 진입 파일이 아직 없는 MCP 는 기록만 남긴다(⑤-9 검사가 사람에게 보여 준다).
   for (const spec of specs) {
@@ -719,7 +749,8 @@ function hookSource(ctx, name, { fs }) {
 function placeHookScripts(ctx, { fs, root, recorded, note, log }) {
   const dir = assertInside(root, claudeScriptsDir(root));
   ensureDir(dir, { fs });
-  for (const name of [...HOOK_SCRIPTS, ...HOOK_EXTRAS]) {
+  const win = isWindows(ctx.platform ?? process.platform);
+  for (const name of win ? [...HOOK_SCRIPTS, ...HOOK_EXTRAS] : [...HOOK_SCRIPTS_POSIX, ...HOOK_EXTRAS_POSIX]) {
     const dst = assertInside(root, path.join(dir, name));
     if (fs.existsSync(dst)) { note('claude', dst); continue; }
     const src = hookSource(ctx, name, { fs });
@@ -741,7 +772,7 @@ function writeClaudeSettings(ctx, { fs, root, recorded, note, log }) {
   // 권한 두 줄은 기존 헬퍼가 정본이다(같은 값을 두 군데 적지 않는다).
   const perms = seedClaudePermissions(root);
   const file = claudeSettingsPath(root);
-  const groups = claudeHookGroups(root);
+  const groups = claudeHookGroups(root, { platform: ctx.platform ?? process.platform });
   recorded.claude.hooks = Object.entries(groups).flatMap(([event, entries]) => entries.map((e) => `${event}:${e.matcher ?? '*'}`));
 
   const superEnv = lockField(ctx, 'superpowers', 'env') ?? { SUPERPOWERS_DISABLE_TELEMETRY: '1' };
@@ -927,6 +958,20 @@ export function registerDocumentSkills(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?
 export function playwrightWrapperText(ctx) {
   const dest = String(lockField(ctx, 'playwright-mcp', 'dest') ?? '_agent/shared/tools/npm/playwright-mcp');
   const entry = String(lockField(ctx, 'playwright-mcp', 'entry') ?? 'node_modules/@playwright/mcp/cli.js');
+  if (!isWindows(ctx.platform ?? process.platform)) {
+    // macOS: 같은 일을 하는 sh(ASCII·LF·실행 권한). 채널은 준비 검사가 찾은 브라우저(D-M17).
+    const pre = ctx?.precheck?.recorded?.edge ?? ctx?.precheck?.edge ?? {};
+    const channel = pre.channel === 'msedge' ? 'msedge' : 'chrome';
+    const fromTools = dest.replace(/^_agent\/shared\/tools\//, '');
+    return [
+      '#!/bin/sh',
+      'D=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+      'mkdir -p "$D/work"',
+      'cd "$D/work" || exit 1',
+      `exec "$D/../node/bin/node" "$D/../${fromTools}/${entry}" --browser ${channel} "$@"`,
+      '',
+    ].join('\n');
+  }
   // dest 는 `_agent/shared/tools/npm/playwright-mcp/<판>` — 래퍼는
   // `_agent\shared\tools\playwright-mcp\` 에 있으므로 `..\` 하나로 tools 에 닿는다.
   const fromTools = dest.replace(/^_agent\/shared\/tools\//, '').split('/').join('\\');
@@ -942,8 +987,9 @@ export function playwrightWrapperText(ctx) {
 }
 
 function writePlaywrightWrapper(ctx, { fs, root, recorded, note, log }) {
+  const platform = ctx.platform ?? process.platform;
   ensureDir(assertInside(root, playwrightWorkDir(root)), { fs });
-  const file = assertInside(root, playwrightWrapper(root));
+  const file = assertInside(root, playwrightWrapper(root, { platform }));
   const text = playwrightWrapperText(ctx);
   // 설치기 소유 파일이라 내용이 달라졌으면 갱신한다(계약 v2: 우리 파일만 갱신).
   const same = fs.existsSync(file) && fs.readFileSync(file, 'utf8') === text;
@@ -951,8 +997,9 @@ function writePlaywrightWrapper(ctx, { fs, root, recorded, note, log }) {
     atomicWrite(fs, file, text);
     log('[adapters] 플레이라이트 실행 래퍼를 썼습니다(스냅샷 폴더 고정)');
   }
+  if (!isWindows(platform) && (fs.statSync(file).mode & 0o777) !== 0o755) fs.chmodSync(file, 0o755);
   note('claude', file);
-  recorded.claude.playwrightWork = path.relative(root, playwrightWorkDir(root)).split(path.sep).join('\\');
+  recorded.claude.playwrightWork = path.relative(root, playwrightWorkDir(root)).split(path.sep).join(isWindows(platform) ? '\\' : '/');
   return file;
 }
 
@@ -1189,7 +1236,7 @@ async function runUiUxProMax(ctx, { fs, root, log }) {
   const entry = toolEntry(ctx, 'ui-ux-pro-max');
   if (!entry || !fs.existsSync(entry)) return { status: 'skipped', reason: '도구가 꾸러미에 없음' };
   if (typeof ctx.run !== 'function') return { status: 'skipped', reason: '실행 헬퍼 없음' };
-  const node = nodeExePath(root);
+  const node = nodeExePath(root, { platform: ctx.platform ?? process.platform });
   const env = { ...(ctx.env ?? {}), CODEX_HOME: codexHomeDir(root) };
   try {
     const res = await ctx.run(node, [entry, 'init', '--ai', 'codex', '--offline'], { cwd: root, env });
@@ -1210,7 +1257,7 @@ async function runUiUxProMax(ctx, { fs, root, log }) {
 
 function writeCodexHooks(ctx, { fs, root }) {
   const file = assertInside(root, path.join(codexHomeDir(root), 'hooks.json'));
-  const groups = codexHookConfig(root).hooks;
+  const groups = codexHookConfig(root, { platform: ctx.platform ?? process.platform }).hooks;
   return mergeJson(fs, root, file, (data) => {
     const added = [];
     mergeHooks(data, groups, added, 'hooks.', root);
@@ -1231,6 +1278,8 @@ async function detectApps(ctx, { log }) {
     hancom: typeof pre.hancom === 'boolean' ? pre.hancom : (pre.hancom?.present ?? null),
   };
   if (typeof ctx.run !== 'function') return out;
+  // macOS: 레지스트리가 없고, COM 이 필요한 오피스·한컴 도구는 그 잠금표에 아예 없다(D-M16).
+  if (!isWindows(ctx.platform ?? process.platform)) return out;
 
   const probe = async (keys) => {
     for (const key of keys) {

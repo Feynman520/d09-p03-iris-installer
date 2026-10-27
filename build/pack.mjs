@@ -46,6 +46,15 @@ const UNINSTALL_CMD_NAME = 'IRIS-삭제.cmd';
 const NOTICE_NAME = '설치가 안 되면.txt';
 const NOTICE_SRC_REL = path.join('policy', 'install-notice.txt');
 
+// macOS zip (docs/설계-macOS.md D-M04·D-M05): the double-click launcher is the
+// .command twin, and the root notice explains Gatekeeper instead of SAC. Its
+// source sits outside payload-src/policy/ on purpose -- that whole folder ships
+// in every zip, and the Windows zip must not change.
+const MAC_TARGET = 'darwin-arm64';
+const MAC_CMD_NAME = 'IRIS-설치.command';
+const MAC_UNINSTALL_CMD_NAME = 'IRIS-삭제.command';
+const MAC_NOTICE_SRC_REL = path.join('macos', 'install-notice.txt');
+
 // (2026-09-12 final review C1) The installer's own modules import shared
 // helpers from the repo root's lib/ as `../../lib/<file>.mjs`
 // (installer/lib/install.mjs, login.mjs, precheck.mjs, userpath.mjs,
@@ -409,14 +418,20 @@ export async function pack({
   presetsFile = DEFAULT_PRESETS_FILE,
   rules = null,
   log = () => {},
+  // Build target (build/lock-target.mjs). The default is the Windows zip,
+  // byte-for-byte what pack() always made. `lockText` is the target's
+  // flattened lock.json; when absent the repo lock.json is copied as before.
+  target = 'win32-x64',
+  lockText = null,
 }) {
   if (!version) throw new Error('pack: version (or manifest.package.version) is required');
+  const mac = target === MAC_TARGET;
 
   const payloadSrc = path.join(stageDir, 'payload');
   if (!fs.existsSync(payloadSrc)) throw new Error(`pack: payload dir not found at ${payloadSrc}`);
 
-  if (!fs.existsSync(lockFile)) throw new Error(`pack: lock.json not found at ${lockFile}`);
-  const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+  if (lockText == null && !fs.existsSync(lockFile)) throw new Error(`pack: lock.json not found at ${lockFile}`);
+  const lock = JSON.parse(lockText ?? fs.readFileSync(lockFile, 'utf8'));
 
   // collect()'s per-part record, handed over through the stage dir. Read up
   // front because renderNotices() needs it too: `face` carries no version in
@@ -443,22 +458,34 @@ export async function pack({
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(root, { recursive: true });
 
-  const cmdSrc = path.join(installerDir, CMD_NAME);
-  if (!fs.existsSync(cmdSrc)) throw new Error(`pack: ${CMD_NAME} not found under installerDir ${installerDir}`);
-  fs.copyFileSync(cmdSrc, path.join(root, CMD_NAME));
-  forceCRLF(path.join(root, CMD_NAME));
+  if (mac) {
+    // Finder runs a .command only if it is executable; the zip keeps the bit.
+    const launcherSrc = path.join(installerDir, MAC_CMD_NAME);
+    if (!fs.existsSync(launcherSrc)) throw new Error(`pack: ${MAC_CMD_NAME} not found under installerDir ${installerDir}`);
+    for (const name of [MAC_CMD_NAME, MAC_UNINSTALL_CMD_NAME]) {
+      const src = path.join(installerDir, name);
+      if (!fs.existsSync(src)) continue;
+      fs.copyFileSync(src, path.join(root, name));
+      fs.chmodSync(path.join(root, name), 0o755);
+    }
+  } else {
+    const cmdSrc = path.join(installerDir, CMD_NAME);
+    if (!fs.existsSync(cmdSrc)) throw new Error(`pack: ${CMD_NAME} not found under installerDir ${installerDir}`);
+    fs.copyFileSync(cmdSrc, path.join(root, CMD_NAME));
+    forceCRLF(path.join(root, CMD_NAME));
 
-  const uninstallCmdSrc = path.join(installerDir, UNINSTALL_CMD_NAME);
-  if (fs.existsSync(uninstallCmdSrc)) {
-    fs.copyFileSync(uninstallCmdSrc, path.join(root, UNINSTALL_CMD_NAME));
-    forceCRLF(path.join(root, UNINSTALL_CMD_NAME));
+    const uninstallCmdSrc = path.join(installerDir, UNINSTALL_CMD_NAME);
+    if (fs.existsSync(uninstallCmdSrc)) {
+      fs.copyFileSync(uninstallCmdSrc, path.join(root, UNINSTALL_CMD_NAME));
+      forceCRLF(path.join(root, UNINSTALL_CMD_NAME));
+    }
   }
 
   // 설치가 안 되면.txt -- a byte copy of payload-src\policy\install-notice.txt.
   // copyFileSync, never a read/write round trip: the file starts with a UTF-8
   // BOM so Windows Notepad shows the Korean correctly on a double click, and
   // re-encoding it here would be exactly how that BOM gets lost.
-  const noticeSrc = path.join(payloadSrcDir, NOTICE_SRC_REL);
+  const noticeSrc = path.join(payloadSrcDir, mac ? MAC_NOTICE_SRC_REL : NOTICE_SRC_REL);
   const rootNoticePath = path.join(root, NOTICE_NAME);
   let noticePacked = false;
   if (fs.existsSync(noticeSrc)) {
@@ -492,7 +519,8 @@ export async function pack({
   }
 
   // lock.json at the zip root -- readLock()'s first candidate (C2).
-  fs.copyFileSync(lockFile, path.join(root, 'lock.json'));
+  if (lockText != null) fs.writeFileSync(path.join(root, 'lock.json'), lockText, 'utf8');
+  else fs.copyFileSync(lockFile, path.join(root, 'lock.json'));
 
   // ---- 4. the sanitize gate over exactly what pack() added
   // build/build.mjs sanitizes payload\ BEFORE calling pack(), so everything
@@ -548,7 +576,9 @@ export async function pack({
   // (measured on v1.2.0), so `IRIS-설치_v1.2.0_....zip` arrived as
   // `_v1.2.0_....zip`. The .cmd *inside* the zip keeps its Korean name -- that
   // one is what the person double-clicks, and nothing rewrites it.
-  const zipName = `IRIS-Setup_v${version}_${dateStr}.zip`;
+  // The macOS asset carries its platform in the name so it can never be
+  // mistaken for the Windows one on the same release page.
+  const zipName = mac ? `IRIS-Setup-macOS-arm64_v${version}_${dateStr}.zip` : `IRIS-Setup_v${version}_${dateStr}.zip`;
   fs.mkdirSync(outDir, { recursive: true });
   const zipPath = path.join(outDir, zipName);
   fs.rmSync(zipPath, { force: true });

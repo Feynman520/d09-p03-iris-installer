@@ -60,6 +60,8 @@ function makePayload(label) {
   return dir;
 }
 
+const WIN = { platform: 'win32' };
+
 function makeCtx(label, { apps = {}, edge = true, tools = {}, precheck } = {}) {
   const root = path.join(tmp, label, 'soul-IRIS');
   fs.mkdirSync(root, { recursive: true });
@@ -73,6 +75,8 @@ function makeCtx(label, { apps = {}, edge = true, tools = {}, precheck } = {}) {
     lock: LOCK,
     choice: { subscriptions: ['claude'], leadAgent: 'claude' },
     precheck: precheck ?? { edge: { present: edge } },
+    // 이 파일의 시험은 Windows 판 연결부를 잰다(어느 PC 에서나). macOS 판은 platform: 'darwin' 으로 따로.
+    platform: 'win32',
     offline: true,
     log: (line) => logs.push(line),
     progress: () => {},
@@ -207,15 +211,15 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
     'excel-automation', 'hwp-automation', 'pdf-automation', 'playwright', 'ppt-automation', 'word-automation',
   ]);
   assert.equal(cj.mcpServers.playwright.type, 'stdio');
-  assert.equal(cj.mcpServers.playwright.command, adapters.playwrightWrapper(root));
+  assert.equal(cj.mcpServers.playwright.command, adapters.playwrightWrapper(root, WIN));
   assert.equal(cj.mcpServers.playwright.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, '1');
   for (const name of ['hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation']) {
-    assert.equal(cj.mcpServers[name].command, adapters.venvPythonPath(root), `${name} 은 venv 파이썬으로`);
+    assert.equal(cj.mcpServers[name].command, adapters.venvPythonPath(root, WIN), `${name} 은 venv 파이썬으로`);
     assert.match(cj.mcpServers[name].args[0], /server\.py$/);
   }
 
   // 플레이라이트 래퍼: 엣지 채널 + 작업 폴더 고정, ASCII·CRLF
-  const wrap = fs.readFileSync(adapters.playwrightWrapper(root), 'utf8');
+  const wrap = fs.readFileSync(adapters.playwrightWrapper(root, WIN), 'utf8');
   assert.match(wrap, /--browser msedge/);
   assert.match(wrap, /cd \/d "%~dp0work"/);
   assert.ok(wrap.includes('\r\n'));
@@ -255,7 +259,7 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
     assert.ok(adapters.hasTable(toml, `mcp_servers.${name}`), `코덱스 MCP 없음: ${name}`);
   }
   assert.match(toml, /\[mcp_servers\.self-improve\.env\]\nSELF_IMPROVE_DIR = "/);
-  assert.ok(toml.includes('\\\\'), 'TOML 문자열의 역슬래시는 두 번 적어야 한다');
+  if (process.platform === 'win32') assert.ok(toml.includes('\\\\'), 'TOML 문자열의 역슬래시는 두 번 적어야 한다');
 
   // --- 코덱스 스킬: 플러그인 통째로가 아니라 스킬 단위(T03 5절) -----------
   const skills = agentFile(root, 'codex', 'skills');
@@ -468,7 +472,7 @@ test('adapters(업데이트): 우리가 쓴 MCP 항목은 새 판 경로로 갱�
   assert.equal(cj.mcpServers.mine.command, 'C:\\my\\thing.exe', '그 사람이 더한 항목은 그대로');
 
   const toml = fs.readFileSync(tomlPath, 'utf8');
-  assert.match(toml, /self-improve[\\\\]+9\.9\.9/, '코덱스 쪽도 새 판 경로');
+  assert.match(toml, /self-improve[\\\\/]+9\.9\.9/, '코덱스 쪽도 새 판 경로');
   assert.equal((toml.match(/\[mcp_servers\.self-improve\]/g) ?? []).length, 1, '블록이 늘어나면 안 된다');
   assert.equal((toml.match(/\[mcp_servers\.pdf-automation\]/g) ?? []).length, 1);
   assert.match(toml, /\[mcp_servers\.self-improve\.env\]/, '하위 env 테이블도 함께 갈아 끼운다');
@@ -523,7 +527,7 @@ test('adapters(업데이트, Task 24b #2): 코덱스 TOML 은 command·args 줄�
   await adapters.run({ ...ctx, lock: nextLock });
 
   const toml = fs.readFileSync(tomlPath, 'utf8');
-  assert.match(toml, /self-improve[\\\\]+9\.9\.8/, '우리 command/args 줄은 새 판 경로로 갱신된다');
+  assert.match(toml, /self-improve[\\\\/]+9\.9\.8/, '우리 command/args 줄은 새 판 경로로 갱신된다');
   assert.match(toml, /MY_USER_KEY = "keep-me"/, '그 사람이 env 하위 테이블에 더한 줄은 그대로 남는다');
   assert.equal((toml.match(/\[mcp_servers\.self-improve\]/g) ?? []).length, 1, '블록이 늘어나면 안 된다');
 });
@@ -644,7 +648,7 @@ test('adapters: UI/UX 스킬 생성기를 오프라인·코덱스 대상으로 �
   const { recorded, pending } = await ctx && await adapters.run(ctx);
   const call = ctx.runCalls.find((c) => String(c[1] ?? '').includes('ui-ux-pro-max'));
   assert.ok(call, 'ui-ux-pro-max 를 부르지 않았다');
-  assert.equal(call[0], adapters.nodeExePath(ctx.root));
+  assert.equal(call[0], adapters.nodeExePath(ctx.root, WIN));
   assert.deepEqual(call.slice(2), ['init', '--ai', 'codex', '--offline']);
   assert.equal(recorded.codex.uiUx.status, 'ok');
   assert.ok(!pending.some((p) => p.capability === '코덱스 UI/UX 스킬'));
@@ -676,4 +680,41 @@ test('adapters: 잠금표 dest 가 바뀌면 경로도 따라간다(경로를 �
   assert.equal(adapters.toolVersion(ctx, 'foo'), '1.2.3');
   // 판이 없으면 dest 의 마지막 칸(커밋 짧은 해시)
   assert.equal(adapters.toolVersion({ root: fake, lock: { parts: { bar: { dest: 'a/b/da823e8' } } } }, 'bar'), 'da823e8');
+});
+
+test('adapters(macOS): sh 래퍼·파이썬 훅·bin 경로, 잠금표에 없는 문서 MCP 는 등록하지 않는다(D-M16·17·18)', { skip: process.platform === 'win32' && 'POSIX 경로·실행 비트' }, async () => {
+  const ctx = makeCtx('mac', { precheck: { recorded: { edge: { present: true, channel: 'msedge' } } } });
+  ctx.platform = 'darwin';
+  const parts = { ...LOCK.parts };
+  for (const p of ['hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation']) delete parts[p];
+  ctx.lock = { ...LOCK, parts };
+  const MAC = { platform: 'darwin' };
+  const { recorded, pending } = await adapters.run(ctx);
+  const root = ctx.root;
+
+  const cj = readJson(agentFile(root, 'claude', '.claude.json'));
+  assert.deepEqual(Object.keys(cj.mcpServers).sort(), ['pdf-automation', 'playwright']);
+  assert.equal(cj.mcpServers.playwright.command, adapters.playwrightWrapper(root, MAC));
+  assert.equal(cj.mcpServers['pdf-automation'].command, adapters.venvPythonPath(root, MAC));
+  assert.ok(adapters.venvPythonPath(root, MAC).endsWith('/document-mcp/bin/python'));
+
+  const wrapFile = adapters.playwrightWrapper(root, MAC);
+  const wrap = fs.readFileSync(wrapFile, 'utf8');
+  assert.match(wrap, /^#!\/bin\/sh\n/);
+  assert.match(wrap, /--browser msedge "\$@"/, '준비 검사가 찾은 채널');
+  assert.equal(fs.statSync(wrapFile).mode & 0o777, 0o755);
+
+  const settings = readJson(agentFile(root, 'claude', 'settings.json'));
+  const cmds = JSON.stringify(settings.hooks);
+  assert.ok(cmds.includes('block-blanket-kill-posix.py') && !/powershell -NoProfile/i.test(cmds), cmds.slice(0, 300));
+  assert.ok(cmds.includes(adapters.pythonShimPath(root, MAC)));
+  const codexHooks = JSON.stringify(readJson(path.join(root, '_agent', 'codex', 'hooks.json')));
+  assert.ok(!codexHooks.includes('& \\"'), '코덱스 훅에 파워셸 호출 연산자가 없다');
+  assert.ok(codexHooks.includes('block-blanket-kill-posix.py'));
+
+  const toml = fs.readFileSync(agentFile(root, 'codex', 'config.toml'), 'utf8');
+  assert.ok(!adapters.hasTable(toml, 'mcp_servers.word-automation'));
+  assert.ok(toml.includes(`[projects.'${root}']`), '코덱스 신뢰 표는 경로 그대로');
+  assert.ok(!recorded.claude.files.some((f) => f.includes('\\')), '기록 경로도 / 로');
+  assert.ok(!pending.some((p) => /오피스|한컴/.test(p.reason)), '맥에서는 오피스·한컴 대기를 만들지 않는다');
 });

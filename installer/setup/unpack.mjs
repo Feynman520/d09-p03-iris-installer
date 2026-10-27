@@ -98,8 +98,8 @@ export const UNPACK_ORDER = [
   'superpowers', 'self-improve', 'playwright-mcp', 'ui-ux-pro-max',
   'hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation',
   'document-mcp-wheelhouse', 'frontend-design', 'insane-search', 'gen-image',
-  // 영혼 살림
-  'hooks', 'hwpx-templates', 'ontology',
+  // 영혼 살림 (hooks-posix = macOS 잠금표에만 있는 훅 묶음, hooks 와 같은 폴더)
+  'hooks', 'hooks-posix', 'hwpx-templates', 'ontology',
 ];
 
 // kind:
@@ -151,6 +151,7 @@ export const V2_LAYOUT = {
   'insane-search': { kind: 'archive', strip: 0, mode: 'slot' },
   'gen-image': { kind: 'file', mode: 'merge' },
   hooks: { kind: 'archive', strip: 0, mode: 'merge' },
+  'hooks-posix': { kind: 'archive', strip: 0, mode: 'merge' },
   'hwpx-templates': { kind: 'archive', strip: 0, mode: 'merge' },
   ontology: { kind: 'archive', strip: 0, mode: 'merge' },
 };
@@ -302,6 +303,7 @@ export function v2Verifiers(ctx) {
   const dest = (p) => underRoot(root, lockField(ctx, p, 'dest'));
   const want = (p) => lockField(ctx, p, 'version');
   const V = {};
+  if (!isWindows(ctx.platform ?? process.platform)) return macVerifiers(ctx, { V, fs, dest, want });
 
   V.node = versionProbe(ctx, path.join(dest('node'), 'node.exe'), ['-v'], `v${want('node')}`);
   // standalone 배포판이라 `<dest>\python.exe` 가 바로 있다(임베드판과 달리
@@ -419,6 +421,34 @@ export function v2Verifiers(ctx) {
     return { ok, detail: `스킬 폴더 ${skills}개 / 기대 ${wanted ?? '미상'}개` };
   };
 
+  return V;
+}
+
+// macOS 판 검증기(docs/설계-macOS.md 2절). 실행 파일 자리만 다르고 "가장 싸게 증명" 원칙은 같다.
+// 실행 파일이 없는 부품(dash·face·messenger·updater·바퀴집·훅·온톨로지…)은 Windows 판 검증기를
+// 그대로 쓴다 — 그 검사는 운영체제와 상관없다.
+function macVerifiers(ctx, { V, fs, dest, want }) {
+  const win = v2Verifiers({ ...ctx, platform: 'win32' });
+  for (const k of ['dash', 'face', 'messenger', 'updater', 'document-mcp-wheelhouse', 'gen-image', 'hooks', 'ontology', 'hwpx-templates', 'superpowers', 'teamclaude']) {
+    V[k] = win[k];
+  }
+  const node = path.join(dest('node'), 'bin', 'node');
+  const py = path.join(dest('python'), 'bin', 'python3');
+  V.node = versionProbe(ctx, node, ['-v'], `v${want('node')}`);
+  V.python = versionProbe(ctx, py, ['-V'], want('python'));
+  V.pyyaml = versionProbe(ctx, py, ['-c', 'import yaml; print(yaml.__version__)'], want('pyyaml'));
+  // dugite 판 이름(2.53.0-4)의 앞 세 칸이 `git version 2.53.0` 에 들어 있다.
+  V.git = versionProbe(ctx, path.join(dest('git'), 'bin', 'git'), ['--version'], String(want('git')).split(/[.-]/).slice(0, 3).join('.'));
+  // codex 는 npm 의 .bin 링크 대신 진입 파일을 동봉 node 로 부른다(심과 같은 방식).
+  const codexJs = path.join(dest('codex'), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+  const codexProbe = versionProbe(ctx, node, [codexJs, '--version'], want('codex'));
+  V.codex = async () => (fs.existsSync(codexJs) ? codexProbe() : { ok: false, detail: `${codexJs} 없음` });
+  for (const [k, file] of [['uv', path.join('bin', 'uv')], ['age', 'age'], ['manage', 'teamclaude-manage.mjs']]) {
+    V[k] = async () => {
+      const f = path.join(dest(k), file);
+      return { ok: fs.existsSync(f), detail: f };
+    };
+  }
   return V;
 }
 
@@ -671,7 +701,7 @@ async function placePart(ctx, { partId, layout, source, dest, fs, log }) {
   if (layout.kind === 'archive') {
     ensureDir(dest, { fs });
     await extractZip(source, dest, { strip: layout.strip ?? 0 });
-    if (layout.after === 'hoist-wheel-scripts') hoistWheelScripts(fs, dest);
+    if (layout.after === 'hoist-wheel-scripts') hoistWheelScripts(fs, dest, { platform: ctx.platform ?? process.platform });
     return;
   }
   if (layout.kind === 'file') {
@@ -759,9 +789,17 @@ export function salvageModulePrev(fs, modulesDir, name) {
 // uv 는 판마다 폴더 이름이 달라지므로(`uv-0.12.14.data`) 그대로 두면 ⑤-5 venv
 // 단계와 shim 이 실행 파일 경로를 판 문자열로 조립해야 한다. 원본은 지우지 않고
 // 복사만 한다(무삭제).
-function hoistWheelScripts(fs, dest) {
+// macOS: 실행 파일 이름에 확장자가 없어 바퀴 안의 같은 이름 패키지 폴더(`uv/`)와 부딪힌다 —
+// 그래서 `<dest>/bin/` 아래로 꺼낸다(docs/설계-macOS.md 2절). Windows 는 예전 그대로 `<dest>\uv.exe`.
+export function hoistedScriptsDir(dest, { platform = process.platform } = {}) {
+  return platform === 'win32' ? dest : path.join(dest, 'bin');
+}
+
+function hoistWheelScripts(fs, dest, { platform = process.platform } = {}) {
   let names = [];
   try { names = fs.readdirSync(dest); } catch { return 0; }
+  const outDir = hoistedScriptsDir(dest, { platform });
+  if (outDir !== dest) fs.mkdirSync(outDir, { recursive: true });
   let n = 0;
   for (const name of names) {
     if (!/\.data$/i.test(name)) continue;
@@ -770,9 +808,11 @@ function hoistWheelScripts(fs, dest) {
     try { files = fs.readdirSync(scripts); } catch { continue; }
     for (const f of files) {
       const from = path.join(scripts, f);
-      const to = path.join(dest, f);
+      const to = path.join(outDir, f);
       if (fs.existsSync(to) && sameBytes(fs, from, to)) continue;
       fs.copyFileSync(from, to);
+      // macOS: 바퀴의 실행 파일(uv)은 확장자가 없다 — 실행 권한을 확실히 둔다.
+      if (platform !== 'win32') fs.chmodSync(to, 0o755);
       n += 1;
     }
   }
@@ -795,7 +835,7 @@ export function uvShimText(relFromTools, { platform = process.platform } = {}) {
     return [
       '#!/bin/sh',
       'D=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-      `exec "$D/../tools/${rel}/uv" "$@"`,
+      `exec "$D/../tools/${rel}/bin/uv" "$@"`,
     ].join('\n') + '\n';
   }
   return [

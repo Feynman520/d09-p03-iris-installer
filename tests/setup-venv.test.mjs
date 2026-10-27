@@ -101,7 +101,8 @@ function fakeCtx(label, { wheelCount = 3, skip = [] } = {}) {
   }
 
   return {
-    root, payloadDir, lock, paths, fs, log: () => {}, env: { FAKE_ENV: '1' },
+    // 이 파일은 Windows 판 배치(python.exe·uv.exe·Scripts\python.exe)를 잰다.
+    root, payloadDir, lock, paths, fs, log: () => {}, env: { FAKE_ENV: '1' }, platform: 'win32',
   };
 }
 
@@ -414,6 +415,14 @@ test('locateParts: venv 자리는 adapters.mjs 의 venvPythonPath 관례(_agent/
     path.join(base.root, '_agent', 'shared', 'tools', 'python-envs', 'document-mcp'),
     'lock.json 의 document-mcp-wheelhouse.venv 필드(stale)를 쓰면 안 된다',
   );
+});
+
+test('locateParts(macOS): bin/python3 · bin/uv · venv/bin/python', () => {
+  const base = { ...fakeCtx('locate-mac'), platform: 'darwin' };
+  const parts = venv.locateParts(base);
+  assert.equal(parts.pythonExe, path.join(base.root, '_agent', 'shared', 'tools', 'python', 'bin', 'python3'));
+  assert.equal(parts.uvExe, path.join(base.root, '_agent', 'shared', 'tools', 'uv', '0.12.14', 'bin', 'uv'));
+  assert.equal(parts.venvPython, path.join(base.root, '_agent', 'runtime', 'venvs', 'document-mcp', 'bin', 'python'));
 });
 
 // ---------------------------------------------------------------------------

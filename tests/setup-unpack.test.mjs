@@ -370,7 +370,7 @@ test('unpack: 꾸러미에 부품이 없으면 E-UNPACK 으로 멈춘다', async
   });
 });
 
-test('unpack: MotW(Zone.Identifier) 를 놓은 파일마다 지운다', async () => {
+test('unpack: MotW(Zone.Identifier) 를 놓은 파일마다 지운다', { skip: process.platform !== 'win32' && 'NTFS 대체 스트림 — macOS 는 아래 quarantine 시험' }, async () => {
   const built = await makePayload('motw');
   const ctx = makeCtx('motw', { built });
   ctx.verifiers = passAll(built.lock);
@@ -563,6 +563,18 @@ test('env: IRIS_INSTALLER_NO_USER_ENV 가 없으면 주입된 userpath 로만 �
   assert.equal(recorded.userEnv.applied, false, 'recording 주입이면 applied=false 로 남는다');
 });
 
+test('unpack(macOS): 풀어 놓은 부품의 com.apple.quarantine 표식을 지운다(D-M05)', { skip: process.platform !== 'darwin' && 'macOS xattr' }, async () => {
+  const { stripMotw } = await import('../installer/lib/install.mjs');
+  const dir = path.join(tmp, 'quarantine', 'tool');
+  put(path.join(dir, 'bin', 'tool'), '#!/bin/sh\n');
+  const { spawnSync } = await import('node:child_process');
+  const mark = spawnSync('/usr/bin/xattr', ['-w', 'com.apple.quarantine', '0081;00000000;Safari;', path.join(dir, 'bin', 'tool')]);
+  assert.equal(mark.status, 0);
+  assert.equal(stripMotw(dir), 1);
+  const left = spawnSync('/usr/bin/xattr', ['-p', 'com.apple.quarantine', path.join(dir, 'bin', 'tool')]);
+  assert.notEqual(left.status, 0, '표식이 남아 있으면 Gatekeeper 가 동봉 실행 파일을 막는다');
+});
+
 test('env(macOS): POSIX 심·uv 심·콜론 PATH·LaunchAgent 인자(설계-macOS D-M07~09)', { skip: process.platform === 'win32' && 'POSIX 경로·실행 비트를 쓰는 시험' }, async () => {
   const built = await makePayload('env-mac');
   const ctx = makeCtx('env-mac', { built, platform: 'darwin' });
@@ -587,12 +599,12 @@ test('env(macOS): POSIX 심·uv 심·콜론 PATH·LaunchAgent 인자(설계-macO
   assert.ok(pending.some((p) => /Claude Code/.test(p.capability)), 'claude 심은 온라인 단계로 미뤄진다');
   const uv = fs.readFileSync(path.join(shims, 'uv'), 'ascii');
   assert.match(uv, /^#!\/bin\/sh\n/);
-  assert.match(uv, /exec "\$D\/\.\.\/tools\/uv\/0\.12\.14\/uv" "\$@"/);
+  assert.match(uv, /exec "\$D\/\.\.\/tools\/uv\/0\.12\.14\/bin\/uv" "\$@"/);
   assert.equal(fs.statSync(path.join(shims, 'uv')).mode & 0o777, 0o755);
   assert.ok(recorded.shims.includes('uv'));
 
-  assert.deepEqual(recorded.env.PATH.split(':').slice(0, 4), [
-    shims, path.join(tools, 'node', 'bin'), path.join(tools, 'git', 'bin'), path.join(tools, 'python', 'bin'),
+  assert.deepEqual(recorded.env.PATH.split(':').slice(0, 3), [
+    shims, path.join(tools, 'node', 'bin'), path.join(tools, 'python', 'bin'),
   ]);
   assert.deepEqual(calls.find((c) => c[0] === 'run'),
     ['run', 'IRIS relay', [path.join(tools, 'node', 'bin', 'node'), path.join(shims, 'relay-ensure.mjs')]]);

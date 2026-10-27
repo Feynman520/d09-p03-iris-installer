@@ -52,3 +52,25 @@ test('isOurServer: 이 작업 폴더의 node 로 설치기 server.mjs 를 돌릴
   assert.equal(isOurServer(1, { nodeBin, readArgs: () => { throw new Error('ps failed'); } }), false);
   assert.equal(isOurServer(1, { nodeBin, readArgs: () => '' }), false);
 });
+
+test('bootstrap.mjs 는 zip 에 실리는 lib 세 파일 밖의 것을 import 하지 않는다', () => {
+  const text = fs.readFileSync(path.join(ROOT_DIR, 'installer', 'bootstrap.mjs'), 'utf8');
+  const libImports = [...text.matchAll(/from '\.\.\/lib\/([^']+)'/g)].map((m) => m[1]);
+  for (const f of libImports) assert.ok(['run.mjs', 'zip.mjs', 'net.mjs'].includes(f), `zip 에 없는 lib/${f}`);
+});
+
+test('verifyPayload: 지문이 맞으면 통과, 하나라도 다르면 그 파일을 알린다', async () => {
+  const { verifyPayload } = await import('../installer/bootstrap.mjs');
+  const crypto = await import('node:crypto');
+  const os = await import('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-payload-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'a.bin'), 'hello');
+    const good = crypto.createHash('sha256').update('hello').digest('hex');
+    assert.equal((await verifyPayload(dir, { parts: { a: { file: 'a.bin', sha256: good } } })).ok, true);
+    const bad = await verifyPayload(dir, { parts: { a: { file: 'a.bin', sha256: 'x' }, b: { file: 'missing.bin', sha256: 'y' } } });
+    assert.deepEqual(bad.mismatches.map((m) => m.file), ['a.bin', 'missing.bin']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

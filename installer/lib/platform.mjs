@@ -83,15 +83,18 @@ export function toolLayout(toolsDir, { platform = process.platform } = {}) {
       binDirs: [t('node'), t('git', 'cmd'), t('python')],
     };
   }
+  // macOS: npm 부품(codex·teamclaude…)은 `-g` 없이 `--prefix` 로 깔아 node_modules 자리가
+  // Windows 와 같다(build/collect.mjs). codex 는 npm 의 .bin 링크 대신 진입 파일을 동봉 node 로 부른다.
+  // git/bin 은 PATH 에 넣지 않는다 — dugite git 은 심이 환경변수를 걸어 줘야 온전하다(shims.mjs).
   return {
     nodeDir: t('node'),
     node: t('node', 'bin', 'node'),
     python: t('python', 'bin', 'python3'),
     pythonScripts: t('python', 'bin'),
     git: t('git', 'bin', 'git'),
-    codex: t('codex', 'bin', 'codex'),
+    codex: t('codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js'),
     claude: t('claude', 'claude'),
-    binDirs: [t('node', 'bin'), t('git', 'bin'), t('python', 'bin')],
+    binDirs: [t('node', 'bin'), t('python', 'bin')],
   };
 }
 

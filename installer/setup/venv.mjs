@@ -51,6 +51,7 @@ import path from 'node:path';
 import { StageError } from '../lib/errors.mjs';
 import { assertInside } from '../lib/paths.mjs';
 import { partPath } from '../lib/payload.mjs';
+import { isWindows } from '../lib/platform.mjs';
 
 export const id = 'venv';
 
@@ -125,14 +126,19 @@ function locateRequirementsLock(fs, wheelhouseDir) {
 export function locateParts(ctx) {
   const { root } = ctx;
   const fs = ctx.fs ?? nodeFs;
+  // macOS(docs/설계-macOS.md 2절): python = <dest>/bin/python3, uv = <dest>/uv(확장자 없음),
+  // venv 의 파이썬 = <venv>/bin/python.
+  const win = isWindows(ctx.platform ?? process.platform);
+  const uvName = win ? 'uv.exe' : 'uv';
 
   const pythonDest = underRoot(root, lockField(ctx, 'python', 'dest'));
-  const pythonExe = pythonDest ? path.join(pythonDest, 'python.exe') : null;
+  const pythonExe = pythonDest ? (win ? path.join(pythonDest, 'python.exe') : path.join(pythonDest, 'bin', 'python3')) : null;
 
   const uvDest = underRoot(root, lockField(ctx, 'uv', 'dest'));
-  let uvExe = uvDest ? path.join(uvDest, 'uv.exe') : null;
+  // macOS 는 unpack 이 `<dest>/bin/uv` 로 꺼낸다(바퀴 안 `uv/` 패키지 폴더와 이름이 같아서).
+  let uvExe = uvDest ? (win ? path.join(uvDest, uvName) : path.join(uvDest, 'bin', uvName)) : null;
   if (uvDest && (!uvExe || !fs.existsSync(uvExe))) {
-    uvExe = findFileUnder(fs, uvDest, 'uv.exe') ?? uvExe;
+    uvExe = findFileUnder(fs, uvDest, uvName) ?? uvExe;
   }
 
   const wheelhouseDir = underRoot(root, lockField(ctx, 'document-mcp-wheelhouse', 'dest'));
@@ -147,7 +153,7 @@ export function locateParts(ctx) {
 
   // adapters.mjs 의 venvPythonPath(root) 와 글자 그대로 같은 상대경로(머리말 참고).
   const venvDir = path.join(root, '_agent', 'runtime', 'venvs', 'document-mcp');
-  const venvPython = path.join(venvDir, 'Scripts', 'python.exe');
+  const venvPython = win ? path.join(venvDir, 'Scripts', 'python.exe') : path.join(venvDir, 'bin', 'python');
 
   return {
     pythonDest, pythonExe, uvDest, uvExe, wheelhouseDir, expectedCount, pyyamlWheel, venvDir, venvPython,

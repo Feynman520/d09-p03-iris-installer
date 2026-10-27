@@ -41,9 +41,9 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | node | `tools/node/node.exe` | `tools/node/bin/node` |
 | python | `tools/python/python.exe`, `Lib/site-packages` | `tools/python/bin/python3`, `lib/python3.12/site-packages` |
 | 문서 MCP venv | `…/venvs/document-mcp/Scripts/python.exe` | `…/venvs/document-mcp/bin/python` |
-| git | `tools/git/cmd/git.exe` | `tools/git/bin/git` |
+| git | `tools/git/cmd/git.exe` | `tools/git/bin/git` — PATH 에 넣지 않고 늘 심으로(심이 `GIT_EXEC_PATH` 등 dugite 환경을 건다) |
 | claude | `tools/claude/<판>/claude.exe` + `claude.cmd` | `tools/claude/<판>/claude` + `claude`(sh 전달자) |
-| codex·teamclaude (npm -g --prefix) | `<prefix>/codex.cmd`, `<prefix>/node_modules/…` | `<prefix>/bin/codex`, `<prefix>/lib/node_modules/…` |
+| codex·teamclaude 등 npm 부품 | `npm i -g --prefix` → `<prefix>/codex.cmd`, `<prefix>/node_modules/…` | `npm i --prefix`(전역 아님) → `<prefix>/node_modules/…` 자리가 Windows 와 같다. codex 는 `node <prefix>/node_modules/@openai/codex/bin/codex.js` |
 | 심 | `shims/*.cmd`(CRLF·ASCII) | `shims/*`(LF·ASCII·실행 권한) |
 
 ## 3. 준비 검사(macOS)
