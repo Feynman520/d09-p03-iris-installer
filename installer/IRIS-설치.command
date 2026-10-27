@@ -5,6 +5,11 @@
 # --resume = continue an install that stopped before the online steps were
 #            done. Used by the IRIS window's "continue setup" button.
 ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+# The zip also carries this file inside installer/. A double-click on that copy
+# would look for installer/installer/bootstrap.sh -- the zip root is one up.
+if [ ! -f "$ROOT/installer/bootstrap.sh" ] && [ -f "$ROOT/bootstrap.sh" ]; then
+  ROOT="$(cd "$ROOT/.." && pwd -P)"
+fi
 echo "IRIS installer - checking the files, then your browser will open."
 /bin/sh "$ROOT/installer/bootstrap.sh" --zip-root "$ROOT" "$@"
 CODE=$?

@@ -74,3 +74,20 @@ test('verifyPayload: 지문이 맞으면 통과, 하나라도 다르면 그 파�
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('IRIS-설치.command: installer/ 안의 사본을 눌러도 한 단계 위를 zip 루트로 쓴다(2026-10-28 실제 사용에서)', { skip: process.platform === 'win32' && 'sh' }, async () => {
+  const { spawnSync } = await import('node:child_process');
+  const os = await import('node:os');
+  const zip = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-cmd-root-'));
+  fs.mkdirSync(path.join(zip, 'installer'));
+  // bootstrap.sh 자리에 받은 --zip-root 를 적고 끝나는 가짜를 둔다
+  const stub = '#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = "--zip-root" ]; then echo "ZIPROOT=$2"; fi; shift; done\n';
+  fs.writeFileSync(path.join(zip, 'installer', 'bootstrap.sh'), stub, { mode: 0o755 });
+  for (const at of [zip, path.join(zip, 'installer')]) fs.copyFileSync(COMMAND_PATH, path.join(at, 'IRIS-설치.command'));
+  const real = fs.realpathSync(zip);
+  for (const cmd of [path.join(zip, 'IRIS-설치.command'), path.join(zip, 'installer', 'IRIS-설치.command')]) {
+    const r = spawnSync('/bin/sh', [cmd], { encoding: 'utf8', input: '\n' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes(`ZIPROOT=${real}\n`), `${path.relative(zip, cmd)} → ${r.stdout}`);
+  }
+});
