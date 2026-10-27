@@ -164,6 +164,39 @@ export function macFaceLauncherContent() {
   ].join('\n');
 }
 
+// iris.ico(IRIS 창 아이콘, Windows 바로가기와 같은 원천) 안의 PNG 판 → ICNS. PNG 를 그대로 담는 판 종류만 쓰므로
+// 외부 도구(sips·iconutil) 없이 만든다(macOS 10.7+). 1x 자리와 Retina(@2x) 자리를 함께 채운다.
+const ICNS_1X = { 16: 'icp4', 32: 'icp5', 64: 'icp6', 128: 'ic07', 256: 'ic08', 512: 'ic09', 1024: 'ic10' };
+const ICNS_2X = { 32: 'ic11', 64: 'ic12', 256: 'ic13', 512: 'ic14' };
+export function icoToIcns(ico) {
+  const entries = [];
+  try {
+    for (let i = 0, n = ico.readUInt16LE(4); i < n; i++) {
+      const e = 6 + 16 * i;
+      const w = ico[e] || 256;
+      const len = ico.readUInt32LE(e + 8);
+      const off = ico.readUInt32LE(e + 12);
+      if (ico.readUInt32BE(off) !== 0x89504e47) continue; // BMP 판은 건너뛴다
+      for (const type of [ICNS_1X[w], ICNS_2X[w]]) {
+        if (type && !entries.some((x) => x.type === type)) entries.push({ type, data: ico.subarray(off, off + len) });
+      }
+    }
+  } catch { return null; }
+  if (!entries.length) return null;
+  const total = 8 + entries.reduce((sum, x) => sum + 8 + x.data.length, 0);
+  const out = Buffer.alloc(total);
+  out.write('icns', 0, 'ascii');
+  out.writeUInt32BE(total, 4);
+  let at = 8;
+  for (const x of entries) {
+    out.write(x.type, at, 'ascii');
+    out.writeUInt32BE(8 + x.data.length, at + 4);
+    x.data.copy(out, at + 8);
+    at += 8 + x.data.length;
+  }
+  return out;
+}
+
 function xmlText(v) {
   return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -173,11 +206,21 @@ function xmlText(v) {
  * LSUIElement 라 앱 자신은 Dock 에 남지 않는다(창은 IRIS 창 자신이 띄운다). 이 PC 에서
  * 만든 파일이라 격리 표식이 없어 Gatekeeper 검사를 받지 않는다.
  */
-export function writeMacAppLauncher(root, name, { appsDir = path.join(os.homedir(), 'Applications') } = {}) {
+export function writeMacAppLauncher(root, name, {
+  appsDir = path.join(os.homedir(), 'Applications'),
+  iconIco = path.join(root, '_agent', 'shared', 'tools', 'face', 'app', 'iris.ico'),
+} = {}) {
   const app = path.join(appsDir, `${name}.app`);
   const contents = path.join(app, 'Contents');
   const exe = path.join(contents, 'MacOS', name);
   fs.mkdirSync(path.dirname(exe), { recursive: true });
+  // 앱 아이콘: IRIS 창 부품이 놓은 iris.ico 에서(없거나 읽지 못하면 아이콘 없이 — 기본 앱 모양).
+  let icns = null;
+  try { icns = icoToIcns(fs.readFileSync(iconIco)); } catch { /* 부품 없음 */ }
+  if (icns) {
+    fs.mkdirSync(path.join(contents, 'Resources'), { recursive: true });
+    fs.writeFileSync(path.join(contents, 'Resources', 'AppIcon.icns'), icns);
+  }
   fs.writeFileSync(path.join(contents, 'Info.plist'), [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -190,6 +233,7 @@ export function writeMacAppLauncher(root, name, { appsDir = path.join(os.homedir
     '  <key>CFBundlePackageType</key><string>APPL</string>',
     '  <key>CFBundleVersion</key><string>1</string>',
     '  <key>LSUIElement</key><true/>',
+    ...(icns ? ['  <key>CFBundleIconFile</key><string>AppIcon</string>'] : []),
     '</dict>',
     '</plist>',
     '',
@@ -197,7 +241,7 @@ export function writeMacAppLauncher(root, name, { appsDir = path.join(os.homedir
   const target = faceLauncherPath(root, name, { platform: 'darwin' });
   fs.writeFileSync(exe, `#!/bin/sh\nexec '${String(target).replace(/'/g, "'\\''")}' "$@"\n`, { encoding: 'utf8', mode: 0o755 });
   fs.chmodSync(exe, 0o755);
-  return { appPath: app };
+  return { appPath: app, icon: Boolean(icns) };
 }
 
 // PowerShell is run from a temp .ps1 written as UTF-8 *with BOM* rather than

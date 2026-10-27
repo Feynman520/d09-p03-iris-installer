@@ -424,3 +424,46 @@ test('ui/index.html :root block is byte-identical to IRIS-Face app/style.css (st
 // 그래서 그 라우트를 겨눴던 시험 넷은 여기서 지웠다 — 이 파일에 남은 것은
 // `installer/lib/handoff.mjs` 자체의 시험이고, 그 모듈은 T17(relay 단계)이
 // 계속 쓴다. v2 서버의 라우트 시험은 `tests/server.test.mjs` 에 있다.
+
+// ---------------------------------------------------------------------------
+// macOS IRIS.app icon (docs/설계-macOS.md M5)
+// ---------------------------------------------------------------------------
+
+function fakeIco(sizes) {
+  // ICO with PNG-encoded images: just enough PNG (signature + marker) for the converter.
+  const pngs = sizes.map((s) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(`png${s}`)]));
+  const head = Buffer.alloc(6 + 16 * sizes.length);
+  head.writeUInt16LE(0, 0); head.writeUInt16LE(1, 2); head.writeUInt16LE(sizes.length, 4);
+  let off = head.length;
+  sizes.forEach((s, i) => {
+    const e = 6 + 16 * i;
+    head[e] = s === 256 ? 0 : s; head[e + 1] = s === 256 ? 0 : s;
+    head.writeUInt32LE(pngs[i].length, e + 8); head.writeUInt32LE(off, e + 12);
+    off += pngs[i].length;
+  });
+  return Buffer.concat([head, ...pngs]);
+}
+
+test('icoToIcns: PNG entries become 1x and @2x ICNS slots; header length is exact', async () => {
+  const { icoToIcns } = await import('../installer/lib/handoff.mjs');
+  const icns = icoToIcns(fakeIco([16, 32, 64, 128, 256]));
+  assert.equal(icns.toString('ascii', 0, 4), 'icns');
+  assert.equal(icns.readUInt32BE(4), icns.length);
+  const types = [];
+  for (let at = 8; at < icns.length; at += icns.readUInt32BE(at + 4)) types.push(icns.toString('ascii', at, at + 4));
+  assert.deepEqual(types.sort(), ['ic07', 'ic08', 'ic11', 'ic12', 'ic13', 'icp4', 'icp5', 'icp6'].sort());
+  assert.equal(icoToIcns(Buffer.from('not an ico')), null);
+});
+
+test('writeMacAppLauncher: with iris.ico the app gets Resources/AppIcon.icns + CFBundleIconFile; without it, no icon key', { skip: process.platform === 'win32' }, async () => {
+  const { writeMacAppLauncher } = await import('../installer/lib/handoff.mjs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-app-icon-'));
+  const ico = path.join(base, 'iris.ico'); fs.writeFileSync(ico, fakeIco([32, 128, 256]));
+  const withIcon = writeMacAppLauncher(path.join(base, 'IRIS'), 'IRIS', { appsDir: path.join(base, 'A'), iconIco: ico });
+  assert.equal(withIcon.icon, true);
+  assert.ok(fs.existsSync(path.join(withIcon.appPath, 'Contents', 'Resources', 'AppIcon.icns')));
+  assert.match(fs.readFileSync(path.join(withIcon.appPath, 'Contents', 'Info.plist'), 'utf8'), /<key>CFBundleIconFile<\/key><string>AppIcon<\/string>/);
+  const without = writeMacAppLauncher(path.join(base, 'IRIS'), 'IRIS', { appsDir: path.join(base, 'B'), iconIco: path.join(base, 'missing.ico') });
+  assert.equal(without.icon, false);
+  assert.doesNotMatch(fs.readFileSync(path.join(without.appPath, 'Contents', 'Info.plist'), 'utf8'), /CFBundleIconFile/);
+});
