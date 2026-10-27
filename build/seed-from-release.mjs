@@ -145,7 +145,12 @@ export function envLines(env) {
   return Object.entries(env).map(([part, p]) => `export IRIS_${part.toUpperCase().replace(/-/g, '_')}_SOURCE='${p.replace(/'/g, "'\\''")}'`);
 }
 
-const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+// Main-module check on real paths: a symlinked launch path (macOS $TMPDIR is /var -> /private/var,
+// /tmp -> /private/tmp) would otherwise never match import.meta.url and main() would silently not run.
+function isEntryFile(argv1, metaUrl) {
+  try { return fs.realpathSync(argv1) === fs.realpathSync(fileURLToPath(metaUrl)); } catch { return false; }
+}
+const isMain = process.argv[1] && isEntryFile(process.argv[1], import.meta.url);
 if (isMain) {
   const argv = process.argv.slice(2);
   const opt = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };

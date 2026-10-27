@@ -1,3 +1,4 @@
+import './_scratch-workdir.mjs'; // macOS: keep server.log out of the real ~/Library (see that file)
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

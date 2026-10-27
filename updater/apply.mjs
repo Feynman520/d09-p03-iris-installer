@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // paths
@@ -727,8 +727,12 @@ export function parseArgs(argv) {
   return args;
 }
 
-const isMain = process.argv[1]
-  && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+// Main-module check on real paths: a symlinked launch path (macOS $TMPDIR is /var -> /private/var,
+// /tmp -> /private/tmp) would otherwise never match import.meta.url and main() would silently not run.
+function isEntryFile(argv1, metaUrl) {
+  try { return fs.realpathSync(argv1) === fs.realpathSync(fileURLToPath(metaUrl)); } catch { return false; }
+}
+const isMain = process.argv[1] && isEntryFile(process.argv[1], import.meta.url);
 if (isMain) {
   const args = parseArgs(process.argv.slice(2));
   const plan = readJson(path.resolve(args.plan));

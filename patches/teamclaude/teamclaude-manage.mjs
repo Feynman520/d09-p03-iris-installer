@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export function parseManageArgs(argv) {
   const a = { action: 'status', nodePath: null, entryPath: null };
@@ -149,7 +149,12 @@ export async function manage({
   throw new Error(`TeamClaude did not become ready (${note}). Check ${logBase}.stderr.log${tail ? ` -- ${tail}` : ''}`);
 }
 
-const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+// Main-module check on real paths: a symlinked launch path (macOS $TMPDIR is /var -> /private/var,
+// /tmp -> /private/tmp) would otherwise never match import.meta.url and main() would silently not run.
+function isEntryFile(argv1, metaUrl) {
+  try { return fs.realpathSync(argv1) === fs.realpathSync(fileURLToPath(metaUrl)); } catch { return false; }
+}
+const isMain = process.argv[1] && isEntryFile(process.argv[1], import.meta.url);
 if (isMain) {
   let args;
   try { args = parseManageArgs(process.argv.slice(2)); } catch (e) { console.error(e.message); process.exit(2); }

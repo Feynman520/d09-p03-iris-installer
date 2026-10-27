@@ -1,3 +1,4 @@
+import './_scratch-workdir.mjs'; // macOS: the real precheck's writability probe must not create ~/Library/.../IRIS-Installer
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {

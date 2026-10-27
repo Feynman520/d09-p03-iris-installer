@@ -61,7 +61,9 @@ test('위험한 자리는 거부: 뿌리·홈·최상위·시스템 폴더·연�
   for (const p of ['/', home, '/Users', '/Applications/IRIS', '/System/IRIS', path.join(home, 'Library')]) assert.ok(unsafeReason(p, { home }), p);
   const link = path.join(home, 'IRIS-link'); fs.symlinkSync(soul, link);
   assert.match(unsafeReason(link, { home }), /연결/);
+  fs.writeFileSync(path.join(soul, 'IRIS-온톨로지.md'.normalize('NFD')), '# NFD name, as bsdtar leaves it');
   const c = classify(soul);
+  assert.ok(c.system.some((n) => n.normalize('NFC') === 'IRIS-온톨로지.md'), 'NFD 한글 이름도 시스템 항목으로 알아본다');
   assert.deepEqual(c.user, ['R01-교사(Teacher)', '_backup', 'notes.txt']);
   assert.ok(c.system.includes('_trash') && c.system.includes('IRIS Face.command') && c.system.includes('소환하기.command') && c.system.includes('Icon\r'));
 });

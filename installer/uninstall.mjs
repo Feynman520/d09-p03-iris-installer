@@ -78,12 +78,14 @@ export function classify(root) {
   for (const name of fs.readdirSync(root)) {
     const p = path.join(root, name);
     const st = fs.lstatSync(p);
+    // macOS 는 zip 에서 풀린·복사된 한글 이름을 NFD(자모 분리)로 둘 수 있다 — 목록과는 NFC 로 맞춰 본다.
+    const n = name.normalize('NFC');
     let sys = false;
     if (st.isDirectory()) {
-      if (SYSTEM_DIRS.includes(name)) sys = true;
-      else if (EMPTY_ONLY_DIRS.includes(name)) sys = dirEmpty(p);
-    } else if (st.isSymbolicLink() && EMPTY_ONLY_DIRS.includes(name)) sys = true;
-    else if (SYSTEM_FILES.includes(name) || / Face\.command$/.test(name)) sys = true;
+      if (SYSTEM_DIRS.includes(n)) sys = true;
+      else if (EMPTY_ONLY_DIRS.includes(n)) sys = dirEmpty(p);
+    } else if (st.isSymbolicLink() && EMPTY_ONLY_DIRS.includes(n)) sys = true;
+    else if (SYSTEM_FILES.includes(n) || / Face\.command$/.test(n)) sys = true;
     (sys ? system : user).push(name);
   }
   return { system: system.sort(), user: user.sort() };
