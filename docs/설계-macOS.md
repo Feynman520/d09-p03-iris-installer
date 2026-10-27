@@ -77,7 +77,7 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | M1 | 끝 | 겉옷(`IRIS-설치.command`→`bootstrap.sh`→`bootstrap.mjs`)·준비 검사·심·사용자 환경. 단위 시험 |
 | M2 | 끝 | `node build/build.mjs --target darwin-arm64` → `IRIS-Setup-macOS-arm64_v<판>_<날짜>.zip`(약 460MB). 임시 폴더 연습 설치에서 세팅 9단계 전부 `done`, 검사 13개 중 통과 10·대기 3(브라우저·중계기 2) |
 | M3 | 코드 끝, 실측 남음 | Claude Code `darwin-arm64` 받기·sh 전달자·창 없는 로그인(lsof)·중계기 시작(`teamclaude-manage.mjs`)·재개 사본. **진짜 구독 로그인은 아직 해 보지 않았다**(아래 미결 ①) |
-| M4 | 시작 전 | IRIS 창(P02 포크) |
+| M4 | 코드 끝, 창 눈 확인 남음 | P02 `mac/v1`: 운영체제 차이를 `daemon/platform.mjs` 한 곳에(Windows 갈래는 이식 전 글자 그대로). 세션 = sh 심을 node-pty 로 직접·닫기 = 프로세스 그룹 · 화면 상대경로는 `\` 약속 그대로, 데몬 입구에서 바꿈 · macOS 심 사본(`posixAgentShimText`)은 정적 검사 ⑥·`tests/shims-parity` 가 바이트 비교 · 코덱스 신뢰 키 = 경로 그대로 · 「설치 이어하기」= `.command` 를 `/bin/sh` 로 · Electron.app·메뉴(편집·Cmd)·Dock. P02 `verify:*` 전부 macOS 통과, 가짜 심 데몬 시험 15/15, 연습 설치한 영혼의 창 데몬이 뜨고 `login-pending` 카드·`spawn-helper` 권한 자가 수리 확인. **Electron 창을 사람 눈으로 본 확인은 아직**(아래 미결 ⑦) |
 | M5 | 시작 전 | 삭제기·비서 자동 업데이트(macOS 판)·`guard-iris-path.py` macOS 경로·검사소(`verify/*`) macOS 대응 |
 
 연습 설치는 홈 폴더를 건드리지 않는다: `IRIS_INSTALLER_SOUL_ROOT`(설치 폴더)·`IRIS_INSTALLER_WORK_DIR`(작업 폴더)·`IRIS_INSTALLER_NO_USER_ENV=1`·`IRIS_INSTALLER_NO_BROWSER=1`·`IRIS_INSTALLER_OFFLINE=1`.
@@ -91,3 +91,6 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 4. **`guard-iris-path.py`** 는 드라이브 문자 경로만 알아본다 — macOS 경로에서는 아무것도 막지 않는다(해는 없지만 보호도 없다). M5.
 5. **서명·공증**(D-M05) — Gatekeeper 안내문으로 시작. Developer ID 는 별도 결정.
 6. **Windows 회귀 확인** — Windows 판 시험은 Mac 에서도 Windows 판으로 고정해 돌지만, PR 전에 원작자 PC 에서 `npm test`·`npm run verify` 를 한 번 돌려야 한다.
+7. **IRIS 창 눈 확인(M4).** 창은 떠서 페이지를 읽었고(렌더러 프로세스·사용자 자료 폴더 생성) 신호에 깔끔히 끝났지만, 화면 캡처 권한이 없어 그림으로는 보지 못했다. Mac 에서 한 번 열어 메뉴·트레이·Dock 아이콘·Cmd 단축키·세션 터미널을 확인한다.
+8. **문서 미리보기(macOS).** P02 `doc2pdf` 는 LibreOffice 가 있으면 오피스 문서만 변환하고, 한/글은 미지원 안내를 낸다(M6 첫 조각). 이 Mac 에 LibreOffice 가 없어 변환 자체는 돌려 보지 못했다.
+9. **메모리 계기판(macOS)** 은 커밋 측정이 꺼진 채(실제 RAM 고리만) 돈다 — `vm_stat`·`sysctl vm.swapusage` 판은 나중에.

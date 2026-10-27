@@ -8,7 +8,7 @@ import { verifyManifest } from '../lib/manifest.mjs';
 import { extractZip } from '../lib/zip.mjs';
 import { sanitize } from '../build/sanitize.mjs';
 import { loadRules, splitRepoStackPointers } from '../build/rules.mjs';
-import { agentShim } from '../installer/lib/shims.mjs';
+import { agentShim, posixAgentShim } from '../installer/lib/shims.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -325,17 +325,19 @@ async function main() {
           `P02 not found: ${wakePath} does not exist (override with ${sourceEnvVar('face')})`,
         );
       } else {
-        const { agentShimText } = await import(pathToFileURL(wakePath).href);
+        const { agentShimText, posixAgentShimText } = await import(pathToFileURL(wakePath).href);
         const mismatches = [];
         for (const agent of ['claude', 'codex']) {
           const a = agentShim(agent);
           const b = agentShimText(agent);
           if (a !== b) mismatches.push(agent);
+          // macOS sh 심(docs/설계-macOS.md D-M07): P02 가 사본을 가진 판이면 그것도 바이트 비교한다.
+          if (posixAgentShimText && posixAgentShim(agent) !== posixAgentShimText(agent)) mismatches.push(`${agent} (posix)`);
         }
         record(
           '⑥ shim template parity (P02 wake() vs P03 shims.mjs)',
           mismatches.length === 0,
-          mismatches.length === 0 ? 'claude + codex identical' : `differ for: ${mismatches.join(', ')}`,
+          mismatches.length === 0 ? `claude + codex identical${posixAgentShimText ? ' (cmd + posix)' : ''}` : `differ for: ${mismatches.join(', ')}`,
         );
       }
     }
