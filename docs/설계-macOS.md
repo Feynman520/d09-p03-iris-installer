@@ -78,7 +78,7 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | M2 | 끝 | `node build/build.mjs --target darwin-arm64` → `IRIS-Setup-macOS-arm64_v<판>_<날짜>.zip`(약 460MB). 임시 폴더 연습 설치에서 세팅 9단계 전부 `done`, 검사 13개 중 통과 10·대기 3(브라우저·중계기 2) |
 | M3 | 코드 끝, 실측 남음 | Claude Code `darwin-arm64` 받기·sh 전달자·창 없는 로그인(lsof)·중계기 시작(`teamclaude-manage.mjs`)·재개 사본. **진짜 구독 로그인은 아직 해 보지 않았다**(아래 미결 ①) |
 | M4 | 코드 끝, 창 눈 확인 남음 | P02 `mac/v1`: 운영체제 차이를 `daemon/platform.mjs` 한 곳에(Windows 갈래는 이식 전 글자 그대로). 세션 = sh 심을 node-pty 로 직접·닫기 = 프로세스 그룹 · 화면 상대경로는 `\` 약속 그대로, 데몬 입구에서 바꿈 · macOS 심 사본(`posixAgentShimText`)은 정적 검사 ⑥·`tests/shims-parity` 가 바이트 비교 · 코덱스 신뢰 키 = 경로 그대로 · 「설치 이어하기」= `.command` 를 `/bin/sh` 로 · Electron.app·메뉴(편집·Cmd)·Dock. P02 `verify:*` 전부 macOS 통과, 가짜 심 데몬 시험 15/15, 연습 설치한 영혼의 창 데몬이 뜨고 `login-pending` 카드·`spawn-helper` 권한 자가 수리 확인. **Electron 창을 사람 눈으로 본 확인은 아직**(아래 미결 ⑦) |
-| M5 | 시작 전 | 삭제기·비서 자동 업데이트(macOS 판)·`guard-iris-path.py` macOS 경로·검사소(`verify/*`) macOS 대응 |
+| M5 | 진행 중 | **삭제기 끝**(`IRIS-삭제.command` → `installer/uninstall.mjs`, 설계-삭제기.md 7절, 시험 11개). 남은 것: 비서 자동 업데이트(macOS 판)·`guard-iris-path.py` macOS 경로·검사소(`verify/*`) macOS 대응(정적 검사 ③⑤⑨⑱⑳㉑ 이 Windows zip 을 전제)·IRIS.app 아이콘 |
 
 연습 설치는 홈 폴더를 건드리지 않는다: `IRIS_INSTALLER_SOUL_ROOT`(설치 폴더)·`IRIS_INSTALLER_WORK_DIR`(작업 폴더)·`IRIS_INSTALLER_NO_USER_ENV=1`·`IRIS_INSTALLER_NO_BROWSER=1`·`IRIS_INSTALLER_OFFLINE=1`.
 원작자 PC 에만 있는 부품(대시보드·온톨로지·HWPX 양식·명세·아이콘)은 `node build/seed-from-release.mjs` 가 공식 zip 에서 꺼내 `IRIS_<부품>_SOURCE` 로 가리킨다.

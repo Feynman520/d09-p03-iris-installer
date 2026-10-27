@@ -610,3 +610,31 @@ test('pack: contentFingerprint CHANGES when an installer\\ file changes (manifes
   assert.notEqual(after.contentFingerprint, before.contentFingerprint,
     'a changed installer file must invalidate the 시험행렬 rows');
 });
+
+test('pack (macOS): zip root has IRIS-설치.command and IRIS-삭제.command, both executable after unzip', { skip: process.platform === 'win32' }, async () => {
+  const installerDir = path.join(tmp, 'fake-installer-mac');
+  fs.mkdirSync(installerDir, { recursive: true });
+  fs.writeFileSync(path.join(installerDir, 'IRIS-설치.command'), '#!/bin/sh\n', { mode: 0o644 });
+  fs.writeFileSync(path.join(installerDir, 'IRIS-삭제.command'), '#!/bin/sh\n', { mode: 0o644 });
+  const libDir = path.join(tmp, 'fake-lib-mac');
+  fs.mkdirSync(libDir, { recursive: true });
+  for (const n of ['run.mjs', 'zip.mjs', 'net.mjs']) fs.writeFileSync(path.join(libDir, n), 'export {};\n');
+  const lockFile = path.join(tmp, 'fake-lock-mac.json');
+  fs.writeFileSync(lockFile, JSON.stringify({ package: { version: '0.0.9' }, parts: {} }));
+  const stageDir = path.join(tmp, 'stage-mac');
+  fs.mkdirSync(path.join(stageDir, 'payload'), { recursive: true });
+  fs.writeFileSync(path.join(stageDir, 'payload', 'manifest.json'), '{}');
+  const { zipPath } = await pack({
+    stageDir, outDir: path.join(tmp, 'out-mac'), manifest: { package: { version: '0.0.9' } },
+    installerDir, libDir, lockFile, patchRulesFile: null, target: 'darwin-arm64',
+  });
+  assert.match(path.basename(zipPath), /^IRIS-Setup-macOS-arm64_v0\.0\.9_/);
+  const extractDir = path.join(tmp, 'extracted-mac');
+  await extractZip(zipPath, extractDir);
+  for (const n of ['IRIS-설치.command', 'IRIS-삭제.command']) {
+    const f = path.join(extractDir, n);
+    assert.ok(fs.existsSync(f), `zip root missing ${n}`);
+    assert.equal(fs.statSync(f).mode & 0o111, 0o111, `${n} must keep its exec bit through the zip`);
+  }
+  assert.equal(fs.existsSync(path.join(extractDir, 'IRIS-삭제.cmd')), false, 'no Windows launcher at the macOS zip root');
+});

@@ -428,6 +428,13 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
   });
   result.copied += tree.written.length;
   result.kept += tree.kept.length;
+  // macOS: 복사는 내용만 옮기므로 Finder 가 실행할 sh 진입점(삭제기 사본 등)의 실행 권한을 되살린다.
+  if (!win) {
+    for (const n of ['IRIS-삭제.command', 'IRIS-설치.command', 'bootstrap.sh']) {
+      const f = path.join(dest, 'installer', n);
+      try { if (fs.existsSync(f) && (fs.statSync(f).mode & 0o777) !== 0o755) fs.chmodSync(f, 0o755); } catch { /* 그 파일이 없는 판 */ }
+    }
+  }
 
   // ② 옆에 있는 lib\ (server.mjs 가 `../lib/run.mjs` 로 부른다)
   if (fs.existsSync(path.join(zipRoot, 'lib'))) {

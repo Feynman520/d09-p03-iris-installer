@@ -282,6 +282,21 @@ test('설치기 사본: 계약이 정한 자리에 진입점이 생기고, 부�
   assert.equal(mf.resumeOnly, true);
 });
 
+test('설치기 사본(macOS): .command 진입점과 삭제기 사본은 실행 권한 0755 로 놓인다', { skip: process.platform === 'win32' }, () => {
+  const root = newRoot('copy-mac');
+  const zip = fakeZipRoot('copy-mac');
+  // 원본이 0644 여도(복사는 내용만 옮긴다) 사본에서는 Finder 가 실행할 수 있어야 한다.
+  write(path.join(zip, 'IRIS-설치.command'), '#!/bin/sh\n');
+  write(path.join(zip, 'installer', 'IRIS-삭제.command'), '#!/bin/sh\n');
+  write(path.join(zip, 'installer', 'bootstrap.sh'), '#!/bin/sh\n');
+  const r = copyInstallerProgram(ctxFor(root, { payloadDir: path.join(zip, 'payload'), platform: 'darwin' }));
+  assert.equal(r.ok, true);
+  const copy = path.join(root, '_agent', 'setup', 'installer');
+  for (const f of [path.join(copy, 'IRIS-설치.command'), path.join(copy, 'installer', 'IRIS-삭제.command'), path.join(copy, 'installer', 'bootstrap.sh')]) {
+    assert.equal(fs.statSync(f).mode & 0o777, 0o755, f);
+  }
+});
+
 test('설치기 사본: 두 번 불러도 덮어쓰지 않는다(무삭제)', () => {
   const root = newRoot('copy-twice');
   const zip = fakeZipRoot('twice');
