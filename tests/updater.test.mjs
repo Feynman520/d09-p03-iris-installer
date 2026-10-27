@@ -81,6 +81,7 @@ test('updater: face swap keeps state/modules, rotates .prev, reuses node_modules
   const npmCalls = [];
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
     npmInstall: async (a) => { npmCalls.push(a); return { code: 0, out: '', err: '' }; },
   });
@@ -132,6 +133,7 @@ test('updater: .prev-2 on a second update (no earlier copy is ever clobbered)', 
 
   const dir = makeNewFace(root);
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
     npmInstall: async () => ({ code: 0 }),
   });
@@ -147,6 +149,7 @@ test('updater: a changed package-lock.json runs the bundled npm ci', async () =>
   const npmCalls = [];
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
     npmInstall: async (a) => {
       npmCalls.push(a);
@@ -180,7 +183,7 @@ test('updater: the actual npm command line has no --omit=dev', async () => {
   };
 
   const result = await defaultNpmInstall({
-    npmCmd: 'C:\\fake\\node\\npm.cmd', cwd: 'C:\\fake\\cwd', nodeDir: 'C:\\fake\\node', spawnFn: fakeSpawnFn,
+    npmCmd: 'C:\\fake\\node\\npm.cmd', cwd: 'C:\\fake\\cwd', nodeDir: 'C:\\fake\\node', spawnFn: fakeSpawnFn, platform: 'win32',
   });
 
   assert.equal(result.code, 0);
@@ -207,6 +210,7 @@ test('updater: a package-lock.json that differs only by CRLF vs LF reuses node_m
   const npmCalls = [];
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
     npmInstall: async (a) => { npmCalls.push(a); return { code: 0 }; },
   });
@@ -222,6 +226,7 @@ test('updater: npm ci failure rolls back -- the previous face is restored and th
   const dir = makeNewFace(root, { lock: '{"lockfileVersion":3,"new":true}' });
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
     npmInstall: async () => ({ code: 1, err: 'ETARGET no matching version' }),
   });
@@ -249,6 +254,7 @@ test('updater: a new copy with no package-lock.json is refused outright, nothing
   fs.rmSync(path.join(dir, 'package-lock.json'), { force: true });
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
     npmInstall: async () => { throw new Error('npm ci cannot run without a package-lock.json'); },
     spawnFn: () => { throw new Error('must not relaunch on a refusal before any change'); },
@@ -266,6 +272,7 @@ test('updater: an install with no receipt is still replaced, and the result says
   const dir = makeNewFace(root);
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
     npmInstall: async () => ({ code: 0 }),
   });
@@ -285,6 +292,7 @@ test('updater: a package item starts IRIS-설치.cmd with IRIS_INSTALLER_AUTO=1 
 
   const calls = [];
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: {
       schema: 1,
       root,
@@ -327,6 +335,7 @@ test('updater: a failed handoff to the installer still reopens the window (설�
 
   const calls = [];
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '1.3.0' }], relaunch: true },
     spawnFn: fakeSpawn(calls),
   });
@@ -349,6 +358,7 @@ test('updater: schema 1 receipt vs schema 2 package -- refuses --auto, reinstall
 
   const calls = [];
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '2.0.0' }], relaunch: true },
     spawnFn: fakeSpawn(calls),
   });
@@ -374,6 +384,7 @@ test('updater: schema 2 receipt vs schema 2 package -- --auto runs as usual (2�
 
   const calls = [];
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '2.1.0' }], relaunch: true },
     spawnFn: fakeSpawn(calls),
   });
@@ -393,6 +404,7 @@ test('updater: a missing receipt vs schema 2 package -- treated as schema 1, ref
 
   const calls = [];
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '2.0.0' }], relaunch: true },
     spawnFn: fakeSpawn(calls),
   });
@@ -413,6 +425,7 @@ test('updater: schema 1 receipt vs schema 1 package -- unchanged 1.x behaviour (
 
   const calls = [];
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '1.5.0' }], relaunch: true },
     spawnFn: fakeSpawn(calls),
     packageSchema: 1,
@@ -431,6 +444,7 @@ test('updater: an npm ci that cannot even start rolls back like one that fails',
   const dir = makeNewFace(root, { lock: '{"lockfileVersion":3,"new":true}' });
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
     npmInstall: async () => { throw new Error('spawn ENOENT'); },
   });
@@ -456,6 +470,7 @@ test('updater: an item that throws still produces a result file and a relaunch',
 
   const calls = [];
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: true },
     npmInstall: async () => ({ code: 0 }),
     spawnFn: fakeSpawn(calls),
@@ -476,6 +491,7 @@ test('updater: a plan of an unknown schema changes nothing', async () => {
   const before = fs.readFileSync(path.join(face, 'package.json'), 'utf8');
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 2, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: true },
     waitFn: () => { throw new Error('must not even wait for the daemon'); },
     spawnFn: () => { throw new Error('must not relaunch'); },
@@ -495,6 +511,7 @@ test('updater: an item pointing outside _agent\\shared\\downloads is refused', a
   fs.writeFileSync(path.join(elsewhere, 'package-lock.json'), '{}', 'utf8');
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir: elsewhere, version: '9.9.9' }], relaunch: false },
     npmInstall: async () => { throw new Error('must not get that far'); },
   });
@@ -519,6 +536,7 @@ test('updater: relaunch uses wscript + launch-hidden.vbs when Face ships one', a
 
   const calls = [];
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: true },
     npmInstall: async () => ({ code: 0 }),
     spawnFn: fakeSpawn(calls),
@@ -539,6 +557,7 @@ test('updater: relaunch hands the soul\'s bundled node to launch-hidden.vbs via 
 
   const calls = [];
   await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: true },
     npmInstall: async () => ({ code: 0 }),
     spawnFn: fakeSpawn(calls),
@@ -557,6 +576,7 @@ test('updater: the daemon never stopping leaves everything exactly as it was', a
   let slept = 0;
 
   const result = await applyPlan({
+    platform: 'win32', // 이 시험들은 Windows 판(cmd.exe·npm.cmd·wscript)을 잰다 — macOS 판은 맨 아래
     plan: { schema: 1, root, daemonPid: 999999, daemonPort: 3458, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: true },
     npmInstall: async () => { throw new Error('must not get this far'); },
     spawnFn: () => { throw new Error('must not relaunch'); },
@@ -707,4 +727,71 @@ test('preserveAside: the updater copy and installer/lib/install.mjs agree, rotat
   assert.deepEqual(results.updater, results.installer);
   assert.deepEqual(results.updater.moved, [null, 'face.prev', 'face.prev-2', 'face.prev-3']);
   assert.deepEqual(results.updater.listing, ['face.prev', 'face.prev-2', 'face.prev-3']);
+});
+
+// --------------------------------------------------------------------------
+// macOS (docs/설계-macOS.md M5): npm through the bundled node, the .command for --auto, the Face.command relaunch
+// --------------------------------------------------------------------------
+
+test('updater(macOS): npm ci runs npm-cli.js with the bundled node, <node>/bin first on PATH, no cmd.exe', async () => {
+  const calls = [];
+  const fakeSpawnFn = (exe, args, opts) => {
+    calls.push({ exe, args, opts });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    process.nextTick(() => child.emit('close', 0));
+    return child;
+  };
+  const r = await defaultNpmInstall({ npmCmd: '/x/node/lib/node_modules/npm/bin/npm-cli.js', cwd: '/x/face', nodeDir: '/x/node', spawnFn: fakeSpawnFn, platform: 'darwin' });
+  assert.equal(r.code, 0);
+  assert.equal(calls[0].exe, '/x/node/bin/node');
+  assert.deepEqual(calls[0].args, ['/x/node/lib/node_modules/npm/bin/npm-cli.js', 'ci']);
+  assert.ok(calls[0].opts.env.PATH.startsWith('/x/node/bin:'));
+});
+
+test('updater(macOS): a changed lock hands npm-cli.js to npmInstall', async () => {
+  const { root } = makeSoul('mac-npm');
+  const dir = makeNewFace(root, { lock: '{"lockfileVersion":3,"new":true}' });
+  const npmCalls = [];
+  const result = await applyPlan({
+    platform: 'darwin',
+    plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'face', dir, version: '2.58.0' }], relaunch: false },
+    npmInstall: async (a) => { npmCalls.push(a); return { code: 0 }; },
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(npmCalls[0].npmCmd, path.join(toolsDir(root), 'node', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+  assert.equal(npmCalls[0].platform, 'darwin');
+});
+
+test('updater(macOS): a package item starts IRIS-설치.command --auto through /bin/sh with the exact soul root', async () => {
+  const { root } = makeSoul('mac-pkg', { schema: 2 });
+  const pkgDir = path.join(root, '_agent', 'shared', 'downloads', 'package-2.0.51');
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, 'IRIS-설치.command'), '#!/bin/sh\n', { mode: 0o755 });
+  const calls = [];
+  const result = await applyPlan({
+    platform: 'darwin', packageSchema: 2,
+    plan: { schema: 1, root, ...NO_WAIT, items: [{ kind: 'package', dir: pkgDir, version: '2.0.51' }], relaunch: false },
+    spawnFn: fakeSpawn(calls),
+  });
+  assert.equal(result.items[0].ok, true, JSON.stringify(result));
+  assert.equal(calls[0].exe, '/bin/sh');
+  assert.deepEqual(calls[0].args, [path.join(pkgDir, 'IRIS-설치.command'), '--auto']);
+  assert.equal(calls[0].opts.env.IRIS_INSTALLER_AUTO, '1');
+  assert.equal(calls[0].opts.env.IRIS_INSTALLER_SOUL_ROOT, root);
+  assert.equal(calls[0].opts.windowsVerbatimArguments, undefined);
+});
+
+test('updater(macOS): relaunch runs the soul\'s "<name> Face.command", else the bundled node with launch.mjs', async () => {
+  const { root } = makeSoul('mac-relaunch');
+  const calls = [];
+  await applyPlan({ platform: 'darwin', plan: { schema: 1, root, ...NO_WAIT, items: [], relaunch: true }, spawnFn: fakeSpawn(calls) });
+  assert.equal(calls.at(-1).exe, path.join(toolsDir(root), 'node', 'bin', 'node'), 'no Face.command yet -> node');
+  assert.ok(calls.at(-1).args[0].endsWith(path.join('face', 'launch.mjs')));
+  const launcher = path.join(root, `${path.basename(root)} Face.command`);
+  fs.writeFileSync(launcher, '#!/bin/sh\n', { mode: 0o755 });
+  await applyPlan({ platform: 'darwin', plan: { schema: 1, root, ...NO_WAIT, items: [], relaunch: true }, spawnFn: fakeSpawn(calls) });
+  assert.equal(calls.at(-1).exe, '/bin/sh');
+  assert.deepEqual(calls.at(-1).args, [launcher]);
 });

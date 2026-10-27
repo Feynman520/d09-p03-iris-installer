@@ -245,18 +245,27 @@ const COMSPEC = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
 // -- no window could ever open again -- while the shipped copy has the full
 // set. The two must always install the same dependency set (2026-09-14
 // review, found in a live end-to-end test).
-export function defaultNpmInstall({ npmCmd, cwd, nodeDir, spawnFn = spawn }) {
-  const line = `""${npmCmd}" ci"`;
+// macOS (docs/설계-macOS.md M5): no cmd.exe -- the bundled node runs npm's own CLI file directly
+// (<node>/lib/node_modules/npm/bin/npm-cli.js), with <node>/bin first on PATH.
+export function defaultNpmInstall({ npmCmd, cwd, nodeDir, spawnFn = spawn, platform = process.platform }) {
   const env = { ...process.env };
+  if (platform !== 'win32') {
+    if (nodeDir) env.PATH = `${path.join(nodeDir, 'bin')}:${env.PATH ?? ''}`;
+    return runNpm(spawnFn(path.join(nodeDir, 'bin', 'node'), [npmCmd, 'ci'], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }));
+  }
+  const line = `""${npmCmd}" ci"`;
   if (nodeDir) env.PATH = `${nodeDir};${env.PATH ?? ''}`;
+  return runNpm(spawnFn(COMSPEC, ['/d', '/s', '/c', line], {
+    cwd,
+    env,
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }));
+}
+
+function runNpm(child) {
   return new Promise((resolve) => {
-    const child = spawnFn(COMSPEC, ['/d', '/s', '/c', line], {
-      cwd,
-      env,
-      windowsHide: true,
-      windowsVerbatimArguments: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
     let out = '';
     let err = '';
     child.stdout.on('data', (d) => { out += d; });
@@ -301,6 +310,7 @@ export async function applyFaceItem({
   npmInstall = defaultNpmInstall,
   preserveOptions,
   log = () => {},
+  platform = process.platform,
 }) {
   const tools = toolsDir(root);
   const slot = faceDirFor(root);
@@ -364,10 +374,11 @@ export async function applyFaceItem({
       }
     } else {
       const nodeDir = path.join(tools, 'node');
-      const npmCmd = path.join(nodeDir, 'npm.cmd');
+      // macOS: npm's CLI file under the bundled node (no npm.cmd wrapper).
+      const npmCmd = platform === 'win32' ? path.join(nodeDir, 'npm.cmd') : path.join(nodeDir, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
       log('face: package-lock.json changed (or no previous node_modules) -> npm ci');
       try {
-        npm = await npmInstall({ npmCmd, cwd: slot, nodeDir });
+        npm = await npmInstall({ npmCmd, cwd: slot, nodeDir, platform });
       } catch (err) {
         // A spawn that could not even start counts the same as one that
         // failed: put the previous copy back rather than leaving a Face with
@@ -462,9 +473,10 @@ const REINSTALL_URL = 'https://iris-workspace.com/install.html';
 
 export function applyPackageItem({
   root, dir, spawnFn = spawn, log = () => {},
-  packageSchema = PACKAGE_SCHEMA, downloadUrl = REINSTALL_URL,
+  packageSchema = PACKAGE_SCHEMA, downloadUrl = REINSTALL_URL, platform = process.platform,
 }) {
-  const cmd = path.join(dir, 'IRIS-설치.cmd');
+  const mac = platform !== 'win32';
+  const cmd = path.join(dir, mac ? 'IRIS-설치.command' : 'IRIS-설치.cmd');
   if (!fs.existsSync(cmd)) return { ok: false, reason: 'installer-cmd-missing', detail: cmd };
 
   // 구조 변경 판정: 영수증 schema(없으면 1)와 새 판 schema를 비교해 다르면
@@ -489,6 +501,21 @@ export function applyPackageItem({
   // fall back to its hardcoded default and update a soul nobody asked about
   // -- which is exactly what a rehearsal soul is (2026-09-14 review).
   const soulName = path.basename(root);
+  if (mac) {
+    // macOS: the .command through /bin/sh (array args, no shell re-parse). The soul is named by its exact
+    // root (IRIS_INSTALLER_SOUL_ROOT) -- on macOS a soul name maps to ~/<name>, which a rehearsal soul is not.
+    try {
+      const child = spawnFn('/bin/sh', [cmd, '--auto'], {
+        cwd: dir, detached: true, stdio: 'ignore',
+        env: { ...process.env, IRIS_INSTALLER_AUTO: '1', IRIS_INSTALLER_SOUL_ROOT: root },
+      });
+      child.unref?.();
+      log(`package: started ${cmd} (pid ${child.pid}) with IRIS_INSTALLER_AUTO=1 root=${root}`);
+      return { ok: true, pid: child.pid };
+    } catch (err) {
+      return { ok: false, reason: 'installer-spawn-failed', detail: String(err?.message ?? err) };
+    }
+  }
   try {
     const child = spawnFn(COMSPEC, ['/d', '/s', '/c', `""${cmd}" --auto"`], {
       cwd: dir,
@@ -514,8 +541,9 @@ export function applyPackageItem({
 // relaunch
 // ---------------------------------------------------------------------------
 
-export function relaunchFace({ root, spawnFn = spawn, log = () => {} }) {
+export function relaunchFace({ root, spawnFn = spawn, log = () => {}, platform = process.platform }) {
   const faceDir = faceDirFor(root);
+  if (platform !== 'win32') return relaunchFaceMac({ root, faceDir, spawnFn, log });
   const vbs = path.join(faceDir, 'launch-hidden.vbs');
   const nodeExe = path.join(toolsDir(root), 'node', 'node.exe');
   try {
@@ -538,6 +566,31 @@ export function relaunchFace({ root, spawnFn = spawn, log = () => {} }) {
     });
     child.unref?.();
     log(`relaunch: node launch.mjs (pid ${child.pid}) -- no launch-hidden.vbs`);
+    return { ok: true, how: 'node', pid: child.pid };
+  } catch (err) {
+    log(`relaunch FAILED ${String(err?.message ?? err)}`);
+    return { ok: false, reason: 'relaunch-failed', detail: String(err?.message ?? err) };
+  }
+}
+
+// macOS: the soul's own `<name> Face.command` is the launcher of record (it sets IRIS_FACE_NODE,
+// TEAMCLAUDE_CONFIG and PATH -- installer/lib/handoff.mjs macFaceLauncherContent). Without it, the
+// bundled node runs launch.mjs directly.
+function relaunchFaceMac({ root, faceDir, spawnFn, log }) {
+  const launcher = path.join(root, `${path.basename(root)} Face.command`);
+  try {
+    if (fs.existsSync(launcher)) {
+      const child = spawnFn('/bin/sh', [launcher], { cwd: root, detached: true, stdio: 'ignore' });
+      child.unref?.();
+      log(`relaunch: ${launcher} (pid ${child.pid})`);
+      return { ok: true, how: 'command', pid: child.pid };
+    }
+    const node = path.join(toolsDir(root), 'node', 'bin', 'node');
+    const child = spawnFn(node, [path.join(faceDir, 'launch.mjs')], {
+      cwd: faceDir, detached: true, stdio: 'ignore', env: { ...process.env, IRIS_FACE_NODE: node, IRIS_ROOT: root },
+    });
+    child.unref?.();
+    log(`relaunch: node launch.mjs (pid ${child.pid}) -- no Face.command`);
     return { ok: true, how: 'node', pid: child.pid };
   } catch (err) {
     log(`relaunch FAILED ${String(err?.message ?? err)}`);
@@ -579,6 +632,7 @@ export async function applyPlan({
   preserveOptions,
   packageSchema,
   logger,
+  platform = process.platform,
 } = {}) {
   const root = plan?.root;
   if (!root) throw new Error('apply: plan.root is required');
@@ -640,7 +694,7 @@ export async function applyPlan({
     try {
       r = insideDownloads(root, pkg.dir)
         ? applyPackageItem({
-          root, dir: pkg.dir, spawnFn, log,
+          root, dir: pkg.dir, spawnFn, log, platform,
           ...(packageSchema !== undefined ? { packageSchema } : {}),
         })
         : { ok: false, reason: 'dir-outside-downloads', detail: pkg.dir ?? null };
@@ -663,7 +717,7 @@ export async function applyPlan({
     // but if the handoff failed there is nobody left to do it (2026-09-14
     // review).
     let relaunch = null;
-    if (!r.ok && plan.relaunch) relaunch = relaunchFace({ root, spawnFn, log });
+    if (!r.ok && plan.relaunch) relaunch = relaunchFace({ root, spawnFn, log, platform });
     return finish({
       ok: r.ok, items, at: at(), handedOffToInstaller: r.ok, relaunched: relaunch?.ok ?? false,
     });
@@ -684,7 +738,7 @@ export async function applyPlan({
         items.push(notAttempted(item, 'dir-outside-downloads'));
       } else {
         const r = await applyFaceItem({
-          root, dir: item.dir, version: item.version, npmInstall, preserveOptions, log,
+          root, dir: item.dir, version: item.version, npmInstall, preserveOptions, log, platform,
         });
         items.push({ kind: 'face', version: item.version ?? null, ok: r.ok, reason: r.reason });
       }
@@ -703,7 +757,7 @@ export async function applyPlan({
   // Even a failed item ends with the previous copy restored, so the person
   // must not be left staring at a desktop with no IRIS window.
   let relaunch = null;
-  if (plan.relaunch) relaunch = relaunchFace({ root, spawnFn, log });
+  if (plan.relaunch) relaunch = relaunchFace({ root, spawnFn, log, platform });
 
   return finish({ ok, items, at: at(), relaunched: relaunch?.ok ?? false });
 }
