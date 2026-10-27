@@ -15,8 +15,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 PY = sys.executable
 SCRIPT = str(Path(__file__).resolve().with_name("guard-iris-path.py"))
-IRIS_ROOT = os.environ.get("IRIS_ROOT") or os.path.join(
-    os.environ.get("SystemDrive", "C:") + os.sep, "IRIS"
+IRIS_ROOT = os.environ.get("IRIS_ROOT") or (
+    os.path.join(os.environ.get("SystemDrive", "C:") + os.sep, "IRIS") if os.name == "nt" else os.path.join(os.path.expanduser("~"), "IRIS")
 )
 
 EXEMPT = {"_trash", "_agent"}
@@ -103,6 +103,20 @@ if existing:
     cases += [
         ("정상(D): 기존 루트 파일에 덧붙이기", False, "Bash", {"command": f'echo x >> "{RU}/{existing[0]}"'}, SCR),
         ("정상(D): 기존 루트 파일 Write 덮어쓰기", False, "Write", {"file_path": os.path.join(R, existing[0]), "content": "x"}, SCR),
+    ]
+
+# --- macOS: ~/·$HOME/ 표기도 같은 루트(가드는 $HOME 으로 홈을 안다 — 시험 루트의 부모를 홈으로 준다) ---
+if os.name != "nt" and os.path.basename(IRIS_ROOT.rstrip("/")) == "IRIS":
+    os.environ["HOME"] = os.path.dirname(IRIS_ROOT.rstrip("/"))
+    top = tops[0]
+    cases += [
+        ("차단(mac): ~/IRIS 유령 일본어 mkdir", True, "Bash", {"command": "mkdir -p ~/IRIS/R07-開発者(Developer)/D01"}),
+        ("차단(mac): $HOME/IRIS 미실존 최상위 아래로 cp", True, "Bash", {"command": 'cp a.txt "$HOME/IRIS/R77-없음(None)/D01-x/"'}),
+        ("차단(mac): ${HOME}/IRIS 유령 일본어 Write 표기", True, "Bash", {"command": "touch ${HOME}/IRIS/R07-開発者(Developer)/x.md"}),
+        ("차단(D, mac): cd ~/IRIS 후 리다이렉션", True, "Bash", {"command": "cd ~/IRIS && echo hi > notes-guard.txt"}, SCR),
+        ("정상(mac): ~/IRIS 실존 최상위 아래 리다이렉션", False, "Bash", {"command": f'echo hi > "$HOME/IRIS/{top}/out.txt"'}),
+        ("정상(mac): 홈의 다른 폴더(일본어여도 IRIS 밖)", False, "Bash", {"command": "mkdir -p ~/Documents/開発者"}),
+        ("정상(D, mac): cd ~/IRIS/<실존 최상위> 후 상대 저장", False, "Bash", {"command": f'cd "$HOME/IRIS/{top}" && echo x > a.txt'}, SCR),
     ]
 
 fails = 0
