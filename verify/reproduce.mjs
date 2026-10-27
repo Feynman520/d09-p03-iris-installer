@@ -5,6 +5,9 @@ import { run } from '../lib/run.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BUILD_MJS = path.join(ROOT_DIR, 'build', 'build.mjs');
+// --target darwin-arm64 = reproduce the macOS zip (docs/설계-macOS.md M2); default = the Windows zip, as before.
+const TARGET_AT = process.argv.indexOf('--target');
+const TARGET_ARGS = TARGET_AT >= 0 && process.argv[TARGET_AT + 1] ? ['--target', process.argv[TARGET_AT + 1]] : [];
 
 // Two independent builds, same lock/cache (npm/download cache is shared and
 // read-only under --skip-download), separate --out/--stage so neither run
@@ -16,7 +19,7 @@ async function runBuild(label) {
   console.log(`build ${label}: start (out=${out})`);
   const r = await run(
     process.execPath,
-    [BUILD_MJS, '--out', out, '--stage', stage, '--cache', cache, '--skip-download'],
+    [BUILD_MJS, '--out', out, '--stage', stage, '--cache', cache, '--skip-download', ...TARGET_ARGS],
     { cwd: ROOT_DIR, timeoutMs: 15 * 60 * 1000 },
   );
   if (r.code !== 0) {
