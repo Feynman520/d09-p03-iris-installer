@@ -7,6 +7,7 @@ import { applyOverlay, loadLockForTarget, KNOWN_TARGETS } from '../build/lock-ta
 
 // 대상별 잠금표(docs/설계-macOS.md D-M12).
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const lockFor = (t) => loadLockForTarget(t).lock;
 
 test('Windows 대상은 lock.json 그 자체다(바이트까지) — Windows zip 의 lock.json 이 바뀌지 않는다', () => {
   const { lock, text, target } = loadLockForTarget('win32-x64');
@@ -36,8 +37,13 @@ test('덮어쓰기 규칙: 칸은 얕게 덮고, null 부품은 빼고, null 칸
 test('macOS 잠금표: 모든 부품이 잠겨 있고, Windows 전용 부품은 없고, 판 원칙(latest 금지)을 지킨다', () => {
   const { lock, text } = loadLockForTarget('darwin-arm64');
   assert.ok(KNOWN_TARGETS.includes(lock.target));
-  for (const gone of ['hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation']) {
-    assert.equal(lock.parts[gone], undefined, `${gone} 는 COM 이 필요해 싣지 않는다`);
+  // M6: 네 문서 MCP 는 macOS 엔진이 있는 커밋으로(엑셀·PPT·워드 = LibreOffice, 한글 = python-hwpx)
+  for (const name of ['hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation']) {
+    const part = lock.parts[name];
+    assert.equal(part.kind, 'git', name);
+    assert.match(part.commit, /^[0-9a-f]{40}$/, `${name} commit`);
+    assert.ok(part.dest.endsWith(`/${part.commit.slice(0, 7)}`), `${name} dest 는 커밋 앞 7자리 폴더`);
+    assert.notDeepEqual(part.requires, lockFor('win32-x64').parts[name].requires, `${name} 는 macOS 의 요구 사항을 따로 적는다`);
   }
   for (const [name, p] of Object.entries(lock.parts)) {
     if (p.kind === 'url' || p.kind === 'claude-release') {

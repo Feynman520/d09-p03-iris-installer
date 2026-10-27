@@ -26,7 +26,7 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | D-M13 | Git | `dugite-native`(GitHub Desktop 이 쓰는 이동식 Git) macOS arm64 판을 동봉 | 공식 이동식 Git(MinGit) 의 macOS 판이 없다 |
 | D-M14 | 중계기 관리 | `teamclaude-manage.mjs`(node). 3456 을 잡은 프로세스가 동봉 node + TeamClaude 진입 파일인지 `lsof`·`ps` 로 증명한 뒤에만 멈춘다(PID 만, 일괄 종료 금지) | `.ps1` 을 못 쓴다 |
 | D-M15 | 로그인 | 창 없는 로그인(이미 있는 piped 방식) + `open` 으로 브라우저 | 새 콘솔 창(`start`) 자리 |
-| D-M16 | 문서 MCP | macOS 1차 판은 **pdf 만 활성**, word·excel·ppt·hwp 는 `pending`. 대체 처리(LibreOffice → Office for Mac AppleScript, HWPX 파이썬)는 M6 에서 각 저장소에 | COM 이 없다 |
+| D-M16 | 문서 MCP | ~~macOS 1차 판은 pdf 만~~ → **M6(2026-10-27): 다섯 개 모두 활성.** 엑셀·PPT·워드 = 무료 LibreOffice(따로 설치, 없으면 그 셋만 `pending`)를 화면 없이 띄워 같은 도구를 처리, 한글 = python-hwpx(한컴 없이 HWPX/HWP 5.0). 각 저장소 `mac/v1` 브랜치 | COM 이 없다 |
 | D-M17 | 브라우저 조작 | Playwright MCP 채널 = Google Chrome → 없으면 Microsoft Edge → 둘 다 없으면 `pending`(내려받기 0 유지) | Windows 는 Edge 내장 |
 | D-M18 | 훅 | `block-blanket-kill` 을 파이썬 판으로(`pkill`·`killall`·`kill $(lsof …)` 차단). 나머지 두 훅은 이미 파이썬 | `.ps1` 훅 |
 | D-M19 | 삭제기 | `IRIS-삭제.command` → `uninstall.mjs`(node). 영수증이 있는 폴더만 지우는 규칙은 같다 | `uninstall.ps1` 자리 |
@@ -68,7 +68,7 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | M3 | Claude Code macOS 판 · 창 없는 로그인 · `teamclaude-manage.mjs` · LaunchAgent | 로그인·중계기 |
 | M4 | IRIS 창(P02 포크) | 창이 열린다 |
 | M5 | 앱 바로가기·폴더 아이콘·삭제기·Mac 시험 행렬 | 배포 후보 |
-| M6 | 문서 MCP 대체 처리(각 저장소) | 문서 도구 |
+| M6 | 문서 MCP 대체 처리(각 저장소) | 문서 도구 — **끝(2026-10-27, 아래 5절)** |
 
 ## 5. 진행 상황 (2026-10-27)
 
@@ -79,6 +79,7 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | M3 | 코드 끝, 실측 남음 | Claude Code `darwin-arm64` 받기·sh 전달자·창 없는 로그인(lsof)·중계기 시작(`teamclaude-manage.mjs`)·재개 사본. **진짜 구독 로그인은 아직 해 보지 않았다**(아래 미결 ①) |
 | M4 | 코드 끝, 창 눈 확인 남음 | P02 `mac/v1`: 운영체제 차이를 `daemon/platform.mjs` 한 곳에(Windows 갈래는 이식 전 글자 그대로). 세션 = sh 심을 node-pty 로 직접·닫기 = 프로세스 그룹 · 화면 상대경로는 `\` 약속 그대로, 데몬 입구에서 바꿈 · macOS 심 사본(`posixAgentShimText`)은 정적 검사 ⑥·`tests/shims-parity` 가 바이트 비교 · 코덱스 신뢰 키 = 경로 그대로 · 「설치 이어하기」= `.command` 를 `/bin/sh` 로 · Electron.app·메뉴(편집·Cmd)·Dock. P02 `verify:*` 전부 macOS 통과, 가짜 심 데몬 시험 15/15, 연습 설치한 영혼의 창 데몬이 뜨고 `login-pending` 카드·`spawn-helper` 권한 자가 수리 확인. **Electron 창을 사람 눈으로 본 확인은 아직**(아래 미결 ⑦) |
 | M5 | 거의 끝 | **삭제기**(`IRIS-삭제.command` → `installer/uninstall.mjs`, 설계-삭제기.md 7절, 시험 11개 + 연습 설치본에서 사본 실행 확인) · **비서 자동 업데이트 macOS 판**(설계-비서자동업데이트.md 끝 절, codex.js 전달자) · **`guard-iris-path.py` macOS 경로**(시험 52개) · **정적 검사 macOS 대응**(`verify/static.mjs` 가 zip 뿌리로 대상을 알아보고 ③⑤⑨⑱⑳㉑ 의 macOS 판을 본다 — macOS zip 에서 전부 통과) · **IRIS.app 아이콘**(iris.ico 의 PNG 판 → ICNS, 외부 도구 없음). **재현성**(`verify/reproduce.mjs --target darwin-arm64` — 두 번 빌드한 부품 59개·내용 지문 일치. 막힌 곳 두 개: bsdtar 가 지역 머리에 싣는 ctime·심볼릭 링크 mtime, `lib/zip.mjs` 가 macOS 에서 고정) · **무네트워크**(`verify/offline.mjs --build --target darwin-arm64 --out _build/out-mac` 와 `--out _build/out-mac` 설치 — 네트워크 0회로 세팅 완료, 연습 루트는 `_build/` 안). 남은 것: `verify/e2e`·`upgrade`(직전 macOS 판이 생긴 뒤)·`login-probe`(외부 코드 실행 — 허락 필요) |
+| M6 | 끝(코드·실측) | 네 문서 MCP 저장소(`d01-p01`~`p04`)의 로컬 `mac/v1`: `server.py` 가 macOS 에서 엔진만 바꾼다(도구 이름·반환은 Windows 와 같음). **엑셀·PPT·워드** = `engine/lo_bridge.py` 가 soffice 를 화면 없이 띄우고 그 안에서 UNO 매크로(`engine/lo_macro/iris_uno.py`)를 돈다 — LibreOffice 26 의 내장 Python 은 실행 제약 때문에 soffice 만 띄울 수 있어 밖에서 부를 수 없다(실측: 커널이 "Launch Constraint Violation" 으로 죽임). 화면 없는 LibreOffice 는 fontconfig 로 글꼴을 찾아 macOS 시스템 글꼴(한글)을 못 보므로 다리가 fonts.conf 를 만들어 넘긴다(없으면 한글이 □). 두 파일은 네 저장소에 바이트까지 같은 사본. **한글** = python-hwpx(Apache-2.0): HWP 5.0→HWPX, 추출, `{{이름}}`→그 자리 누름틀(실제 한컴 CLICK_HERE 모양), `[[이름]]`→셀 필드, 채우기·검증, 정규화 저장 — 결과는 OWPML 스키마 검사 통과. HWPX→PDF 만 근사본(HTML→LibreOffice, `approximate: true` + "제출용은 Windows 한컴" 안내). 시험: 엑셀 9 · PPT 8 · 워드 16 · 한글 17 개, 연습 설치본에서 다섯 MCP 를 클로드처럼 stdio 로 띄워 실제 호출 7개 통과. 설치기: 맥 잠금표가 네 MCP 를 새 커밋으로 고정(저장소 주소는 원 저장소 — PR 이 **합쳐진 뒤 같은 커밋이 원 저장소에 있어야** 빌드된다, 스쿼시 병합이면 다시 고정), 휠 묶음 34개(+python-hwpx·lxml), LibreOffice 가 없으면 엑셀·PPT·워드만 대기, LibreOffice 프로필은 `_agent/shared/portable-state/libreoffice/<도구>`. 개발 빌드는 `IRIS_<부품>_REPO=<로컬 클론>` 으로 고정 커밋을 받는다 |
 
 연습 설치는 홈 폴더를 건드리지 않는다: `IRIS_INSTALLER_SOUL_ROOT`(설치 폴더)·`IRIS_INSTALLER_WORK_DIR`(작업 폴더)·`IRIS_INSTALLER_NO_USER_ENV=1`·`IRIS_INSTALLER_NO_BROWSER=1`·`IRIS_INSTALLER_OFFLINE=1`.
 원작자 PC 에만 있는 부품(대시보드·온톨로지·HWPX 양식·명세·아이콘)은 `node build/seed-from-release.mjs` 가 공식 zip 에서 꺼내 `IRIS_<부품>_SOURCE` 로 가리킨다.

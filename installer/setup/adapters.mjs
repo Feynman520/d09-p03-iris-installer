@@ -304,19 +304,24 @@ export function mcpServerSpecs(ctx) {
     claude: false,
   });
 
-  // 문서 MCP 5종: venv 파이썬 + server.py. 그 대상 잠금표에 없는 도구는 등록하지 않는다 —
-  // macOS 잠금표는 COM 이 필요한 넷을 싣지 않는다(docs/설계-macOS.md D-M16).
+  // 문서 MCP 5종: venv 파이썬 + server.py. 그 대상 잠금표에 없는 도구는 등록하지 않는다.
+  // macOS(docs/설계-macOS.md M6): 엑셀·PPT·워드는 LibreOffice 엔진, 한글은 python-hwpx 라 한컴이 필요 없다.
+  // LibreOffice 전용 프로필은 영혼 안 한 자리(도구 판이 바뀌어도 그대로, 삭제기가 _agent 와 함께 지운다).
+  const win = isWindows(platform);
   for (const doc of DOCUMENT_MCPS) {
     if (ctx.lock?.parts && !ctx.lock.parts[doc.part]) continue;
+    const app = win ? doc.app : (doc.app === 'office' ? 'libreoffice' : null);
+    const env = win || doc.part === 'pdf-automation' ? { PYTHONUTF8: '1' }
+      : { PYTHONUTF8: '1', IRIS_LO_PROFILE_DIR: path.join(root, '_agent', 'shared', 'portable-state', 'libreoffice', doc.name) };
     out.push({
       name: doc.name,
       part: doc.part,
       command: venvPythonPath(root, { platform }),
       args: [toolEntry(ctx, doc.part)].filter(Boolean),
-      env: { PYTHONUTF8: '1' },
+      env,
       entryFile: toolEntry(ctx, doc.part),
       kind: 'document',
-      app: doc.app,
+      app,
       label: doc.label,
     });
   }
@@ -707,7 +712,9 @@ export async function run(ctx) {
   for (const spec of specs) {
     if (spec.kind !== 'document' || !spec.app) continue;
     if (apps[spec.app] === false) {
-      addPending(spec.label, spec.app === 'hancom' ? '한컴오피스(한글)가 없음 — 설치하면 바로 쓰입니다' : '마이크로소프트 오피스가 없음 — 설치하면 바로 쓰입니다');
+      addPending(spec.label, spec.app === 'hancom' ? '한컴오피스(한글)가 없음 — 설치하면 바로 쓰입니다'
+        : spec.app === 'libreoffice' ? '무료 LibreOffice 가 없음 — 설치하면 바로 쓰입니다(libreoffice.org 또는 `brew install --cask libreoffice`)'
+          : '마이크로소프트 오피스가 없음 — 설치하면 바로 쓰입니다');
     }
   }
   const edge = ctx?.precheck?.edge?.present ?? ctx?.precheck?.recorded?.edge?.present;
@@ -1277,15 +1284,23 @@ function writeCodexHooks(ctx, { fs, root }) {
 
 // 준비 검사(③)가 이미 본 게 있으면 그걸 쓰고, 없으면 레지스트리를 직접 본다.
 // 없다고 등록을 빼지는 않는다(D2-17) — 나중에 깔면 바로 쓰이게 두고 대기로만 알린다.
+/** macOS: LibreOffice 가 깔려 있는가(문서 MCP 들의 lo_bridge.find_soffice 와 같은 자리). 시험은 ctx.libreOffice 로 정한다. */
+export function hasLibreOffice(ctx, { fs = ctx?.fs ?? nodeFs, home = ctx?.env?.HOME ?? process.env.HOME } = {}) {
+  if (typeof ctx?.libreOffice === 'boolean') return ctx.libreOffice;
+  const cands = [ctx?.env?.IRIS_SOFFICE, '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+    home && path.join(home, 'Applications', 'LibreOffice.app', 'Contents', 'MacOS', 'soffice'), '/opt/homebrew/bin/soffice', '/usr/local/bin/soffice'];
+  return cands.some((c) => { try { return Boolean(c) && fs.existsSync(c); } catch { return false; } });
+}
+
 async function detectApps(ctx, { log }) {
   const pre = ctx?.precheck?.recorded ?? ctx?.precheck ?? {};
   const out = {
     office: typeof pre.office === 'boolean' ? pre.office : (pre.office?.present ?? null),
     hancom: typeof pre.hancom === 'boolean' ? pre.hancom : (pre.hancom?.present ?? null),
   };
+  // macOS(M6): 오피스·한컴 대신 LibreOffice 가 있는지만 본다(엑셀·PPT·워드 엔진). 한글 도구는 아무것도 요구하지 않는다.
+  if (!isWindows(ctx.platform ?? process.platform)) return { ...out, libreoffice: hasLibreOffice(ctx) };
   if (typeof ctx.run !== 'function') return out;
-  // macOS: 레지스트리가 없고, COM 이 필요한 오피스·한컴 도구는 그 잠금표에 아예 없다(D-M16).
-  if (!isWindows(ctx.platform ?? process.platform)) return out;
 
   const probe = async (keys) => {
     for (const key of keys) {

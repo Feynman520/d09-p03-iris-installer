@@ -1,9 +1,11 @@
-# Top-level packages for the PDF document MCP server on macOS (Apple Silicon).
-# The other four document MCPs drive Office/Hancom through Windows COM and are
-# not shipped on macOS (docs/설계-macOS.md D-M16).
+# Top-level packages for the document MCP servers on macOS (Apple Silicon).
+# PDF runs as on Windows. Excel/PPT/Word use LibreOffice (installed separately,
+# no Python package); HWP/HWPX uses python-hwpx instead of Hancom COM
+# (docs/설계-macOS.md M6).
 # Resolve only for CPython 3.12 on macOS arm64, then install from the soul wheelhouse.
 # Shared versions are constrained to the Windows lock (../document-mcp/requirements.lock).
 mcp==1.28.1
 pypdf[crypto]==6.14.2
 pypdfium2==5.12.1
 Pillow==12.3.0
+python-hwpx==6.9.0

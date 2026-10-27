@@ -84,17 +84,50 @@
     "dash": {
       "patches": "patches/dash/rules.darwin.json"
     },
-    "hwp-automation": null,
-    "excel-automation": null,
-    "ppt-automation": null,
-    "word-automation": null,
+    "hwp-automation": {
+      "commit": "8b71efdc8c96d07fe0376143f633ad6025656186",
+      "pinnedAt": "2026-10-27",
+      "dest": "_agent/shared/tools/document-mcp/hwp/8b71efd",
+      "requires": [
+        "python-hwpx (wheelhouse)",
+        "LibreOffice (optional: approximate HWPX PDF)"
+      ],
+      "note": "M6: 한컴 COM 대신 python-hwpx(engine/mac), HWPX PDF 만 LibreOffice 근사본"
+    },
+    "excel-automation": {
+      "commit": "08cbf60d85472618261f428a68add8f25551996d",
+      "pinnedAt": "2026-10-27",
+      "dest": "_agent/shared/tools/document-mcp/excel/08cbf60",
+      "requires": [
+        "LibreOffice"
+      ],
+      "note": "M6: Office COM 대신 LibreOffice(engine/lo_bridge.py, 별도 설치)"
+    },
+    "ppt-automation": {
+      "commit": "2e8ccc80a8810372cf13f1e77e47a2ad3ccdf1fe",
+      "pinnedAt": "2026-10-27",
+      "dest": "_agent/shared/tools/document-mcp/ppt/2e8ccc8",
+      "requires": [
+        "LibreOffice"
+      ],
+      "note": "M6: Office COM 대신 LibreOffice(engine/lo_bridge.py, 별도 설치)"
+    },
+    "word-automation": {
+      "commit": "f10929b2a582d0bd58f3aeb90cbb8263e283e629",
+      "pinnedAt": "2026-10-27",
+      "dest": "_agent/shared/tools/document-mcp/word/f10929b",
+      "requires": [
+        "LibreOffice"
+      ],
+      "note": "M6: Office COM 대신 LibreOffice(engine/lo_bridge.py, 별도 설치)"
+    },
     "document-mcp-wheelhouse": {
       "requirementsIn": "payload-src/manifests/python-locks/document-mcp-darwin/requirements.in",
-      "requirementsInSha256": "952d2f8ed61568de373a778eebf586ff57446af7966343ca4a19860f05d65992",
+      "requirementsInSha256": "47aaf63a433203ed5ccee861891be6cc2a8ac1aea2549947321fefb4b9250096",
       "requirementsLock": "payload-src/manifests/python-locks/document-mcp-darwin/requirements.lock",
-      "sha256": "9e23f7d515d23522a41f01db7ca6558aea7be0bb2f6704cd79c46430786011fe",
+      "sha256": "c8d7fad6ee5a22a4aa1c74029dd0d915d3c4f8b39bfd913ef1c3ce0703ebd4b8",
       "platform": "macosx_13_0_arm64",
-      "expectedCount": 32
+      "expectedCount": 34
     }
   }
 }

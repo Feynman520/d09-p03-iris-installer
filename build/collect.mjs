@@ -459,7 +459,12 @@ export function partSource(name, p) {
 // kind: git
 // ---------------------------------------------------------------------------
 
-async function collectGit({ name, p, cacheDir, log, noCache, skipDownload, run, licensesDir }) {
+async function collectGit({ name, p: lockPart, cacheDir, log, noCache, skipDownload, run, licensesDir }) {
+  // IRIS_<PART>_REPO: a development override for WHERE the pinned commit is fetched from (a local clone
+  // holding a commit not pushed yet, e.g. docs/설계-macOS.md M6). The commit pin itself never changes.
+  const repoOverride = process.env[`IRIS_${name.toUpperCase().replace(/-/g, '_')}_REPO`];
+  const p = repoOverride ? { ...lockPart, repo: repoOverride } : lockPart;
+  if (repoOverride) log(`${name}: fetching the pinned commit from ${repoOverride} (IRIS_${name.toUpperCase().replace(/-/g, '_')}_REPO)`);
   if (!/^[0-9a-f]{40}$/.test(p.commit ?? '')) throw new Error(`git part ${name}: commit must be 40 hex chars`);
   const paths = slotPaths(cacheDir, 'git', name);
   const want = {

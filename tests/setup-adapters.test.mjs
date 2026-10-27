@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import * as adapters from '../installer/setup/adapters.mjs';
+import { loadLockForTarget } from '../build/lock-target.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOOKS_SRC = path.join(REPO, 'payload-src', 'policy', 'hooks');
@@ -717,4 +718,35 @@ test('adapters(macOS): sh 래퍼·파이썬 훅·bin 경로, 잠금표에 없는
   assert.ok(toml.includes(`[projects.'${root}']`), '코덱스 신뢰 표는 경로 그대로');
   assert.ok(!recorded.claude.files.some((f) => f.includes('\\')), '기록 경로도 / 로');
   assert.ok(!pending.some((p) => /오피스|한컴/.test(p.reason)), '맥에서는 오피스·한컴 대기를 만들지 않는다');
+});
+
+test('adapters(macOS, M6): 네 문서 MCP 도 등록 — 엑셀·PPT·워드는 LibreOffice 대기, 한글은 요구 없음, 영혼 안 LibreOffice 프로필', { skip: process.platform === 'win32' && 'POSIX 경로' }, async () => {
+  const MAC = { platform: 'darwin' };
+  for (const libreOffice of [false, true]) {
+    const ctx = makeCtx(`mac-m6-${libreOffice}`, { precheck: { recorded: { edge: { present: true, channel: 'msedge' } } } });
+    ctx.platform = 'darwin';
+    ctx.libreOffice = libreOffice;
+    ctx.lock = loadLockForTarget('darwin-arm64').lock;
+    const { pending } = await adapters.run(ctx);
+    const root = ctx.root;
+    const cj = readJson(agentFile(root, 'claude', '.claude.json'));
+    for (const name of ['hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation']) {
+      assert.ok(cj.mcpServers[name], `${name} 등록`);
+      assert.equal(cj.mcpServers[name].command, adapters.venvPythonPath(root, MAC));
+    }
+    assert.equal(cj.mcpServers['excel-automation'].env.IRIS_LO_PROFILE_DIR, path.join(root, '_agent', 'shared', 'portable-state', 'libreoffice', 'excel-automation'));
+    assert.ok(cj.mcpServers['hwp-automation'].args[0].endsWith('/document-mcp/hwp/8b71efd/server.py'), cj.mcpServers['hwp-automation'].args[0]);
+    const lo = pending.filter((p) => /LibreOffice/.test(p.reason));
+    if (libreOffice) assert.equal(lo.length, 0, 'LibreOffice 가 있으면 대기 없음');
+    else assert.deepEqual(lo.map((p) => p.capability).sort(), ['문서 자동화(엑셀)', '문서 자동화(워드)', '문서 자동화(파워포인트)'], '없으면 엑셀·PPT·워드만 대기(한글은 아님)');
+    assert.ok(!pending.some((p) => /오피스|한컴/.test(p.reason)), '맥에서는 오피스·한컴 대기를 만들지 않는다');
+  }
+});
+
+test('hasLibreOffice: 알려진 자리 중 하나라도 있으면 true(IRIS_SOFFICE 포함)', () => {
+  const seen = new Set(['/custom/soffice']);
+  const fakeFs = { existsSync: (p) => seen.has(p) };
+  assert.equal(adapters.hasLibreOffice({ env: { IRIS_SOFFICE: '/custom/soffice' } }, { fs: fakeFs, home: '/h' }), true);
+  assert.equal(adapters.hasLibreOffice({ env: {} }, { fs: fakeFs, home: '/h' }), false);
+  assert.equal(adapters.hasLibreOffice({ libreOffice: true }), true);
 });
