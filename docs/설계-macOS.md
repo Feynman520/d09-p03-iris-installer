@@ -92,6 +92,8 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 4. ~~`guard-iris-path.py` macOS 경로~~ — M5 에서 옮겼다(`~/IRIS`·`$HOME/IRIS` 표기 포함).
 5. **서명·공증**(D-M05) — Gatekeeper 안내문으로 시작. Developer ID 는 별도 결정.
 6. **Windows 회귀 확인** — Windows 판 시험은 Mac 에서도 Windows 판으로 고정해 돌지만, PR 전에 원작자 PC 에서 `npm test`·`npm run verify` 를 한 번 돌려야 한다.
-7. **IRIS 창 눈 확인(M4).** 창은 떠서 페이지를 읽었고(렌더러 프로세스·사용자 자료 폴더 생성) 신호에 깔끔히 끝났지만, 화면 캡처 권한이 없어 그림으로는 보지 못했다. Mac 에서 한 번 열어 메뉴·트레이·Dock 아이콘·Cmd 단축키·세션 터미널을 확인한다.
-8. **문서 미리보기(macOS).** P02 `doc2pdf` 는 LibreOffice 가 있으면 오피스 문서만 변환하고, 한/글은 미지원 안내를 낸다(M6 첫 조각). 이 Mac 에 LibreOffice 가 없어 변환 자체는 돌려 보지 못했다.
-9. **메모리 계기판(macOS)** 은 커밋 측정이 꺼진 채(실제 RAM 고리만) 돈다 — `vm_stat`·`sysctl vm.swapusage` 판은 나중에.
+7. **IRIS 창 눈 확인(M4).** Electron 의 `capturePage` 로 창 내용을 그림으로 떠서 확인했다(머리줄·별 무대·폴더/에이전트/모델 선택·입력창·한글 정상). 그 과정에서 메모리 고리가 macOS 에서 늘 99%(빨강)로 보이던 것을 찾아 고쳤다(P02 `vm_stat`). 메뉴 막대·트레이·Dock 아이콘·Cmd 단축키는 그림으로 뜰 수 없어 사람 눈 확인이 남았다.
+8. ~~문서 미리보기(macOS)~~ — LibreOffice 26.8 을 깔고 확인했다: 오피스는 LibreOffice, 한/글은 python-hwpx → HTML → LibreOffice 근사본, 둘 다 한글 글꼴이 박힌다(화면 없는 LibreOffice 에 fonts.conf 를 넘겨야 한다는 것을 이때 찾았다).
+9. **메모리 계기판(macOS)** — RAM 은 `vm_stat` 기준으로 고쳤다(위 7). 커밋 고리는 macOS 에서 꺼진 채(스왑 기준 판은 나중에).
+10. **로그인 검사 ②(실제 Claude Code 받기 + 창 없는 로그인)** 는 macOS 판으로 옮겼지만(`verify/login-probe.mjs`) 돌리지 않았다 — macOS 의 Claude Code 는 키체인을 쓰므로 같은 Mac 의 실제 계정 항목에 닿을 수 있다. 미결 ① 과 함께 사람이 지켜보며 돌린다(`--no-online` 인 ③ 은 통과).
+11. **사용자 수준 캐시**: 설치의 venv 단계는 uv 공용 캐시(`~/.cache/uv`)를 쓴다 — Windows 의 `%LOCALAPPDATA%\uv` 와 같은 취급(지우지 않음).

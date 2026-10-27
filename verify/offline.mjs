@@ -271,7 +271,13 @@ async function runInstallerOffline() {
   // Measured 2026-09-15 (T23): two stray .lnk files on this PC's desktop.
   process.env.IRIS_INSTALLER_NO_USER_ENV = '1';
   // macOS reads the work folder from this variable (installer/lib/platform.mjs) -- keep it in scratch too.
-  if (MAC) process.env.IRIS_INSTALLER_WORK_DIR = path.join(SCRATCH_DIR, 'logs');
+  // HOME too: anything the setup starts that writes under ~ (a CLI's own temp folder, a user-level cache)
+  // lands in scratch instead of the developer's real home (2026-10-27: a codex run left ~/.codex/tmp).
+  if (MAC) {
+    process.env.IRIS_INSTALLER_WORK_DIR = path.join(SCRATCH_DIR, 'logs');
+    process.env.HOME = path.join(SCRATCH_DIR, 'home');
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+  }
 
   let handle = null;
   try {
