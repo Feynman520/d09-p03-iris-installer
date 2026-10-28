@@ -85,9 +85,9 @@
       "patches": "patches/dash/rules.darwin.json"
     },
     "hwp-automation": {
-      "commit": "8b71efdc8c96d07fe0376143f633ad6025656186",
+      "commit": "3a9f287746e86c15afe73c3faa1498eeb54f2c62",
       "pinnedAt": "2026-10-27",
-      "dest": "_agent/shared/tools/document-mcp/hwp/8b71efd",
+      "dest": "_agent/shared/tools/document-mcp/hwp/3a9f287",
       "requires": [
         "python-hwpx (wheelhouse)",
         "LibreOffice (optional: approximate HWPX PDF)"
@@ -95,27 +95,27 @@
       "note": "M6: 한컴 COM 대신 python-hwpx(engine/mac), HWPX PDF 만 LibreOffice 근사본"
     },
     "excel-automation": {
-      "commit": "08cbf60d85472618261f428a68add8f25551996d",
+      "commit": "e59f6681bd17bee2f293aeab344304248efeb2b1",
       "pinnedAt": "2026-10-27",
-      "dest": "_agent/shared/tools/document-mcp/excel/08cbf60",
+      "dest": "_agent/shared/tools/document-mcp/excel/e59f668",
       "requires": [
         "LibreOffice"
       ],
       "note": "M6: Office COM 대신 LibreOffice(engine/lo_bridge.py, 별도 설치)"
     },
     "ppt-automation": {
-      "commit": "2e8ccc80a8810372cf13f1e77e47a2ad3ccdf1fe",
+      "commit": "c0aebfc97c8470931ea8cc8071c0d18e549debbe",
       "pinnedAt": "2026-10-27",
-      "dest": "_agent/shared/tools/document-mcp/ppt/2e8ccc8",
+      "dest": "_agent/shared/tools/document-mcp/ppt/c0aebfc",
       "requires": [
         "LibreOffice"
       ],
       "note": "M6: Office COM 대신 LibreOffice(engine/lo_bridge.py, 별도 설치)"
     },
     "word-automation": {
-      "commit": "f10929b2a582d0bd58f3aeb90cbb8263e283e629",
+      "commit": "37adb552386d54012930fbbf5e148589488089d4",
       "pinnedAt": "2026-10-27",
-      "dest": "_agent/shared/tools/document-mcp/word/f10929b",
+      "dest": "_agent/shared/tools/document-mcp/word/37adb55",
       "requires": [
         "LibreOffice"
       ],

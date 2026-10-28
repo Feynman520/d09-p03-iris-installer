@@ -737,7 +737,7 @@ test('adapters(macOS, M6): 네 문서 MCP 도 등록 — 엑셀·PPT·워드는 
       assert.equal(cj.mcpServers[name].command, adapters.venvPythonPath(root, MAC));
     }
     assert.equal(cj.mcpServers['excel-automation'].env.IRIS_LO_PROFILE_DIR, path.join(root, '_agent', 'shared', 'portable-state', 'libreoffice', 'excel-automation'));
-    assert.ok(cj.mcpServers['hwp-automation'].args[0].endsWith('/document-mcp/hwp/8b71efd/server.py'), cj.mcpServers['hwp-automation'].args[0]);
+    assert.ok(cj.mcpServers['hwp-automation'].args[0].endsWith('/document-mcp/hwp/3a9f287/server.py'), cj.mcpServers['hwp-automation'].args[0]);
     const lo = pending.filter((p) => /LibreOffice/.test(p.reason));
     if (libreOffice) assert.equal(lo.length, 0, 'LibreOffice 가 있으면 대기 없음');
     else assert.deepEqual(lo.map((p) => p.capability).sort(), ['문서 자동화(엑셀)', '문서 자동화(워드)', '문서 자동화(파워포인트)'], '없으면 엑셀·PPT·워드만 대기(한글은 아님)');
