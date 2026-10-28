@@ -147,6 +147,21 @@
       "redistribute": "download",
       "downloadWhy": "Google Chrome for Testing 은 Google 이 배포하는 시험용 Chrome 이라 꾸러미에 싣지 않고, 시스템에 Chrome·Edge 가 없을 때만 설치 중에 Playwright 공식 배포처에서 받는다(191MB)",
       "license": "Chrome for Testing — Chromium(BSD-3-Clause 등 오픈소스) + Google 구성 요소, Google 배포 조건"
+    },
+    "ieumoffice": {
+      "$comment": "macOS 문서 보조 엔진(D-M21, 2026-10-28 사용자 결정): 이음오피스 공식 GitHub 릴리스를 ⑦ 단계가 받는다. 에이전트는 심 `ieumoffice`(명령어)로만 쓴다 — MCP 로 등록하지 않고(도구 설명 약 3만 토큰), 앱의 AI 기능은 쓰지 않는다(중계기 우회). 판을 올릴 때는 릴리스의 SHA-256 을 사람이 확인해 함께 고친다.",
+      "kind": "url",
+      "version": "0.12.7",
+      "url": "https://github.com/pblsketch/openoffice/releases/download/v0.12.7/IeumOffice-0.12.7-arm64-mac.zip",
+      "sha256": "7c501e4ea09c9140818f2a4ee1187717c9803cc65e4150a96e3f3945e7686c30",
+      "sha256Source": "GitHub 릴리스 첨부의 digest(2026-10-28 조회) — 이 PC 에서 받은 파일로 계산한 값과 같다",
+      "bytes": 237854279,
+      "top": "IeumOffice.app",
+      "executable": "IeumOffice.app/Contents/Resources/cli/ieumoffice",
+      "dest": "_agent/shared/tools/ieumoffice",
+      "redistribute": "download",
+      "downloadWhy": "이음오피스(Apache-2.0)는 공식 빌드를 그대로 쓰도록 꾸러미에 싣지 않고, 설치 중에 공식 GitHub 릴리스에서 받는다(238MB). 받지 못해도 설치는 끝나며, 문서 일은 파이썬 라이브러리와 문서 MCP 로 한다",
+      "license": "Apache-2.0 (https://github.com/pblsketch/openoffice)"
     }
   }
 }

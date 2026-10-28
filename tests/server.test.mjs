@@ -1117,8 +1117,9 @@ test('사용자에게 나가는 message 어디에도 중계기 제품 이름이 
 // 「설치 이어하기」 카드를 보여 준다.
 // 2026-10-28 D-M17 개정: macOS 에서 Chrome·Edge 가 없으면 ⑦ 이 Chrome for Testing 을 받고,
 // 받았으면 ⑨ 검사가 남겨 둔 "브라우저 조작" 대기를 인수 문서에서 뺀다. Windows 는 이 단계를 지나지 않는다.
-test('macOS ⑦: 브라우저 조작용 Chrome for Testing 을 받으면 인수 문서의 그 대기가 빠진다', { skip: process.platform === 'win32' && 'Windows 는 Edge — 이 단계 없음' }, async () => {
+test('macOS ⑦: 브라우저 조작용 Chrome for Testing 을 받으면 그 대기가 빠지고, 이음오피스를 못 받으면 대기가 더해진다', { skip: process.platform === 'win32' && 'Windows 는 Edge — 이 단계 없음' }, async () => {
   const browserCalls = [];
+  const ieumCalls = [];
   const s = await start({
     onlineRunner: {
       ...okOnline(),
@@ -1126,6 +1127,11 @@ test('macOS ⑦: 브라우저 조작용 Chrome for Testing 을 받으면 인수 
         browserCalls.push(a);
         a.onProgress?.({ done: 10, total: 100 });
         return { ok: true, state: 'done', source: 'playwright-cdn' };
+      },
+      // D-M21: 이음오피스를 받지 못한 경우 — 설치는 이어지고, 남은 일에 더해진다.
+      installIeumOffice: async (a) => {
+        ieumCalls.push(a);
+        return { ok: false, state: 'pending', code: 'E-ONLINE-IEUMOFFICE', message: 'x' };
       },
     },
   });
@@ -1159,13 +1165,16 @@ test('macOS ⑦: 브라우저 조작용 Chrome for Testing 을 받으면 인수 
     assert.equal(browserCalls.length, 1, '⑦ 이 브라우저 단계를 한 번 부른다');
     assert.equal(browserCalls[0].root, soulRoot);
     assert.equal(st.browser?.state, 'done', '상태 조회에 브라우저 단계 결과가 실린다');
+    assert.equal(ieumCalls.length, 1, '⑦ 이 이음오피스 단계를 한 번 부른다');
+    assert.equal(st.ieumoffice?.state, 'pending', '상태 조회에 이음오피스 단계 결과가 실린다');
     await post(url, '/api/online/login', { provider: 'claude' });
     await waitForOnline(url, (b) => b.logins.claude?.state === 'done', 'claude login done');
     const relay = await (await post(url, '/api/online/relay')).json();
     assert.equal(relay.ok, true);
     const handoff = JSON.parse(fs.readFileSync(handoffFile, 'utf8'));
     assert.equal(handoff.state, 'ready');
-    assert.deepEqual(handoff.pendingCapabilities.map((p) => p.capability), ['문서 자동화(엑셀)'], '받은 브라우저 조작은 남은 일에서 빠진다');
+    assert.deepEqual(handoff.pendingCapabilities.map((p) => p.capability), ['문서 자동화(엑셀)', '문서 보조 엔진(이음오피스)'],
+      '받은 브라우저 조작은 남은 일에서 빠지고, 받지 못한 이음오피스는 더해진다');
   } finally {
     await s.close();
   }

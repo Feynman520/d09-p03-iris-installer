@@ -31,6 +31,7 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | D-M18 | 훅 | `block-blanket-kill` 을 파이썬 판으로(`pkill`·`killall`·`kill $(lsof …)` 차단). 나머지 두 훅은 이미 파이썬 | `.ps1` 훅 |
 | D-M19 | 삭제기 | `IRIS-삭제.command` → `uninstall.mjs`(node). 영수증이 있는 폴더만 지우는 규칙은 같다 | `uninstall.ps1` 자리 |
 | D-M20 | IRIS 창 | P02 포크에서 함께 고친다. 심은 두 저장소가 글자까지 같아야 한다(정적 검사 ⑥) | |
+| D-M21 | 문서 작업 순서 · 이음오피스 | **2026-10-28 사용자 결정**: 문서를 만들고 고치는 일은 **파이썬 라이브러리 먼저**(문서 스킬 — python-docx·openpyxl·python-pptx·pypdf·pdfplumber·reportlab·pandas). 이 라이브러리들은 문서 MCP 바퀴집(`document-mcp-darwin`)에 함께 싣고, venv 단계가 잠금표 `runtimePackages` 대로 동봉 파이썬(세션의 `python3`)에도 오프라인으로 깐다(실패는 `pending`). 라이브러리가 못 하는 일(옛 .hwp 만들기·쪽 그림 렌더·PDF→워드)은 보조 엔진 **이음오피스**(github.com/pblsketch/openoffice, Apache-2.0)가 맡는다 — 꾸러미에 싣지 않고 ⑦ 단계가 **공식 GitHub 릴리스**를 잠금표 `ieumoffice`(주소·SHA-256·238MB 고정)대로 받아 `_agent/shared/tools/ieumoffice/` 에 둔다(실패는 `pending`, 인수 문서 남은 일에 더함). 에이전트는 심 `ieumoffice`(명령어)로만 부른다: **MCP 로 등록하지 않는다**(도구 42개 설명 약 3만 토큰), 앱의 AI 기능·「자동 호출에 구독 사용」은 쓰지 않는다(중계기를 거치지 않는다). 이 순서와 조건은 맥 zip 의 루트 AGENTS.md 에 적는다(`patches/policy/rules.darwin.json`, pack 이 맥 대상에서만 적용) | Windows 는 Office·한컴 COM. 이음오피스 Windows 판은 설치 프로그램(Setup.exe)만 있어 조용한 설치를 시험하기 전까지 싣지 않는다 |
 
 ## 2. 설치 폴더 안의 모양
 

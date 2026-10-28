@@ -20,8 +20,8 @@ test('macOS 심 묶음: 이름·ASCII·LF·#!/bin/sh·실행 권한', () => {
   const r = writeShims(root, ['claude', 'codex'], POSIX);
   const dir = shimsDir(root);
   assert.deepEqual(fs.readdirSync(dir).sort(),
-    ['claude', 'codex', 'git', 'node', 'python', 'python3', 'relay-ensure', 'relay-ensure.mjs']);
-  assert.equal(r.written.length, 8);
+    ['claude', 'codex', 'git', 'ieumoffice', 'node', 'python', 'python3', 'relay-ensure', 'relay-ensure.mjs']);
+  assert.equal(r.written.length, 9);
   for (const f of fs.readdirSync(dir)) {
     const buf = fs.readFileSync(path.join(dir, f));
     assert.ok(buf.every((b) => b < 0x80), `${f} 는 ASCII`);
@@ -152,4 +152,19 @@ test('macOS relay-ensure: 관리 스크립트가 없으면 한 줄 알리고 0(�
   const r = spawnSync(path.join(shimsDir(root), 'relay-ensure'), [], { env: { ...process.env, IRIS_RELAY_PORT: String(port) }, encoding: 'utf8', timeout: 20000 });
   assert.equal(r.status, 0);
   assert.match(r.stderr, /relay helper missing/);
+});
+
+test('macOS ieumoffice 심: 받아 둔 이음오피스 명령어로 인자를 그대로 넘기고, 없으면 대기라고 알리고 3', { skip: noSh }, () => {
+  const root = path.join(tmp, 'ieum office root');
+  writeShims(root, [], POSIX);
+  const shim = path.join(shimsDir(root), 'ieumoffice');
+  const missing = spawnSync(shim, ['capabilities'], { encoding: 'utf8' });
+  assert.equal(missing.status, 3);
+  assert.match(missing.stderr, /not installed yet \(pending\)/);
+  const cli = path.join(root, '_agent', 'shared', 'tools', 'ieumoffice', 'IeumOffice.app', 'Contents', 'Resources', 'cli', 'ieumoffice');
+  fs.mkdirSync(path.dirname(cli), { recursive: true });
+  fs.writeFileSync(cli, '#!/bin/sh\nfor a in "$@"; do printf "[%s]" "$a"; done\n', { mode: 0o755 });
+  const r = spawnSync(shim, ['render', 'a b.docx', '--json'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, '[render][a b.docx][--json]');
 });

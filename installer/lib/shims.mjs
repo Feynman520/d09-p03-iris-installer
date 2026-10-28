@@ -224,6 +224,18 @@ function posixGitShim() {
 function posixPythonShim() {
   return lf([...POSIX_HEAD, 'exec "$D/../tools/python/bin/python3" "$@"']);
 }
+// 문서 보조 엔진 이음오피스(D-M21): ⑦ 단계가 받은 공식 앱 안의 명령어(앱 자신의 실행기가 동봉 Electron 을
+// node 로 돌린다). 에이전트가 부르는 유일한 길이다 — MCP 로 등록하지 않는다. 아직 받지 못했으면 대기라고 알리고 3 으로 끝난다.
+export function posixIeumOfficeShim() {
+  return lf([
+    ...POSIX_HEAD,
+    '# IRIS: IeumOffice document CLI (auxiliary engine, fetched at setup step 7). CLI only - never registered as an MCP server.',
+    'C="$D/../tools/ieumoffice/IeumOffice.app/Contents/Resources/cli/ieumoffice"',
+    'if [ -x "$C" ]; then exec "$C" "$@"; fi',
+    "echo '[IRIS] IeumOffice is not installed yet (pending) - reopen the IRIS installer where the internet works; use the Python document libraries meanwhile' >&2",
+    'exit 3',
+  ]);
+}
 
 // P02 Face 의 macOS 판 wake.mjs 도 글자까지 같은 사본을 가진다(Windows agentShim 과 같은 규칙).
 // `$A` = <root>/_agent (정리된 절대 경로) — 설정 폴더·PATH·CLI 를 모두 여기서 잇는다.
@@ -332,6 +344,7 @@ export function writeShims(root, activeAgents = [], { platform = process.platfor
     ]
     : [
       ['node', posixNodeShim()], ['git', posixGitShim()], ['python', posixPythonShim()], ['python3', posixPythonShim()],
+      ['ieumoffice', posixIeumOfficeShim()],
       ['relay-ensure', posixRelayEnsure()], ['relay-ensure.mjs', posixRelayEnsureMjs()],
     ];
   for (const [name, text] of fixed) {

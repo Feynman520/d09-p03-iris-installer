@@ -1096,6 +1096,22 @@ export function startServer({
         };
         log(`online playwright browser ${state.online.browser.state}${b?.reason ? ` (${b.reason})` : ''}${b?.code ? ` (${b.code})` : ''}`);
       }
+      // macOS(D-M21, 2026-10-28): 문서 보조 엔진 이음오피스를 공식 GitHub 릴리스에서 받는다. 받지 못해도 멈추지 않는다
+      // (pending — 문서 일은 파이썬 라이브러리와 문서 MCP 로 한다). 잠금표에 이 부품이 없으면(Windows) 지나간다.
+      if (process.platform !== 'win32' && typeof onlineRunner.installIeumOffice === 'function') {
+        state.online.stage = 'ieumoffice';
+        state.online.ieumoffice = { state: 'checking', code: null, done: 0, total: null };
+        save();
+        const io = await onlineRunner.installIeumOffice({
+          root, zipRoot: state.zipRoot, lock: readLock(state.zipRoot), log,
+          onProgress: (p) => { state.online.ieumoffice = { ...state.online.ieumoffice, state: 'downloading', done: p?.done ?? 0, total: p?.total ?? null }; },
+        });
+        state.online.ieumoffice = {
+          state: io?.ok ? (io.state === 'skipped' ? 'skipped' : 'done') : 'pending',
+          reason: io?.reason ?? null, code: io?.code ?? null, source: io?.source ?? null,
+        };
+        log(`online ieumoffice ${state.online.ieumoffice.state}${io?.reason ? ` (${io.reason})` : ''}${io?.code ? ` (${io.code})` : ''}`);
+      }
       state.online.stage = 'login';
       for (const provider of subs) {
         state.online.logins[provider] = state.online.logins[provider]
@@ -1299,11 +1315,15 @@ export function startServer({
       // 유일한 순간이다(계약 = docs/인수문서-handoff-v2.md). 엔진처럼 동적으로
       // 부른다 — 이 모듈이 없어도 서버는 떠야 한다.
       try {
-        const { refreshHandoffAfterOnline, BROWSER_CAPABILITY } = await import('./setup/handoff.mjs');
+        const { refreshHandoffAfterOnline, BROWSER_CAPABILITY, IEUMOFFICE_CAPABILITY } = await import('./setup/handoff.mjs');
         const r = refreshHandoffAfterOnline({
           root, receipt: readReceiptFn(root), choice: state.choice, fs, log,
           // ⑨ 검사 때 대기였다가 ⑦ 에서 풀린 기능(macOS 브라우저 조작)은 남은 일에서 뺀다.
           resolvedCapabilities: state.online.browser?.state === 'done' ? [BROWSER_CAPABILITY] : [],
+          // ⑦ 에서 이음오피스를 받지 못했으면 남은 일에 더한다(macOS D-M21).
+          addedCapabilities: state.online.ieumoffice?.state === 'pending'
+            ? [{ capability: IEUMOFFICE_CAPABILITY, reason: '공식 릴리스를 내려받지 못함', howToEnable: '인터넷이 되는 곳에서 설치기를 다시 열면 받습니다 — 그동안 문서 일은 파이썬 라이브러리와 문서 MCP 로 합니다' }]
+            : [],
         });
         log(`handoff refresh: ${r?.written ? r.handoff?.state : `skipped(${r?.reason ?? 'unknown'})`}`);
       } catch (err) {

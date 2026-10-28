@@ -225,6 +225,19 @@ test('refreshHandoffAfterOnline: ⑦ 에서 풀린 대기 기능(macOS 브라우
   assert.deepEqual(r.handoff.pendingCapabilities.map((p) => p.capability), ['문서 자동화(엑셀)'], '같은 이름 두 줄(⑤-6·⑨)이 함께 빠진다');
 });
 
+test('refreshHandoffAfterOnline: ⑦ 에서 새로 대기가 된 기능(macOS 이음오피스)은 남은 일에 한 번만 더한다', async () => {
+  const { IEUMOFFICE_CAPABILITY } = await import('../installer/setup/handoff.mjs');
+  const root = newRoot('refresh-added');
+  const ctx = ctxFor(root, { choice: { subscriptions: ['claude'], leadAgent: 'claude' } });
+  writeHandoff(ctx, { assumeDone: ['checks'], pending: [{ capability: '문서 자동화(엑셀)', reason: 'LibreOffice 가 없음' }] });
+  const receipt = doneReceipt({ logins: { claude: { state: 'done' } }, relay: { state: 'done', accounts: 1 } });
+  const added = [{ capability: IEUMOFFICE_CAPABILITY, reason: '공식 릴리스를 내려받지 못함', howToEnable: 'x' }];
+  const r = refreshHandoffAfterOnline({ ...ctx, receipt, addedCapabilities: added });
+  assert.deepEqual(r.handoff.pendingCapabilities.map((p) => p.capability), ['문서 자동화(엑셀)', IEUMOFFICE_CAPABILITY]);
+  const again = refreshHandoffAfterOnline({ ...ctx, receipt, addedCapabilities: added });
+  assert.equal(again.handoff.pendingCapabilities.length, 2, '다시 불러도 두 번 적지 않는다');
+});
+
 test('refreshHandoffAfterOnline: 인수 문서가 아직 없으면 새로 지어내지 않는다', () => {
   const root = newRoot('refresh-none');
   const r = refreshHandoffAfterOnline(ctxFor(root));

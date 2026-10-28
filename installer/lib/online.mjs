@@ -77,6 +77,7 @@ export const CODES = {
   claude: 'E-ONLINE-CLAUDE',
   documentSkills: 'E-ONLINE-DOCSKILLS',
   browser: 'E-ONLINE-BROWSER',
+  ieumoffice: 'E-ONLINE-IEUMOFFICE',
   relay: 'E-ONLINE-RELAY',
 };
 
@@ -828,8 +829,81 @@ export async function installDocumentSkills({
 
 export const PLAYWRIGHT_BROWSER_PART = 'playwright-chromium';
 
-function recordPlaywrightBrowser(root, info, deps) {
-  patchReceipt(root, (receipt) => { setInstalled(receipt, PLAYWRIGHT_BROWSER_PART, info); }, deps);
+const COMPLETE_MARKER = 'INSTALLATION_COMPLETE';
+
+/**
+ * 잠금표의 내려받기 부품 하나(`url`·`sha256`·`bytes`·`top`·`executable`·`dest`)를 받아 푼다 —
+ * Chrome for Testing 과 이음오피스(D-M21)가 같이 쓴다. 반쯤 풀린 폴더가 보이지 않게 `<dest>.partial` 에서
+ * 풀고 이름만 바꾼다. 다 풀리면 `INSTALLATION_COMPLETE` 표식(Playwright 가 찾는 이름)에 SHA-256 을 적어,
+ * 잠금표의 판이 바뀌면 다시 받는다(빈 표식 = Playwright 가 스스로 깐 것, 그대로 쓴다).
+ * 실패는 늘 `pending`(설치는 멈추지 않는다).
+ */
+async function installDownloadPart({
+  root, part, partName, source, progressSource, pendingMessage, code, record,
+  onProgress, log, fetchFn, fsImpl, downloadFn, listArchiveFn, extractZipFn, env,
+}) {
+  const pendingOut = (reason, detail = null) => {
+    record({ state: 'pending', reason, verified: false });
+    log(`${partName} pending: ${reason}${detail ? ` — ${detail}` : ''}`);
+    return { ok: false, state: 'pending', code, message: pendingMessage(reason), detail };
+  };
+
+  if (!part.url || !/^[0-9a-f]{64}$/i.test(String(part.sha256 ?? '')) || !part.dest || !part.executable || !part.top) {
+    return pendingOut('lock-missing', `lock.parts.${partName} incomplete`);
+  }
+  let dest;
+  try {
+    dest = assertInside(root, path.join(root, String(part.dest).split('/').join(path.sep)), { fs: fsImpl });
+  } catch (err) {
+    return pendingOut('bad-dest', String(err?.message ?? err));
+  }
+  const want = String(part.sha256).toLowerCase();
+  const exe = path.join(dest, ...String(part.executable).split('/'));
+  const marker = path.join(dest, COMPLETE_MARKER);
+  const info = (from) => ({
+    state: 'installed', version: part.version ?? null, revision: part.revision ?? null, sha256: want,
+    source: from, path: relToRoot(root, dest), verified: true,
+  });
+  const markerText = (() => { try { return String(fsImpl.readFileSync(marker, 'utf8')).trim().toLowerCase(); } catch { return null; } })();
+  if (fsImpl.existsSync(exe) && (markerText === '' || markerText === want)) {
+    record(info('existing'));
+    return { ok: true, state: 'done', source: 'existing', path: dest };
+  }
+  if (isOffline(env)) return pendingOut('offline', RESUME_SENTENCE);
+
+  const work = path.join(root, '_agent', 'setup', 'downloads');
+  const zipPath = path.join(work, `${partName}-${part.revision ?? part.version ?? 'x'}.zip`);
+  const stage = `${dest}.partial`;
+  try {
+    fsImpl.mkdirSync(work, { recursive: true });
+    fsImpl.rmSync(stage, { recursive: true, force: true });
+    onProgress({ phase: 'download', source: progressSource, done: 0, total: part.bytes ?? null });
+    const got = await downloadFn(part.url, zipPath, {
+      fetchFn, expectedBytes: part.bytes ?? null, env,
+      onProgress: (p) => { try { onProgress({ phase: 'download', source: progressSource, ...p }); } catch { /* ignore */ } },
+    });
+    if (String(got?.sha256 ?? '').toLowerCase() !== want) throw new Error(`sha256 mismatch (got=${got?.sha256}, want=${want})`);
+
+    const entries = await listArchiveFn(zipPath);
+    const unsafe = entries.filter((e) => unsafeArchiveEntry(e));
+    if (unsafe.length) throw new Error(`archive has unsafe entry path(s): ${unsafe.slice(0, 3).join(', ')}`);
+    if (archiveTopFolder(entries) !== part.top) throw new Error(`archive top folder is not ${part.top}`);
+
+    await extractZipFn(zipPath, stage);
+    if (!fsImpl.existsSync(path.join(stage, ...String(part.executable).split('/')))) throw new Error(`executable not in archive: ${part.executable}`);
+    fsImpl.writeFileSync(path.join(stage, COMPLETE_MARKER), `${want}\n`);
+    fsImpl.rmSync(dest, { recursive: true, force: true });
+    fsImpl.renameSync(stage, dest);
+    try { fsImpl.rmSync(zipPath, { force: true }); } catch { /* 청소는 최선 노력 */ }
+
+    record(info(source));
+    log(`${partName} ${part.version ?? ''}${part.revision ? ` (r${part.revision})` : ''} -> ${relToRoot(root, dest)}`);
+    return { ok: true, state: 'done', source, path: dest };
+  } catch (err) {
+    try { fsImpl.rmSync(zipPath, { force: true }); } catch { /* 최선 노력 */ }
+    try { fsImpl.rmSync(stage, { recursive: true, force: true }); } catch { /* 같음 */ }
+    return pendingOut('download-failed', String(err?.message ?? err));
+  }
 }
 
 /**
@@ -852,76 +926,57 @@ export async function installPlaywrightBrowser({
   const theLock = lock ?? readLock({ zipRoot });
   const part = theLock?.parts?.[PLAYWRIGHT_BROWSER_PART];
   if (!part) return { ok: true, state: 'skipped', reason: 'not-in-lock' };
+  const record = (info) => patchReceipt(root, (receipt) => { setInstalled(receipt, PLAYWRIGHT_BROWSER_PART, info); }, deps);
 
   const system = (() => { try { return browserCheckFn(); } catch { return { present: false }; } })();
   if (system?.present) {
-    recordPlaywrightBrowser(root, { state: 'not-installed', reason: 'system-browser', channel: system.channel ?? null }, deps);
+    record({ state: 'not-installed', reason: 'system-browser', channel: system.channel ?? null });
     log(`playwright browser skipped (system ${system.channel ?? 'browser'} at ${system.path ?? '?'})`);
     return { ok: true, state: 'skipped', reason: 'system-browser', channel: system.channel ?? null };
   }
 
-  const pendingOut = (reason, detail = null) => {
-    const message = `브라우저 조작용 Chrome for Testing 을 내려받지 못했습니다(${reason}). Chrome 을 설치하면 바로 켜집니다.`;
-    recordPlaywrightBrowser(root, { state: 'pending', reason, verified: false }, deps);
-    log(`playwright browser pending: ${reason}${detail ? ` — ${detail}` : ''}`);
-    return { ok: false, state: 'pending', code: CODES.browser, message, detail };
-  };
-
-  if (!part.url || !/^[0-9a-f]{64}$/i.test(String(part.sha256 ?? '')) || !part.dest || !part.executable || !part.top) {
-    return pendingOut('lock-missing', 'lock.parts.playwright-chromium incomplete');
-  }
-  let dest;
-  try {
-    dest = assertInside(root, path.join(root, String(part.dest).split('/').join(path.sep)), { fs: fsImpl });
-  } catch (err) {
-    return pendingOut('bad-dest', String(err?.message ?? err));
-  }
-  const exe = path.join(dest, ...String(part.executable).split('/'));
-  const marker = path.join(dest, 'INSTALLATION_COMPLETE');
-  const info = (source) => ({
-    state: 'installed', version: part.version ?? null, revision: part.revision ?? null, sha256: String(part.sha256).toLowerCase(),
-    source, path: relToRoot(root, dest), verified: true,
+  return installDownloadPart({
+    root, part, partName: PLAYWRIGHT_BROWSER_PART, source: 'playwright-cdn', progressSource: 'playwright', code: CODES.browser, record,
+    pendingMessage: (reason) => `브라우저 조작용 Chrome for Testing 을 내려받지 못했습니다(${reason}). Chrome 을 설치하면 바로 켜집니다.`,
+    onProgress, log, fetchFn, fsImpl, downloadFn, listArchiveFn, extractZipFn, env,
   });
-  if (fsImpl.existsSync(exe) && fsImpl.existsSync(marker)) {
-    recordPlaywrightBrowser(root, info('existing'), deps);
-    return { ok: true, state: 'done', source: 'existing', path: dest };
-  }
-  if (isOffline(env)) return pendingOut('offline', RESUME_SENTENCE);
+}
 
-  const work = path.join(root, '_agent', 'setup', 'downloads');
-  const zipPath = path.join(work, `${PLAYWRIGHT_BROWSER_PART}-${part.revision ?? 'x'}.zip`);
-  const stage = `${dest}.partial`; // 같은 폴더 안에서 풀고 이름만 바꾼다(반쯤 풀린 브라우저를 Playwright 가 보지 않게)
-  try {
-    fsImpl.mkdirSync(work, { recursive: true });
-    fsImpl.rmSync(stage, { recursive: true, force: true });
-    onProgress({ phase: 'download', source: 'playwright', done: 0, total: part.bytes ?? null });
-    const got = await downloadFn(part.url, zipPath, {
-      fetchFn, expectedBytes: part.bytes ?? null, env,
-      onProgress: (p) => { try { onProgress({ phase: 'download', source: 'playwright', ...p }); } catch { /* ignore */ } },
-    });
-    const want = String(part.sha256).toLowerCase();
-    if (String(got?.sha256 ?? '').toLowerCase() !== want) throw new Error(`sha256 mismatch (got=${got?.sha256}, want=${want})`);
+// ---------------------------------------------------------------------------
+// ⑥-2d macOS 문서 보조 엔진 이음오피스 (D-M21, 2026-10-28 사용자 결정)
+// ---------------------------------------------------------------------------
+//
+// 문서는 파이썬 라이브러리(문서 스킬)가 먼저이고, 이음오피스는 그것이 못 하는 일(옛 .hwp 만들기·
+// 쪽 그림 렌더·PDF→워드 등)을 맡는 보조 엔진이다. 공식 GitHub 릴리스(잠금표: 주소·SHA-256·크기 고정)를
+// `_agent/shared/tools/ieumoffice/IeumOffice.app` 에 풀고, 에이전트는 심 `ieumoffice`(shims.mjs)로만 부른다 —
+// MCP 로 등록하지 않는다. Windows 는 설치 프로그램(Setup.exe)만 배포되어 아직 싣지 않는다.
 
-    const entries = await listArchiveFn(zipPath);
-    const unsafe = entries.filter((e) => unsafeArchiveEntry(e));
-    if (unsafe.length) throw new Error(`archive has unsafe entry path(s): ${unsafe.slice(0, 3).join(', ')}`);
-    if (archiveTopFolder(entries) !== part.top) throw new Error(`archive top folder is not ${part.top}`);
+export const IEUMOFFICE_PART = 'ieumoffice';
 
-    await extractZipFn(zipPath, stage);
-    if (!fsImpl.existsSync(path.join(stage, ...String(part.executable).split('/')))) throw new Error(`executable not in archive: ${part.executable}`);
-    fsImpl.writeFileSync(path.join(stage, 'INSTALLATION_COMPLETE'), '');
-    fsImpl.rmSync(dest, { recursive: true, force: true });
-    fsImpl.renameSync(stage, dest);
-    try { fsImpl.rmSync(zipPath, { force: true }); } catch { /* 청소는 최선 노력 */ }
-
-    recordPlaywrightBrowser(root, info('playwright-cdn'), deps);
-    log(`playwright browser ${part.version} (r${part.revision}) -> ${relToRoot(root, dest)}`);
-    return { ok: true, state: 'done', source: 'playwright-cdn', path: dest };
-  } catch (err) {
-    try { fsImpl.rmSync(zipPath, { force: true }); } catch { /* 최선 노력 */ }
-    try { fsImpl.rmSync(stage, { recursive: true, force: true }); } catch { /* 같음 */ }
-    return pendingOut('download-failed', String(err?.message ?? err));
-  }
+/**
+ * States: `skipped`(Windows · 잠금표에 없음) · `done` · `pending`(정직한 실패).
+ */
+export async function installIeumOffice({
+  root, lock, zipRoot, platform = process.platform,
+  onProgress = () => {}, log = () => {},
+  fetchFn = fetch, fsImpl = fs,
+  downloadFn = downloadToFile,
+  listArchiveFn = listArchive,
+  extractZipFn = extractZip,
+  readReceiptFn = readReceipt, writeReceiptFn = writeReceipt,
+  env = process.env,
+} = {}) {
+  const deps = { readReceiptFn, writeReceiptFn };
+  if (platform === 'win32') return { ok: true, state: 'skipped', reason: 'windows' };
+  const theLock = lock ?? readLock({ zipRoot });
+  const part = theLock?.parts?.[IEUMOFFICE_PART];
+  if (!part) return { ok: true, state: 'skipped', reason: 'not-in-lock' };
+  const record = (info) => patchReceipt(root, (receipt) => { setInstalled(receipt, IEUMOFFICE_PART, info); }, deps);
+  return installDownloadPart({
+    root, part, partName: IEUMOFFICE_PART, source: 'github-release', progressSource: 'ieumoffice', code: CODES.ieumoffice, record,
+    pendingMessage: (reason) => `문서 보조 엔진(이음오피스)을 내려받지 못했습니다(${reason}). 문서 일은 파이썬 라이브러리와 문서 MCP 로 합니다.`,
+    onProgress, log, fetchFn, fsImpl, downloadFn, listArchiveFn, extractZipFn, env,
+  });
 }
 
 // ---------------------------------------------------------------------------

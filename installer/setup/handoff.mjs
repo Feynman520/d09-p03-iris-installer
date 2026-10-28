@@ -281,6 +281,8 @@ export function readHandoff(root, { fs = nodeFs } = {}) {
 
 // ⑨ 검사(checks.mjs checkEdge)·⑤-6(adapters.mjs)가 대기 기능에 적는 브라우저 조작의 이름 — 글자가 같아야 한다(시험이 묶음).
 export const BROWSER_CAPABILITY = '브라우저 조작(Playwright)';
+// ⑦ 에서 macOS 문서 보조 엔진(이음오피스, D-M21)을 받지 못했을 때 남은 일에 더하는 이름.
+export const IEUMOFFICE_CAPABILITY = '문서 보조 엔진(이음오피스)';
 
 /**
  * refreshHandoffAfterOnline(ctx) — 로그인·중계기가 끝난 뒤 서버가 부른다.
@@ -290,6 +292,8 @@ export const BROWSER_CAPABILITY = '브라우저 조작(Playwright)';
  * Face 가 이미 고쳐 둔 `messenger.prompted` 는 건드리지 않는다(계약: 그 칸만
  * Face 의 것이다). `ctx.resolvedCapabilities`(이름 목록)에 든 대기 기능은 ⑦ 에서
  * 풀린 것이라 `pendingCapabilities` 에서 뺀다(macOS 브라우저 조작 — 그 밖에는 비어 있다).
+ * `ctx.addedCapabilities`({capability, reason, howToEnable} 목록)는 ⑦ 에서 새로 대기가 된 기능이라
+ * 같은 이름이 없을 때만 더한다(macOS 이음오피스 내려받기 실패).
  */
 export function refreshHandoffAfterOnline(ctx, { fs = ctx?.fs ?? nodeFs, now = new Date() } = {}) {
   const root = ctx.root;
@@ -304,10 +308,15 @@ export function refreshHandoffAfterOnline(ctx, { fs = ctx?.fs ?? nodeFs, now = n
   const login = loginBlock(receipt, subscriptions);
   const setup = setupSummary(receipt, { assumeDone: [] });
   const resolved = new Set(Array.isArray(ctx.resolvedCapabilities) ? ctx.resolvedCapabilities : []);
+  const added = (Array.isArray(ctx.addedCapabilities) ? ctx.addedCapabilities : []).filter((p) => p?.capability);
+  let pendingCapabilities = Array.isArray(prior.pendingCapabilities) ? prior.pendingCapabilities.filter((p) => !resolved.has(p?.capability)) : null;
+  if (added.length) {
+    pendingCapabilities = pendingCapabilities ?? [];
+    for (const p of added) if (!pendingCapabilities.some((q) => q?.capability === p.capability)) pendingCapabilities.push(p);
+  }
   const next = {
     ...prior,
-    ...(resolved.size && Array.isArray(prior.pendingCapabilities)
-      ? { pendingCapabilities: prior.pendingCapabilities.filter((p) => !resolved.has(p?.capability)) } : {}),
+    ...((resolved.size || added.length) && pendingCapabilities ? { pendingCapabilities } : {}),
     writtenAt: now.toISOString(),
     login,
     relay: relayBlock(receipt),

@@ -595,7 +595,7 @@ test('env(macOS): POSIX 심·uv 심·콜론 PATH·LaunchAgent 인자(설계-macO
   const tools = path.join(ctx.root, '_agent', 'shared', 'tools');
 
   assert.deepEqual(fs.readdirSync(shims).sort(),
-    ['codex', 'git', 'node', 'python', 'python3', 'relay-ensure', 'relay-ensure.mjs', 'uv']);
+    ['codex', 'git', 'ieumoffice', 'node', 'python', 'python3', 'relay-ensure', 'relay-ensure.mjs', 'uv']);
   assert.ok(pending.some((p) => /Claude Code/.test(p.capability)), 'claude 심은 온라인 단계로 미뤄진다');
   const uv = fs.readFileSync(path.join(shims, 'uv'), 'ascii');
   assert.match(uv, /^#!\/bin\/sh\n/);

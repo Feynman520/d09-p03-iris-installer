@@ -1314,6 +1314,17 @@ function renderOnlineRows(on) {
         br.state === 'checking' ? '확인 중' : '받지 못했습니다 — Chrome 을 설치하면 바로 켜집니다',
     ]);
   }
+  // macOS: 문서 보조 엔진(이음오피스, D-M21). Windows 에는 이 값이 없다.
+  const io = o.ieumoffice || {};
+  if (io.state && io.state !== 'skipped') {
+    const pct = io.total ? ' ' + Math.min(100, Math.round(100 * (Number(io.done) || 0) / io.total)) + '%' : '';
+    rows.push([
+      io.state === 'done' ? 'done' : (io.state === 'downloading' || io.state === 'checking') ? 'running' : 'pending',
+      '문서 보조 엔진(이음오피스) 내려받기',
+      io.state === 'done' ? '받았습니다 — 한글(.hwp) 만들기·쪽 그림 확인 등에 씁니다' : io.state === 'downloading' ? '받는 중' + pct + ' (약 238MB)' :
+        io.state === 'checking' ? '확인 중' : '받지 못했습니다 — 문서 일은 파이썬 라이브러리와 문서 MCP 로 합니다. 나중에 다시 열면 이어서 받습니다',
+    ]);
+  }
   const relay = o.relay || {};
   rows.push([
     relay.state === 'done' ? 'done' : relay.state === 'failed' ? 'failed' : relay.state === 'running' ? 'running' : 'pending',
