@@ -27,7 +27,7 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | D-M14 | 중계기 관리 | `teamclaude-manage.mjs`(node). 3456 을 잡은 프로세스가 동봉 node + TeamClaude 진입 파일인지 `lsof`·`ps` 로 증명한 뒤에만 멈춘다(PID 만, 일괄 종료 금지) | `.ps1` 을 못 쓴다 |
 | D-M15 | 로그인 | 창 없는 로그인(이미 있는 piped 방식) + `open` 으로 브라우저 | 새 콘솔 창(`start`) 자리 |
 | D-M16 | 문서 MCP | ~~macOS 1차 판은 pdf 만~~ → **M6(2026-10-27): 다섯 개 모두 활성.** 엑셀·PPT·워드 = 무료 LibreOffice(따로 설치, 없으면 그 셋만 `pending`)를 화면 없이 띄워 같은 도구를 처리, 한글 = python-hwpx(한컴 없이 HWPX/HWP 5.0). 각 저장소 `mac/v1` 브랜치 | COM 이 없다 |
-| D-M17 | 브라우저 조작 | Playwright MCP 채널 = Google Chrome → 없으면 Microsoft Edge → 둘 다 없으면 `pending`(내려받기 0 유지) | Windows 는 Edge 내장 |
+| D-M17 | 브라우저 조작 | Playwright MCP 브라우저 = 실행 래퍼가 **실행할 때마다** 고른다: Google Chrome → Microsoft Edge(`/Applications`·`~/Applications`, 뒤쪽은 `--executable-path`) → 둘 다 없으면 ⑦ 단계가 받아 둔 **Chrome for Testing**(잠금표 `playwright-chromium`: Playwright 공식 배포처 주소·SHA-256·191MB 고정, `_agent/shared/tools/playwright-browsers/chromium-<rev>/`, `PLAYWRIGHT_BROWSERS_PATH`). 받지 못하면 `pending` — Chrome 을 설치하면 래퍼를 다시 쓰지 않고 바로 켜진다. **2026-10-28 개정**: 처음엔 "내려받기 0 유지"였으나 사용자 결정("맥 사용자들이 바로 쓸 수 있게")으로 바꿨다. Chrome 이 있는 Mac 은 아무것도 받지 않는다. 판은 동봉 playwright-core 의 `browsers.json` 과 같아야 한다(정적 검사 ㉒) | Windows 는 Edge 내장 |
 | D-M18 | 훅 | `block-blanket-kill` 을 파이썬 판으로(`pkill`·`killall`·`kill $(lsof …)` 차단). 나머지 두 훅은 이미 파이썬 | `.ps1` 훅 |
 | D-M19 | 삭제기 | `IRIS-삭제.command` → `uninstall.mjs`(node). 영수증이 있는 폴더만 지우는 규칙은 같다 | `uninstall.ps1` 자리 |
 | D-M20 | IRIS 창 | P02 포크에서 함께 고친다. 심은 두 저장소가 글자까지 같아야 한다(정적 검사 ⑥) | |
@@ -56,7 +56,7 @@ Apple Silicon Mac 에서 zip 하나를 풀어 `IRIS-설치.command` 를 두 번 
 | CPU | arm64(`uname -m`, Rosetta 아래 x86_64 도 arm64 로 본다) | Intel 은 막음 |
 | 홈 폴더 | 쓰기 가능, 여유 3GB(`fs.statfs`) | 값을 읽었는데 나쁘면 막음, 못 읽으면 경고 |
 | 포트 3456·3457·3458·3460 | 비어 있거나 IRIS 것 | Windows 와 같음 |
-| 브라우저 조작 | Chrome·Edge 존재 | 막지 않음, 없으면 `pending` |
+| 브라우저 조작 | Chrome·Edge 존재 | 막지 않음, 없으면 ⑦ 이 Chrome for Testing 을 받는다(D-M17) — 받으면 인수 문서의 대기에서 빠진다 |
 | Gatekeeper·관리자·기존 Node/Python/Git | — | 기록만 |
 
 ## 4. 단계

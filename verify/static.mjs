@@ -752,6 +752,35 @@ async function main() {
         problems.length === 0 ? `${keyCount} string key(s) present` : problems.join('; '),
       );
     }
+    // ㉒ (2026-10-28, D-M17 개정) macOS: ⑦ 이 받는 Chrome for Testing 판 = 동봉한 playwright-mcp 의 playwright-core 가
+    // 찾는 판(browsers.json chromium revision). 어긋나면 Playwright 가 chromium-<다른 판> 을 찾다가 "브라우저 없음"으로
+    // 멈춘다 — playwright-mcp 를 올리면 lock.darwin-arm64.json 의 playwright-chromium 칸도 함께 올리라는 문.
+    const shippedLock = JSON.parse(fs.readFileSync(path.join(tmpDir, 'lock.json'), 'utf8'));
+    const cft = shippedLock.parts?.['playwright-chromium'];
+    if (cft) {
+      const pwFile = manifest.parts?.['playwright-mcp']?.file;
+      const pwZip = pwFile ? path.join(payloadDir, ...String(pwFile).split('/')) : null;
+      let ok = false;
+      let detail = `playwright-mcp payload not found (${pwFile ?? 'no manifest entry'})`;
+      if (pwZip && fs.existsSync(pwZip)) {
+        const out = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-pw-'));
+        try {
+          const r = spawnSync('tar', ['-xf', pwZip, '-C', out, 'node_modules/playwright-core/browsers.json'], { encoding: 'utf8' });
+          const bj = path.join(out, 'node_modules', 'playwright-core', 'browsers.json');
+          if (r.status !== 0 || !fs.existsSync(bj)) {
+            detail = `browsers.json not in ${pwFile}`;
+          } else {
+            const chromium = (JSON.parse(fs.readFileSync(bj, 'utf8')).browsers ?? []).find((b) => b.name === 'chromium') ?? {};
+            const destOk = String(cft.dest ?? '').endsWith(`/chromium-${chromium.revision}`);
+            ok = String(chromium.revision) === String(cft.revision) && String(chromium.browserVersion) === String(cft.version) && destOk;
+            detail = `playwright-core chromium r${chromium.revision} ${chromium.browserVersion} vs lock r${cft.revision} ${cft.version} (${cft.dest})`;
+          }
+        } finally {
+          fs.rmSync(out, { recursive: true, force: true });
+        }
+      }
+      record('㉒ playwright-chromium (macOS ⑦ download) matches bundled playwright-core browsers.json', ok, detail);
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

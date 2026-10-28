@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  checkNet, installClaude, installDocumentSkills, startLogin, loginStatus, startRelay,
+  checkNet, installClaude, installDocumentSkills, installPlaywrightBrowser, PLAYWRIGHT_BROWSER_PART, startLogin, loginStatus, startRelay,
   claudeForwarderText, downloadToFile, githubArchiveUrl, archiveTopFolder, unsafeArchiveEntry,
   HOSTS, CODES, RESUME_SENTENCE,
 } from '../installer/lib/online.mjs';
@@ -910,5 +910,110 @@ test('no user-facing message names the relay product', async () => {
     assert.equal(typeof m, 'string');
     assert.ok(!/teamclaude/i.test(m), `a screen sentence must not name the relay product: ${m}`);
   }
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// ===========================================================================
+// ⑥-2c installPlaywrightBrowser (macOS, D-M17 개정 2026-10-28)
+// ===========================================================================
+//
+// Chrome·Edge 가 없는 Mac 에서만 Playwright 의 Chrome for Testing 을 잠금표대로 받는다.
+// 받는 것·지문 대조·최상위 폴더 확인·Playwright 가 찾는 자리(chromium-<rev>/…, INSTALLATION_COMPLETE)·
+// 실패하면 아무것도 남기지 않고 pending 인 것을 본다(인터넷도 tar 도 쓰지 않는다 — 전부 주입).
+
+const CFT_ZIP = Buffer.from('PK fake chrome-mac-arm64.zip');
+const CFT_LOCK = {
+  parts: {
+    'playwright-chromium': {
+      kind: 'url', version: '154.0.8037.0', revision: '1244',
+      url: 'https://cdn.playwright.dev/builds/cft/154.0.8037.0/mac-arm64/chrome-mac-arm64.zip',
+      sha256: crypto.createHash('sha256').update(CFT_ZIP).digest('hex'), bytes: CFT_ZIP.length,
+      top: 'chrome-mac-arm64',
+      executable: 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+      dest: '_agent/shared/tools/playwright-browsers/chromium-1244', redistribute: 'download',
+    },
+  },
+};
+const CFT_EXE = CFT_LOCK.parts['playwright-chromium'].executable;
+const noBrowser = () => ({ present: false, channel: null, path: null });
+function cftFakes({ bytes = CFT_ZIP, top = 'chrome-mac-arm64', withExe = true } = {}) {
+  const asked = [];
+  return {
+    asked,
+    downloadFn: async (url, dest) => {
+      asked.push(url);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, bytes);
+      return { sha256: crypto.createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+    },
+    listArchiveFn: async () => [`${top}/`, `${top}/ABOUT`, `${top}/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`],
+    extractZipFn: async (zip, dest, opts = {}) => {
+      assert.ok(!opts.strip, '최상위 폴더(chrome-mac-arm64)를 벗기지 않는다 — Playwright 가 그 이름으로 찾는다');
+      const f = withExe ? path.join(dest, ...CFT_EXE.split('/')) : path.join(dest, top, 'ABOUT');
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, '#!/bin/sh\n');
+    },
+  };
+}
+const cftDest = (root) => path.join(root, ...CFT_LOCK.parts['playwright-chromium'].dest.split('/'));
+
+test('installPlaywrightBrowser: Chrome·Edge 가 없는 Mac 은 Chrome for Testing 을 받아 Playwright 가 찾는 자리에 놓는다', async () => {
+  const root = tmpRoot('cft');
+  const f = cftFakes();
+  const r = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: noBrowser, env: {}, ...f });
+  assert.equal(r.ok, true);
+  assert.equal(r.state, 'done');
+  assert.deepEqual(f.asked, [CFT_LOCK.parts['playwright-chromium'].url]);
+  const dest = cftDest(root);
+  assert.ok(fs.existsSync(path.join(dest, ...CFT_EXE.split('/'))), '실행 파일이 chromium-1244/chrome-mac-arm64/… 에');
+  assert.ok(fs.existsSync(path.join(dest, 'INSTALLATION_COMPLETE')), 'Playwright 설치 완료 표식');
+  assert.ok(!fs.existsSync(`${dest}.partial`), '임시 폴더가 남지 않는다');
+  assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'setup', 'downloads')), [], '받은 zip 은 지운다');
+  const rec = readReceipt(root).installed[PLAYWRIGHT_BROWSER_PART];
+  assert.equal(rec.state, 'installed');
+  assert.equal(rec.revision, '1244');
+  assert.equal(rec.path.replace(/\\/g, '/'), '_agent/shared/tools/playwright-browsers/chromium-1244', '영수증 경로(영수증은 \\ 로 적는 관례)');
+  // 두 번째 실행 = 이미 있음(다시 받지 않는다)
+  const again = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: noBrowser, env: {}, ...cftFakes() });
+  assert.equal(again.source, 'existing');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('installPlaywrightBrowser: 시스템에 Chrome·Edge 가 있으면·Windows 면·잠금표에 없으면 받지 않는다', async () => {
+  const root = tmpRoot('cft-skip');
+  const f = cftFakes();
+  const sys = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: () => ({ present: true, channel: 'chrome', path: '/Applications/Google Chrome.app' }), env: {}, ...f });
+  assert.deepEqual([sys.state, sys.reason, sys.channel], ['skipped', 'system-browser', 'chrome']);
+  assert.equal(readReceipt(root).installed[PLAYWRIGHT_BROWSER_PART].reason, 'system-browser');
+  const win = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'win32', browserCheckFn: noBrowser, env: {}, ...f });
+  assert.deepEqual([win.state, win.reason], ['skipped', 'windows']);
+  const none = await installPlaywrightBrowser({ root, lock: { parts: {} }, platform: 'darwin', browserCheckFn: noBrowser, env: {}, ...f });
+  assert.deepEqual([none.state, none.reason], ['skipped', 'not-in-lock']);
+  assert.equal(f.asked.length, 0, '어느 경우에도 내려받지 않는다');
+  assert.ok(!fs.existsSync(cftDest(root)));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('installPlaywrightBrowser: 지문이 다르거나·최상위 폴더가 다르거나·실행 파일이 없으면 pending 이고 아무것도 남기지 않는다', async () => {
+  for (const [name, opts] of [['sha', { bytes: Buffer.from('tampered') }], ['top', { top: 'chrome-mac-x64' }], ['exe', { withExe: false }]]) {
+    const root = tmpRoot(`cft-${name}`);
+    const r = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: noBrowser, env: {}, ...cftFakes(opts) });
+    assert.equal(r.ok, false, name);
+    assert.equal(r.state, 'pending', name);
+    assert.equal(r.code, CODES.browser, name);
+    assert.match(r.message, /Chrome 을 설치하면/, name);
+    assert.ok(!fs.existsSync(cftDest(root)) && !fs.existsSync(`${cftDest(root)}.partial`), `${name}: 반쯤 놓인 브라우저가 없다`);
+    assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'setup', 'downloads')), [], `${name}: 받은 zip 도 지운다`);
+    assert.equal(readReceipt(root).installed[PLAYWRIGHT_BROWSER_PART].state, 'pending', name);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('installPlaywrightBrowser: 오프라인이면 받지 않고 pending', async () => {
+  const root = tmpRoot('cft-offline');
+  const f = cftFakes();
+  const r = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: noBrowser, env: { IRIS_INSTALLER_OFFLINE: '1' }, ...f });
+  assert.equal(r.state, 'pending');
+  assert.equal(f.asked.length, 0);
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -1079,6 +1079,23 @@ export function startServer({
       } else {
         state.online.documentSkills = { state: 'skipped', code: null };
       }
+      // macOS(D-M17 개정 2026-10-28): 시스템에 Chrome·Edge 가 없으면 브라우저 조작용 Chrome for Testing 을 받는다.
+      // Windows 는 Edge 가 늘 있어 이 줄을 지나지 않는다. 받지 못해도 멈추지 않는다(pending — Chrome 을 설치하면 켜짐).
+      if (process.platform !== 'win32' && typeof onlineRunner.installPlaywrightBrowser === 'function') {
+        state.online.stage = 'browser';
+        state.online.browser = { state: 'checking', code: null, done: 0, total: null };
+        save();
+        const b = await onlineRunner.installPlaywrightBrowser({
+          root, zipRoot: state.zipRoot, lock: readLock(state.zipRoot), log,
+          // 진행은 메모리에만(상태 조회가 그대로 내보낸다) — 몇 MB 마다 파일로 쓰지 않는다.
+          onProgress: (p) => { state.online.browser = { ...state.online.browser, state: 'downloading', done: p?.done ?? 0, total: p?.total ?? null }; },
+        });
+        state.online.browser = {
+          state: b?.ok ? (b.state === 'skipped' ? 'skipped' : 'done') : 'pending',
+          reason: b?.reason ?? null, code: b?.code ?? null, source: b?.source ?? null,
+        };
+        log(`online playwright browser ${state.online.browser.state}${b?.reason ? ` (${b.reason})` : ''}${b?.code ? ` (${b.code})` : ''}`);
+      }
       state.online.stage = 'login';
       for (const provider of subs) {
         state.online.logins[provider] = state.online.logins[provider]
@@ -1282,9 +1299,11 @@ export function startServer({
       // 유일한 순간이다(계약 = docs/인수문서-handoff-v2.md). 엔진처럼 동적으로
       // 부른다 — 이 모듈이 없어도 서버는 떠야 한다.
       try {
-        const { refreshHandoffAfterOnline } = await import('./setup/handoff.mjs');
+        const { refreshHandoffAfterOnline, BROWSER_CAPABILITY } = await import('./setup/handoff.mjs');
         const r = refreshHandoffAfterOnline({
           root, receipt: readReceiptFn(root), choice: state.choice, fs, log,
+          // ⑨ 검사 때 대기였다가 ⑦ 에서 풀린 기능(macOS 브라우저 조작)은 남은 일에서 뺀다.
+          resolvedCapabilities: state.online.browser?.state === 'done' ? [BROWSER_CAPABILITY] : [],
         });
         log(`handoff refresh: ${r?.written ? r.handoff?.state : `skipped(${r?.reason ?? 'unknown'})`}`);
       } catch (err) {

@@ -1303,6 +1303,17 @@ function renderOnlineRows(on) {
       ds.state === 'done' ? '받아서 등록했습니다' : ds.state === 'downloading' ? '받는 중' : '받지 못했습니다 — 나중에 다시 열면 이어서 받습니다',
     ]);
   }
+  // macOS: Chrome·Edge 가 없을 때만 나오는 줄(있으면 skipped 라 그리지 않는다). Windows 에는 이 값이 없다.
+  const br = o.browser || {};
+  if (br.state && br.state !== 'skipped') {
+    const pct = br.total ? ' ' + Math.min(100, Math.round(100 * (Number(br.done) || 0) / br.total)) + '%' : '';
+    rows.push([
+      br.state === 'done' ? 'done' : (br.state === 'downloading' || br.state === 'checking') ? 'running' : 'pending',
+      '브라우저 조작용 Chrome 내려받기',
+      br.state === 'done' ? '받았습니다 — 브라우저 조작을 바로 쓸 수 있습니다' : br.state === 'downloading' ? '받는 중' + pct + ' (약 190MB)' :
+        br.state === 'checking' ? '확인 중' : '받지 못했습니다 — Chrome 을 설치하면 바로 켜집니다',
+    ]);
+  }
   const relay = o.relay || {};
   rows.push([
     relay.state === 'done' ? 'done' : relay.state === 'failed' ? 'failed' : relay.state === 'running' ? 'running' : 'pending',

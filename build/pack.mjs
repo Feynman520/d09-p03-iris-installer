@@ -141,9 +141,16 @@ export function renderNotices(lock, manifest) {
     for (const [name, p] of notices) lines.push(`> **${name}**: ${p.licenseNotice}`);
     lines.push('');
   }
+  // 내려받는 까닭을 따로 적은 부품(`downloadWhy`, macOS Chrome for Testing)은 "독점·재배포 불가" 문장에 넣지 않고
+  // 그 까닭을 한 줄로 적는다. 그런 부품이 없는 Windows 잠금표의 결과 글은 예전과 같은 바이트다.
+  const why = Object.entries(lock?.parts ?? {}).filter(([, p]) => p.redistribute === 'download' && p.downloadWhy);
   const downloaded = Object.entries(lock?.parts ?? {})
-    .filter(([, p]) => p.redistribute === 'download')
+    .filter(([, p]) => p.redistribute === 'download' && !p.downloadWhy)
     .map(([name]) => name);
+  if (why.length > 0) {
+    for (const [name, p] of why) lines.push(`> **${name}**: 이 패키지에 **들어 있지 않습니다** — ${p.downloadWhy}`);
+    lines.push('');
+  }
   if (downloaded.length > 0) {
     lines.push(
       `> ${downloaded.join(', ')}: 이 패키지에 **들어 있지 않습니다**. 재배포가 허용되지 않는 독점 소프트웨어라, `

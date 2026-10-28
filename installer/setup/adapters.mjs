@@ -721,7 +721,7 @@ export async function run(ctx) {
   if (edge === false) {
     addPending('브라우저 조작(Playwright)', isWindows(platform)
       ? '엣지 브라우저를 찾지 못함 — 엣지를 설치하면 바로 쓰입니다'
-      : 'Chrome·Edge 브라우저를 찾지 못함 — 둘 중 하나를 설치하면 바로 쓰입니다');
+      : MAC_BROWSER_PENDING);
   }
 
   // 진입 파일이 아직 없는 MCP 는 기록만 남긴다(⑤-9 검사가 사람에게 보여 준다).
@@ -962,22 +962,44 @@ export function registerDocumentSkills(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?
 // 엉뚱한 곳(마지막 작업 폴더)에 생기는 것을 막으려면 래퍼가 필요하다.
 // 내용은 ASCII·CRLF(다른 shim 과 같은 규칙) + `%~dp0` 상대경로라 영혼 폴더가
 // 어디로 옮겨져도 그대로 동작한다.
+// macOS ⑤-6 대기 문구: Chrome·Edge 가 없으면 ⑦ 이 Chrome for Testing 을 받는다(D-M17 개정 2026-10-28).
+export const MAC_BROWSER_PENDING = 'Chrome·Edge 가 없음 — 다음 ⑦ 단계가 브라우저 조작용 Chrome for Testing 을 내려받아 바로 켭니다(받지 못하면 Chrome 을 설치하면 켜집니다)';
+
 export function playwrightWrapperText(ctx) {
   const dest = String(lockField(ctx, 'playwright-mcp', 'dest') ?? '_agent/shared/tools/npm/playwright-mcp');
   const entry = String(lockField(ctx, 'playwright-mcp', 'entry') ?? 'node_modules/@playwright/mcp/cli.js');
   if (!isWindows(ctx.platform ?? process.platform)) {
-    // macOS: 같은 일을 하는 sh(ASCII·LF·실행 권한). 채널은 준비 검사가 찾은 브라우저(D-M17).
-    const pre = ctx?.precheck?.recorded?.edge ?? ctx?.precheck?.edge ?? {};
-    const channel = pre.channel === 'msedge' ? 'msedge' : 'chrome';
+    // macOS: 같은 일을 하는 sh(ASCII·LF·실행 권한). 브라우저는 실행할 때마다 고른다(D-M17 개정 2026-10-28):
+    // Google Chrome → Microsoft Edge(/Applications, ~/Applications) → ⑦ 이 받아 둔 Chrome for Testing.
+    // 설치 뒤에 Chrome 을 깔거나 지워도 래퍼를 다시 쓸 필요가 없다. Playwright 의 chrome·msedge 채널은
+    // /Applications 만 보므로 ~/Applications 판은 --executable-path 로 넘긴다.
     const fromTools = dest.replace(/^_agent\/shared\/tools\//, '');
-    return [
+    const cft = lockField(ctx, 'playwright-chromium', 'dest');
+    const cftExe = lockField(ctx, 'playwright-chromium', 'executable');
+    const lines = [
       '#!/bin/sh',
       'D=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
       'mkdir -p "$D/work"',
       'cd "$D/work" || exit 1',
-      `exec "$D/../node/bin/node" "$D/../${fromTools}/${entry}" --browser ${channel} "$@"`,
+      'B=chrome',
+      'C="Google Chrome.app/Contents/MacOS/Google Chrome"',
+      'E="Microsoft Edge.app/Contents/MacOS/Microsoft Edge"',
+      'if [ -x "/Applications/$C" ]; then :',
+      'elif [ -x "$HOME/Applications/$C" ]; then set -- --executable-path "$HOME/Applications/$C" "$@"',
+      'elif [ -x "/Applications/$E" ]; then B=msedge',
+      'elif [ -x "$HOME/Applications/$E" ]; then B=msedge; set -- --executable-path "$HOME/Applications/$E" "$@"',
+    ];
+    if (cft && cftExe) {
+      const cftFromTools = String(cft).replace(/^_agent\/shared\/tools\//, '');
+      const browsersDir = path.posix.dirname(cftFromTools);
+      lines.push(`elif [ -x "$D/../${cftFromTools}/${cftExe}" ]; then B=chromium; PLAYWRIGHT_BROWSERS_PATH="$D/../${browsersDir}"; export PLAYWRIGHT_BROWSERS_PATH`);
+    }
+    lines.push(
+      'fi',
+      `exec "$D/../node/bin/node" "$D/../${fromTools}/${entry}" --browser "$B" "$@"`,
       '',
-    ].join('\n');
+    );
+    return lines.join('\n');
   }
   // dest 는 `_agent/shared/tools/npm/playwright-mcp/<판>` — 래퍼는
   // `_agent\shared\tools\playwright-mcp\` 에 있으므로 `..\` 하나로 tools 에 닿는다.

@@ -78,7 +78,8 @@ export function checkHome({ fsFn = nodeFs, homedir = os.homedir(), workDir = nul
   return { writable, disk };
 }
 
-// 브라우저 조작(Playwright MCP) 채널 — Chrome 먼저, 없으면 Edge(D-M17). 내려받기는 하지 않는다.
+// 브라우저 조작(Playwright MCP) 채널 — Chrome 먼저, 없으면 Edge(D-M17). 둘 다 없으면 ⑦ 단계가 Chrome for Testing 을
+// 받는다(online.mjs installPlaywrightBrowser, 2026-10-28 개정) — 이 검사 자체는 아무것도 받지 않는다.
 // 결과는 Windows 의 `edge` 칸과 같은 모양(present·path)에 `channel` 을 더한다 —
 // 뒤 단계(adapters·checks)가 `recorded.edge.present` 를 읽기 때문이다.
 export function checkAutomationBrowser({ existsFn = nodeFs.existsSync, homedir = os.homedir() } = {}) {

@@ -128,6 +128,22 @@
       "sha256": "c8d7fad6ee5a22a4aa1c74029dd0d915d3c4f8b39bfd913ef1c3ce0703ebd4b8",
       "platform": "macosx_13_0_arm64",
       "expectedCount": 34
+    },
+    "playwright-chromium": {
+      "$comment": "macOS 브라우저 조작(D-M17 개정 2026-10-28): Chrome·Edge 가 없는 Mac 에서만 ⑦ 단계가 받는다. Playwright 가 같은 판 playwright-core(browsers.json chromium revision)로 쓰는 바로 그 Chrome for Testing 이라 playwright-mcp 를 올리면 이 칸도 함께 올린다(verify/static ㉒ 가 맞춰 본다).",
+      "kind": "url",
+      "version": "154.0.8037.0",
+      "revision": "1244",
+      "url": "https://cdn.playwright.dev/builds/cft/154.0.8037.0/mac-arm64/chrome-mac-arm64.zip",
+      "sha256": "087abf7d9405bde17889b4ccbe7d12f4a4d12a0164cc087fedd3bfe46817baa7",
+      "sha256Source": "이 PC 에서 받아 계산(2026-10-28). 받은 파일의 MD5 가 배포처가 알려 준 x-goog-hash md5=13EW+NUGhESltk/0A1yDng== 와 같다",
+      "bytes": 191396177,
+      "top": "chrome-mac-arm64",
+      "executable": "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+      "dest": "_agent/shared/tools/playwright-browsers/chromium-1244",
+      "redistribute": "download",
+      "downloadWhy": "Google Chrome for Testing 은 Google 이 배포하는 시험용 Chrome 이라 꾸러미에 싣지 않고, 시스템에 Chrome·Edge 가 없을 때만 설치 중에 Playwright 공식 배포처에서 받는다(191MB)",
+      "license": "Chrome for Testing — Chromium(BSD-3-Clause 등 오픈소스) + Google 구성 요소, Google 배포 조건"
     }
   }
 }

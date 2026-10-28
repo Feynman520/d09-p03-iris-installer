@@ -208,6 +208,23 @@ test('refreshHandoffAfterOnline: 로그인·중계기를 반영해 ready 로 바
   assert.ok(after2.handoff.setupCompletedAt);
 });
 
+test('refreshHandoffAfterOnline: ⑦ 에서 풀린 대기 기능(macOS 브라우저 조작)은 남은 일에서 뺀다', async () => {
+  const { BROWSER_CAPABILITY } = await import('../installer/setup/handoff.mjs');
+  const root = newRoot('refresh-resolved');
+  const ctx = ctxFor(root, { choice: { subscriptions: ['claude'], leadAgent: 'claude' } });
+  const pending = [
+    { capability: BROWSER_CAPABILITY, reason: 'Chrome·Edge 가 없음' },
+    { capability: '문서 자동화(엑셀)', reason: 'LibreOffice 가 없음' },
+    { capability: BROWSER_CAPABILITY, reason: 'Chrome·Edge 브라우저를 찾지 못함', howToEnable: 'x' },
+  ];
+  writeHandoff(ctx, { assumeDone: ['checks'], pending });
+  const receipt = doneReceipt({ logins: { claude: { state: 'done' } }, relay: { state: 'done', accounts: 1 } });
+  const kept = refreshHandoffAfterOnline({ ...ctx, receipt });
+  assert.equal(kept.handoff.pendingCapabilities.length, 3, '풀린 것이 없으면 그대로');
+  const r = refreshHandoffAfterOnline({ ...ctx, receipt, resolvedCapabilities: [BROWSER_CAPABILITY] });
+  assert.deepEqual(r.handoff.pendingCapabilities.map((p) => p.capability), ['문서 자동화(엑셀)'], '같은 이름 두 줄(⑤-6·⑨)이 함께 빠진다');
+});
+
 test('refreshHandoffAfterOnline: 인수 문서가 아직 없으면 새로 지어내지 않는다', () => {
   const root = newRoot('refresh-none');
   const r = refreshHandoffAfterOnline(ctxFor(root));

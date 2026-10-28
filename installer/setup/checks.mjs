@@ -823,11 +823,12 @@ export function checkEdge(ctx) {
       const which = pre.edge.channel === 'msedge' ? 'Edge' : 'Chrome';
       return item('edge', 9, label, 'pass', `${which}이(가) 있어 브라우저 조작을 바로 쓸 수 있습니다.`);
     }
+    // 없으면 ⑦ 이 Chrome for Testing 을 받는다(D-M17 개정 2026-10-28) — ⑦ 이 성공하면 인수 문서의 대기에서 빠진다.
     return item('edge', 9, label, 'pending',
       present === false
-        ? 'Chrome·Edge 를 찾지 못했습니다 — 둘 중 하나를 설치하면 브라우저 조작이 켜집니다.'
-        : '브라우저 유무를 확인하지 못했습니다 — 브라우저 조작 기능은 대기로 둡니다.',
-      { pendingCapability: { capability: '브라우저 조작(Playwright)', reason: 'Chrome·Edge 브라우저를 찾지 못함', howToEnable: 'Chrome 이나 Edge 를 설치하면 자동으로 켜집니다' } });
+        ? 'Chrome·Edge 를 찾지 못했습니다 — 다음 ⑦ 단계가 브라우저 조작용 Chrome for Testing 을 내려받아 켭니다.'
+        : '브라우저 유무를 확인하지 못했습니다 — 다음 ⑦ 단계가 브라우저 조작용 Chrome for Testing 을 내려받아 켭니다.',
+      { pendingCapability: { capability: '브라우저 조작(Playwright)', reason: 'Chrome·Edge 브라우저를 찾지 못함', howToEnable: '⑦ 단계가 Chrome for Testing 을 받으면 켜집니다 — 받지 못했으면 Chrome 을 설치하세요' } });
   }
   if (present === true) {
     return item('edge', 9, '엣지 브라우저(브라우저 조작)', 'pass', '엣지가 있어 브라우저 조작을 바로 쓸 수 있습니다.');

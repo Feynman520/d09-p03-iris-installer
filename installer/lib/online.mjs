@@ -45,6 +45,7 @@ import {
 import { ensureProxy } from './proxy.mjs';
 import { readReceipt, writeReceipt, setInstalled } from './receipt.mjs';
 import { writeShims } from './shims.mjs';
+import { checkAutomationBrowser } from './precheck-darwin.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -75,6 +76,7 @@ export const CODES = {
   net: 'E-ONLINE-NET',
   claude: 'E-ONLINE-CLAUDE',
   documentSkills: 'E-ONLINE-DOCSKILLS',
+  browser: 'E-ONLINE-BROWSER',
   relay: 'E-ONLINE-RELAY',
 };
 
@@ -807,6 +809,117 @@ export async function installDocumentSkills({
     if (!destExistedBefore) {
       try { fsImpl.rmSync(dest, { recursive: true, force: true }); } catch { /* 최선 노력 */ }
     }
+    return pendingOut('download-failed', String(err?.message ?? err));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ⑥-2c macOS 브라우저 조작용 Chrome for Testing (D-M17 개정, 2026-10-28)
+// ---------------------------------------------------------------------------
+//
+// Windows 는 Edge 가 늘 있어 Playwright MCP 가 바로 돈다. Mac 은 Safari 뿐인 경우가 많아,
+// 시스템에 Chrome·Edge 가 없으면 Playwright 가 쓰는 바로 그 Chrome for Testing 을
+// 잠금표(`lock.parts['playwright-chromium']`: 주소·SHA-256·크기 고정)대로 받아
+// `_agent/shared/tools/playwright-browsers/chromium-<revision>/` 에 놓는다. 그 폴더 이름과
+// 안쪽 모양(`chrome-mac-arm64/…app`)·`INSTALLATION_COMPLETE` 표식은 Playwright 가
+// `PLAYWRIGHT_BROWSERS_PATH` 아래에서 찾는 그대로다. 실제로 어느 브라우저를 쓸지는
+// 실행 래퍼(adapters.mjs playwrightWrapperText)가 그때그때 고른다: Chrome → Edge → 이것.
+// 실패해도 설치는 멈추지 않는다 — `pending` 으로 남고, Chrome 을 설치하면 그대로 켜진다.
+
+export const PLAYWRIGHT_BROWSER_PART = 'playwright-chromium';
+
+function recordPlaywrightBrowser(root, info, deps) {
+  patchReceipt(root, (receipt) => { setInstalled(receipt, PLAYWRIGHT_BROWSER_PART, info); }, deps);
+}
+
+/**
+ * States: `skipped`(Windows · 잠금표에 없음 · 시스템에 Chrome/Edge 있음) · `done` · `pending`(정직한 실패).
+ * @returns {Promise<{ok:boolean, state:string, reason?:string, channel?:string, path?:string, source?:string, code?:string, message?:string, detail?:any}>}
+ */
+export async function installPlaywrightBrowser({
+  root, lock, zipRoot, platform = process.platform,
+  onProgress = () => {}, log = () => {},
+  fetchFn = fetch, fsImpl = fs,
+  downloadFn = downloadToFile,
+  listArchiveFn = listArchive,
+  extractZipFn = extractZip,
+  browserCheckFn = checkAutomationBrowser,
+  readReceiptFn = readReceipt, writeReceiptFn = writeReceipt,
+  env = process.env,
+} = {}) {
+  const deps = { readReceiptFn, writeReceiptFn };
+  if (platform === 'win32') return { ok: true, state: 'skipped', reason: 'windows' };
+  const theLock = lock ?? readLock({ zipRoot });
+  const part = theLock?.parts?.[PLAYWRIGHT_BROWSER_PART];
+  if (!part) return { ok: true, state: 'skipped', reason: 'not-in-lock' };
+
+  const system = (() => { try { return browserCheckFn(); } catch { return { present: false }; } })();
+  if (system?.present) {
+    recordPlaywrightBrowser(root, { state: 'not-installed', reason: 'system-browser', channel: system.channel ?? null }, deps);
+    log(`playwright browser skipped (system ${system.channel ?? 'browser'} at ${system.path ?? '?'})`);
+    return { ok: true, state: 'skipped', reason: 'system-browser', channel: system.channel ?? null };
+  }
+
+  const pendingOut = (reason, detail = null) => {
+    const message = `브라우저 조작용 Chrome for Testing 을 내려받지 못했습니다(${reason}). Chrome 을 설치하면 바로 켜집니다.`;
+    recordPlaywrightBrowser(root, { state: 'pending', reason, verified: false }, deps);
+    log(`playwright browser pending: ${reason}${detail ? ` — ${detail}` : ''}`);
+    return { ok: false, state: 'pending', code: CODES.browser, message, detail };
+  };
+
+  if (!part.url || !/^[0-9a-f]{64}$/i.test(String(part.sha256 ?? '')) || !part.dest || !part.executable || !part.top) {
+    return pendingOut('lock-missing', 'lock.parts.playwright-chromium incomplete');
+  }
+  let dest;
+  try {
+    dest = assertInside(root, path.join(root, String(part.dest).split('/').join(path.sep)), { fs: fsImpl });
+  } catch (err) {
+    return pendingOut('bad-dest', String(err?.message ?? err));
+  }
+  const exe = path.join(dest, ...String(part.executable).split('/'));
+  const marker = path.join(dest, 'INSTALLATION_COMPLETE');
+  const info = (source) => ({
+    state: 'installed', version: part.version ?? null, revision: part.revision ?? null, sha256: String(part.sha256).toLowerCase(),
+    source, path: relToRoot(root, dest), verified: true,
+  });
+  if (fsImpl.existsSync(exe) && fsImpl.existsSync(marker)) {
+    recordPlaywrightBrowser(root, info('existing'), deps);
+    return { ok: true, state: 'done', source: 'existing', path: dest };
+  }
+  if (isOffline(env)) return pendingOut('offline', RESUME_SENTENCE);
+
+  const work = path.join(root, '_agent', 'setup', 'downloads');
+  const zipPath = path.join(work, `${PLAYWRIGHT_BROWSER_PART}-${part.revision ?? 'x'}.zip`);
+  const stage = `${dest}.partial`; // 같은 폴더 안에서 풀고 이름만 바꾼다(반쯤 풀린 브라우저를 Playwright 가 보지 않게)
+  try {
+    fsImpl.mkdirSync(work, { recursive: true });
+    fsImpl.rmSync(stage, { recursive: true, force: true });
+    onProgress({ phase: 'download', source: 'playwright', done: 0, total: part.bytes ?? null });
+    const got = await downloadFn(part.url, zipPath, {
+      fetchFn, expectedBytes: part.bytes ?? null, env,
+      onProgress: (p) => { try { onProgress({ phase: 'download', source: 'playwright', ...p }); } catch { /* ignore */ } },
+    });
+    const want = String(part.sha256).toLowerCase();
+    if (String(got?.sha256 ?? '').toLowerCase() !== want) throw new Error(`sha256 mismatch (got=${got?.sha256}, want=${want})`);
+
+    const entries = await listArchiveFn(zipPath);
+    const unsafe = entries.filter((e) => unsafeArchiveEntry(e));
+    if (unsafe.length) throw new Error(`archive has unsafe entry path(s): ${unsafe.slice(0, 3).join(', ')}`);
+    if (archiveTopFolder(entries) !== part.top) throw new Error(`archive top folder is not ${part.top}`);
+
+    await extractZipFn(zipPath, stage);
+    if (!fsImpl.existsSync(path.join(stage, ...String(part.executable).split('/')))) throw new Error(`executable not in archive: ${part.executable}`);
+    fsImpl.writeFileSync(path.join(stage, 'INSTALLATION_COMPLETE'), '');
+    fsImpl.rmSync(dest, { recursive: true, force: true });
+    fsImpl.renameSync(stage, dest);
+    try { fsImpl.rmSync(zipPath, { force: true }); } catch { /* 청소는 최선 노력 */ }
+
+    recordPlaywrightBrowser(root, info('playwright-cdn'), deps);
+    log(`playwright browser ${part.version} (r${part.revision}) -> ${relToRoot(root, dest)}`);
+    return { ok: true, state: 'done', source: 'playwright-cdn', path: dest };
+  } catch (err) {
+    try { fsImpl.rmSync(zipPath, { force: true }); } catch { /* 최선 노력 */ }
+    try { fsImpl.rmSync(stage, { recursive: true, force: true }); } catch { /* 같음 */ }
     return pendingOut('download-failed', String(err?.message ?? err));
   }
 }

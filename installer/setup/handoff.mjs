@@ -279,13 +279,17 @@ export function readHandoff(root, { fs = nodeFs } = {}) {
   }
 }
 
+// ⑨ 검사(checks.mjs checkEdge)·⑤-6(adapters.mjs)가 대기 기능에 적는 브라우저 조작의 이름 — 글자가 같아야 한다(시험이 묶음).
+export const BROWSER_CAPABILITY = '브라우저 조작(Playwright)';
+
 /**
  * refreshHandoffAfterOnline(ctx) — 로그인·중계기가 끝난 뒤 서버가 부른다.
  *
  * 설치기가 ⑨ 검사에서 이 파일을 쓸 때는 아직 로그인 전이라 `login-pending`
  * 이다. 온라인 묶음이 끝나면 같은 파일의 로그인·중계기·상태만 갱신한다.
  * Face 가 이미 고쳐 둔 `messenger.prompted` 는 건드리지 않는다(계약: 그 칸만
- * Face 의 것이다).
+ * Face 의 것이다). `ctx.resolvedCapabilities`(이름 목록)에 든 대기 기능은 ⑦ 에서
+ * 풀린 것이라 `pendingCapabilities` 에서 뺀다(macOS 브라우저 조작 — 그 밖에는 비어 있다).
  */
 export function refreshHandoffAfterOnline(ctx, { fs = ctx?.fs ?? nodeFs, now = new Date() } = {}) {
   const root = ctx.root;
@@ -299,8 +303,11 @@ export function refreshHandoffAfterOnline(ctx, { fs = ctx?.fs ?? nodeFs, now = n
   const subscriptions = Array.isArray(prior.subscriptions) ? prior.subscriptions : [];
   const login = loginBlock(receipt, subscriptions);
   const setup = setupSummary(receipt, { assumeDone: [] });
+  const resolved = new Set(Array.isArray(ctx.resolvedCapabilities) ? ctx.resolvedCapabilities : []);
   const next = {
     ...prior,
+    ...(resolved.size && Array.isArray(prior.pendingCapabilities)
+      ? { pendingCapabilities: prior.pendingCapabilities.filter((p) => !resolved.has(p?.capability)) } : {}),
     writtenAt: now.toISOString(),
     login,
     relay: relayBlock(receipt),

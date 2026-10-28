@@ -702,7 +702,9 @@ test('adapters(macOS): sh 래퍼·파이썬 훅·bin 경로, 잠금표에 없는
   const wrapFile = adapters.playwrightWrapper(root, MAC);
   const wrap = fs.readFileSync(wrapFile, 'utf8');
   assert.match(wrap, /^#!\/bin\/sh\n/);
-  assert.match(wrap, /--browser msedge "\$@"/, '준비 검사가 찾은 채널');
+  assert.match(wrap, /--browser "\$B" "\$@"/, '브라우저는 실행할 때 고른다(D-M17 개정)');
+  assert.ok(wrap.indexOf('Google Chrome.app') < wrap.indexOf('Microsoft Edge.app'), 'Chrome 이 Edge 보다 먼저');
+  assert.ok(!wrap.includes('PLAYWRIGHT_BROWSERS_PATH'), '잠금표에 Chrome for Testing 이 없으면 그 갈래도 없다');
   assert.equal(fs.statSync(wrapFile).mode & 0o777, 0o755);
 
   const settings = readJson(agentFile(root, 'claude', 'settings.json'));
@@ -765,4 +767,73 @@ test('adapters(macOS): 플러그인 캐시 사본은 원본의 실행 권한을 
   const cache = adapters.pluginCacheDir(ctx.root, 'superpowers', '6.3.0');
   assert.equal(fs.statSync(path.join(cache, 'hooks', 'run-hook.cmd')).mode & 0o777, 0o755, '훅 실행 파일은 0755');
   assert.equal(fs.statSync(path.join(cache, 'hooks', 'hooks.json')).mode & 0o111, 0, '실행 비트가 없던 파일에 새로 붙이지 않는다');
+});
+
+// 2026-10-28 D-M17 개정: macOS 래퍼가 실행할 때마다 브라우저를 고른다 — Chrome → Edge → ⑦ 이 받아 둔 Chrome for Testing.
+// 진짜 sh 로 래퍼를 돌리고, node 자리에는 받은 인수·PLAYWRIGHT_BROWSERS_PATH 를 적는 가짜를 둔다.
+// 래퍼의 `/Applications/` 는 시험 폴더로 바꿔 끼운다(이 PC 의 진짜 앱 폴더를 보지 않게).
+test('adapters(macOS): 플레이라이트 래퍼가 Chrome → Edge → Chrome for Testing 순으로 고른다', { skip: process.platform === 'win32' && 'sh 래퍼' }, async () => {
+  const { spawnSync } = await import('node:child_process');
+  const lock = loadLockForTarget('darwin-arm64').lock;
+  const base = path.join(tmp, 'mac-wrap');
+  const tools = path.join(base, 'soul', '_agent', 'shared', 'tools');
+  const sysApps = path.join(base, 'Applications');
+  const home = path.join(base, 'home');
+  const text = adapters.playwrightWrapperText({ platform: 'darwin', lock, root: path.join(base, 'soul') })
+    .split('"/Applications/').join(`"${sysApps}/`);
+  const wrapper = path.join(tools, 'playwright-mcp', 'playwright-mcp');
+  fs.mkdirSync(path.dirname(wrapper), { recursive: true });
+  fs.writeFileSync(wrapper, text, { mode: 0o755 });
+  const node = path.join(tools, 'node', 'bin', 'node');
+  fs.mkdirSync(path.dirname(node), { recursive: true });
+  fs.writeFileSync(node, '#!/bin/sh\nprintf "%s\\n" "PBP=${PLAYWRIGHT_BROWSERS_PATH:-}" "$@"\n', { mode: 0o755 });
+  const exe = (p) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, '', { mode: 0o755 }); };
+  const chrome = 'Google Chrome.app/Contents/MacOS/Google Chrome';
+  const edge = 'Microsoft Edge.app/Contents/MacOS/Microsoft Edge';
+  const cft = path.join(tools, ...lock.parts['playwright-chromium'].dest.replace('_agent/shared/tools/', '').split('/'), ...lock.parts['playwright-chromium'].executable.split('/'));
+  const runIt = () => {
+    const r = spawnSync('/bin/sh', [wrapper, '--caps', 'vision'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: home } });
+    assert.equal(r.status, 0, r.stderr);
+    const [pbp, ...args] = r.stdout.trim().split('\n');
+    const i = args.indexOf('--browser');
+    return { browser: args[i + 1], pbp: pbp.slice(4), args };
+  };
+  let r = runIt();
+  assert.equal(r.browser, 'chrome', '아무것도 없으면 chrome(Playwright 가 "Chrome 이 없다"고 알린다)');
+  assert.equal(r.pbp, '');
+  assert.deepEqual(r.args.slice(-2), ['--caps', 'vision'], '받은 인수는 그대로 넘긴다');
+  exe(cft);
+  r = runIt();
+  assert.equal(r.browser, 'chromium', 'Chrome·Edge 가 없고 받아 둔 Chrome for Testing 이 있으면 chromium');
+  assert.equal(fs.realpathSync(r.pbp), fs.realpathSync(path.join(tools, 'playwright-browsers')), 'PLAYWRIGHT_BROWSERS_PATH = chromium-<rev> 의 부모');
+  exe(path.join(home, 'Applications', edge));
+  r = runIt();
+  assert.equal(r.browser, 'msedge');
+  assert.equal(r.args[r.args.indexOf('--executable-path') + 1], path.join(home, 'Applications', edge), '~/Applications 판은 실행 파일을 직접 넘긴다');
+  assert.equal(r.pbp, '');
+  exe(path.join(sysApps, edge));
+  r = runIt();
+  assert.equal(r.browser, 'msedge');
+  assert.ok(!r.args.includes('--executable-path'), '/Applications 판은 채널만');
+  exe(path.join(home, 'Applications', chrome));
+  r = runIt();
+  assert.equal(r.browser, 'chrome', 'Chrome 이 Edge 보다 먼저');
+  assert.equal(r.args[r.args.indexOf('--executable-path') + 1], path.join(home, 'Applications', chrome));
+  exe(path.join(sysApps, chrome));
+  r = runIt();
+  assert.equal(r.browser, 'chrome');
+  assert.ok(!r.args.includes('--executable-path'));
+});
+
+test('adapters(macOS): Chrome·Edge 가 없으면 대기 문구는 "⑦ 이 Chrome for Testing 을 받는다"', { skip: process.platform === 'win32' && 'POSIX 경로' }, async () => {
+  const ctx = makeCtx('mac-nobrowser', { precheck: { recorded: { edge: { present: false, channel: null } } } });
+  ctx.platform = 'darwin';
+  ctx.lock = loadLockForTarget('darwin-arm64').lock;
+  const { pending } = await adapters.run(ctx);
+  const p = pending.find((x) => x.capability === '브라우저 조작(Playwright)');
+  assert.equal(p?.reason, adapters.MAC_BROWSER_PENDING);
+  const { BROWSER_CAPABILITY } = await import('../installer/setup/handoff.mjs');
+  assert.equal(BROWSER_CAPABILITY, '브라우저 조작(Playwright)', '인수 문서가 ⑦ 뒤에 빼는 이름과 같은 글자');
+  const wrap = fs.readFileSync(adapters.playwrightWrapper(ctx.root, { platform: 'darwin' }), 'utf8');
+  assert.ok(wrap.includes('PLAYWRIGHT_BROWSERS_PATH="$D/../playwright-browsers"'), '래퍼가 Chrome for Testing 자리를 안다');
 });
