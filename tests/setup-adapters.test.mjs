@@ -750,3 +750,19 @@ test('hasLibreOffice: 알려진 자리 중 하나라도 있으면 true(IRIS_SOFF
   assert.equal(adapters.hasLibreOffice({ env: {} }, { fs: fakeFs, home: '/h' }), false);
   assert.equal(adapters.hasLibreOffice({ libreOffice: true }), true);
 });
+
+// 2026-10-28 macOS 실설치: 캐시 사본의 hooks/run-hook.cmd 가 0644 로 복사돼 첫 세션의 SessionStart 훅이
+// "Permission denied" 로 실패했다. 복사는 원본의 실행 권한을 지켜야 한다(Windows 엔 실행 비트가 없다).
+test('adapters(macOS): 플러그인 캐시 사본은 원본의 실행 권한을 지킨다', { skip: process.platform === 'win32' }, async () => {
+  const ctx = makeCtx('exec-bits', { apps: { office: true, hancom: true } });
+  const sp = under(ctx.root, LOCK.parts.superpowers.dest);
+  fs.mkdirSync(path.join(sp, 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(sp, 'hooks', 'run-hook.cmd'), ': << \'CMDBLOCK\'\n');
+  fs.writeFileSync(path.join(sp, 'hooks', 'hooks.json'), '{}\n');
+  fs.chmodSync(path.join(sp, 'hooks', 'run-hook.cmd'), 0o755);
+  fs.chmodSync(path.join(sp, 'hooks', 'hooks.json'), 0o644);
+  await adapters.run(ctx);
+  const cache = adapters.pluginCacheDir(ctx.root, 'superpowers', '6.3.0');
+  assert.equal(fs.statSync(path.join(cache, 'hooks', 'run-hook.cmd')).mode & 0o777, 0o755, '훅 실행 파일은 0755');
+  assert.equal(fs.statSync(path.join(cache, 'hooks', 'hooks.json')).mode & 0o111, 0, '실행 비트가 없던 파일에 새로 붙이지 않는다');
+});
