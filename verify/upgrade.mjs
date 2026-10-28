@@ -398,6 +398,28 @@ async function main() {
       const r = fs.existsSync(file) ? nodeChecks(file) : { ok: false, detail: '파일 없음' };
       check(`③ⓔ ${name} 진입 파일 node --check`, r.ok, r.ok ? path.relative(SOUL_ROOT, file) : `${path.relative(SOUL_ROOT, file)}: ${r.detail}`);
     }
+    // ③ⓔ MCP 중계기(2.0.52+): 부품이 놓였고 동봉 python 으로 판 번호를 말하며, 설치기 소유
+    // MCP 항목이 안내원 항목으로 바뀌었다(설계-MCP중계기.md 9절).
+    if (fs.readFileSync(path.join(ZIP_NEXT, 'lock.json'), 'utf8').includes('"mcp-relay"')) {
+      const relayPy = path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'mcp-relay', 'relay.py');
+      const py = path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'python', 'python.exe');
+      const ver = fs.existsSync(relayPy) && fs.existsSync(py)
+        ? spawnSync(py, ['-I', relayPy, 'version'], { encoding: 'utf8', timeout: 30000 }) : null;
+      check('③ⓔ mcp-relay 진입 파일이 동봉 python 으로 실행된다', !!ver && ver.status === 0 && /^\d+\.\d+\.\d+/.test(String(ver.stdout).trim()),
+        ver ? `relay ${String(ver.stdout).trim()}` : '파일 없음');
+      let cj = null;
+      try { cj = JSON.parse(fs.readFileSync(path.join(SOUL_ROOT, '_agent', 'claude', '.claude.json'), 'utf8')); } catch { /* 아래에서 실패 */ }
+      const relayed = Object.entries(cj?.mcpServers ?? {}).filter(([, s]) => (s?.args ?? []).includes('shim')).map(([n]) => n);
+      check('③ⓔ 문서 MCP·플레이라이트가 안내원 항목으로 바뀌었다(self-improve 는 플러그인 몫)',
+        ['pdf-automation', 'hwp-automation', 'playwright'].every((n) => relayed.includes(n)), relayed.join(', ') || '(없음)');
+      // 코덱스도 같은 업데이트에서(공용 중계기를 기다리지 않고) 바뀌어야 한다 — 2.0.52 후보 1차에서
+      // 문서 MCP 블록만 그대로 남던 결함(명령이 venv 파이썬이라 설치기 소유로 못 봄)의 재발 방지.
+      let toml = '';
+      try { toml = fs.readFileSync(path.join(SOUL_ROOT, '_agent', 'codex', 'config.toml'), 'utf8'); } catch { /* 아래에서 실패 */ }
+      const codexRelayed = ['pdf-automation', 'hwp-automation', 'playwright'].filter((n) =>
+        new RegExp(`\\[mcp_servers\\.${n}\\][^\\[]*args = \\[[^\\]]*"shim", "--id", "codex\\.global\\.${n}"`).test(toml));
+      check('③ⓔ 코덱스 config.toml 의 문서 MCP·플레이라이트도 안내원 항목이다', codexRelayed.length === 3, codexRelayed.join(', ') || '(없음)');
+    }
     const dashLib = path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'teamclaude-dash', 'lib.mjs');
     if (fs.existsSync(path.join(ZIP_NEXT, 'installer'))) {
       // 새 판 zip 의 dash 부품에 lib.mjs 가 들어 있으면 설치 뒤에도 있어야 한다(2.0.31 대시보드 묶음 검사).

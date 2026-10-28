@@ -110,6 +110,11 @@ export function writeFirstRequest(root, { edition = 'claude', manifest } = {}) {
 // is not slowed down; an older updater part without the file is simply skipped.
 export const AGENT_UPDATE_KICK = 'if exist "%~dp0_agent\\shared\\tools\\updater\\agents.mjs" "%IRIS_FACE_NODE%" "%~dp0_agent\\shared\\tools\\updater\\agents.mjs" --kick >nul 2>&1';
 
+// IRIS 시작 = 공용 MCP 중계기 시작(설계-MCP중계기.md 7절). `start ""` 로 띄우고 실행기는 바로 끝나므로
+// 중계기는 어떤 세션 가계도에도 속하지 않는다(Face 창 닫기가 세션 가계도를 끝내도 살아남는다).
+// pythonw = 창 없음. 이미 떠 있으면 중계기 스스로 곧바로 끝난다(포트 3461 단독 점유).
+export const MCP_RELAY_KICK = 'if exist "%~dp0_agent\\shared\\tools\\mcp-relay\\relay.py" if exist "%~dp0_agent\\shared\\tools\\python\\pythonw.exe" start "" "%~dp0_agent\\shared\\tools\\python\\pythonw.exe" -I "%~dp0_agent\\shared\\tools\\mcp-relay\\relay.py" daemon';
+
 export function faceLauncherContent() {
   return [
     '@echo off',
@@ -119,6 +124,7 @@ export function faceLauncherContent() {
     'rem Default = no console window (wscript launch-hidden.vbs -> launch.mjs). --console = visible window.',
     'setlocal',
     'set "IRIS_FACE_NODE=%~dp0_agent\\shared\\tools\\node\\node.exe"',
+    MCP_RELAY_KICK,
     'if "%~1"=="--console" goto console',
     'if not exist "%~dp0_agent\\shared\\tools\\face\\launch-hidden.vbs" goto console',
     'wscript.exe //nologo "%~dp0_agent\\shared\\tools\\face\\launch-hidden.vbs" %*',

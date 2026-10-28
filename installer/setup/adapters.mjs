@@ -311,6 +311,118 @@ export function mcpServerSpecs(ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// MCP 중계기(설계-MCP중계기.md 9절)
+// ---------------------------------------------------------------------------
+//
+// 로컬 MCP 항목은 이름·env·범위를 그대로 둔 채 실행 명령만 안내원
+// (`python -I <tools>\mcp-relay\relay.py shim --id <id>`)으로 쓴다. 실제 실행 명령은
+// 등록부(`_agent\shared\mcp-relay\registry\<id>.json`, owner=installer)로 옮긴다.
+// 이 형식은 mcp-relay/mcp_relay/store.py·sync.py 가 읽는 것과 같다(시험이 묶음).
+//   · 중계기 부품이나 동봉 python 이 없으면 → 예전처럼 직접 항목(안전한 후퇴)
+//   · 제외 목록(settings.json `exclude`, 기본 self-improve) → 직접
+//   · 사용자가 `relay.py restore` 로 되돌린 항목(status=released) → 직접
+export const RELAY_EXCLUDE_DEFAULT = Object.freeze(['self-improve']);
+export const relayStateDir = (root) => path.join(root, '_agent', 'shared', 'mcp-relay');
+export const relayRegistryId = (agent, name) => `${agent}.global.${name}`;
+const SAFE_RELAY_ID = /^[A-Za-z0-9._-]{1,120}$/;
+
+export function relayPaths(ctx) {
+  const dir = toolDir(ctx, 'mcp-relay');
+  const py = toolDir(ctx, 'python');
+  return {
+    relayPy: dir ? path.join(dir, 'relay.py') : null,
+    python: py ? path.join(py, 'python.exe') : null,
+  };
+}
+
+function readJsonSafe(fs, file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch { return null; }
+}
+
+function relayExclude(fs, root) {
+  const s = readJsonSafe(fs, path.join(relayStateDir(root), 'settings.json'));
+  return Array.isArray(s?.exclude) ? s.exclude : [...RELAY_EXCLUDE_DEFAULT];
+}
+
+// 직접 항목 specs → { specs(안내원 항목으로 바뀐 것 포함), registry(쓸 등록부) }.
+// `existingArgsFor(name)` = 지금 설정에 있는 그 항목의 args(사용자가 더한 인자를 실제 명령 쪽으로 옮기려고).
+export function relaySpecs(ctx, specs, agent, { fs = nodeFs, existingArgsFor = () => null } = {}) {
+  const root = ctx.root;
+  const { relayPy, python } = relayPaths(ctx);
+  if (!relayPy || !python || !fs.existsSync(relayPy) || !fs.existsSync(python)) {
+    return { specs, registry: [], relayed: [], reason: '중계기 부품 또는 동봉 python 없음 — 직접 연결' };
+  }
+  const exclude = new Set(relayExclude(fs, root));
+  const configPath = agent === 'claude' ? claudeConfigJsonPath(root) : codexConfigTomlPath(root);
+  const out = [];
+  const registry = [];
+  const relayed = [];
+  for (const spec of specs) {
+    const id = relayRegistryId(agent, spec.name);
+    if (exclude.has(spec.name) || !SAFE_RELAY_ID.test(id)) { out.push(spec); continue; }
+    const file = path.join(relayStateDir(root), 'registry', `${id}.json`);
+    const prior = readJsonSafe(fs, file);
+    if (prior?.status === 'released') { out.push(spec); continue; }
+    const shimArgs = ['-I', relayPy, 'shim', '--id', id];
+    // 사용자가 직접 항목에 더해 둔 인자(우리 경로·안내원 인자가 아닌 것)는 실제 명령으로 옮긴다.
+    const before = prior?.real?.args ?? existingArgsFor(spec.name) ?? [];
+    const extra = (Array.isArray(before) ? before : []).filter((a) => typeof a === 'string'
+      && !isInstallerOwnedPath(root, a) && !spec.args.includes(a) && !shimArgs.includes(a));
+    const real = { command: spec.command, args: [...spec.args, ...extra] };
+    const data = {
+      schema: 1, id, agent, scope: 'global', name: spec.name,
+      configPath, configKind: agent === 'claude' ? 'claude-user' : 'codex', projectKey: null,
+      real, original: real, expandVars: agent === 'claude', status: 'relayed', owner: 'installer',
+      convertedAt: prior?.convertedAt ?? nowIso(),
+    };
+    const same = prior && JSON.stringify(prior.real) === JSON.stringify(real) && prior.status === 'relayed' && prior.owner === 'installer';
+    if (!same) registry.push({ file, data });
+    relayed.push(spec.name);
+    out.push({ ...spec, command: python, args: shimArgs, relayed: true, real });
+  }
+  return { specs: out, registry, relayed };
+}
+
+export function writeRelayRegistry(root, entries, { fs = nodeFs } = {}) {
+  const written = [];
+  for (const { file, data } of entries) {
+    assertInside(root, file);
+    ensureDir(path.dirname(file), { fs });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify({ ...data, updatedAt: nowIso() }, null, 2)}\n`, 'utf8');
+    fs.renameSync(tmp, file);
+    written.push(path.basename(file));
+  }
+  const settings = path.join(relayStateDir(root), 'settings.json');
+  if (entries.length && !fs.existsSync(settings)) {
+    fs.writeFileSync(settings, `${JSON.stringify({ autoSync: true, exclude: [...RELAY_EXCLUDE_DEFAULT], python: null, startTimeoutSec: 120 }, null, 2)}\n`, 'utf8');
+  }
+  return written;
+}
+
+// 메뉴판 조사(일회성). 실패해도 설치는 계속 — 첫 세션이 스스로 메뉴판을 만든다.
+async function runRelaySurvey(ctx, { fs, root, log }) {
+  const { relayPy, python } = relayPaths(ctx);
+  if (!relayPy || !python || !fs.existsSync(relayPy) || !fs.existsSync(python)) return { status: 'skipped', reason: '중계기 없음' };
+  if (typeof ctx.run !== 'function') return { status: 'skipped', reason: '실행 헬퍼 없음' };
+  if (ctx.env?.IRIS_INSTALLER_NO_RELAY_SURVEY === '1' || process.env.IRIS_INSTALLER_NO_RELAY_SURVEY === '1') {
+    return { status: 'skipped', reason: 'IRIS_INSTALLER_NO_RELAY_SURVEY' };
+  }
+  try {
+    const res = await ctx.run(python, ['-I', relayPy, '--state', relayStateDir(root), '--root', root, 'survey', '--missing', '--timeout', '60'],
+      { cwd: root, env: { ...(ctx.env ?? {}) }, timeoutMs: 240000 });
+    let rows = [];
+    try { rows = JSON.parse(String(res?.out ?? '[]')); } catch { rows = []; }
+    const ok = rows.filter((r) => r.ok).map((r) => r.id);
+    const failed = rows.filter((r) => !r.ok).map((r) => ({ id: r.id, stage: r.stage }));
+    if (failed.length) log(`[adapters] MCP 중계기 메뉴판 조사 실패 ${failed.length}개(첫 세션이 스스로 만듭니다)`);
+    return { status: failed.length ? 'partial' : 'ok', ok, failed };
+  } catch (e) {
+    return { status: 'failed', reason: String(e?.message ?? e).slice(0, 200) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 클로드 훅 (개발 PC 의 살아 있는 `_agent\claude\settings.json` 형식을 그대로 복제)
 // ---------------------------------------------------------------------------
 
@@ -553,7 +665,12 @@ export function updateOwnedMcpTable(text, name, block, root) {
   if (!found) return null;
   const cmd = /^[ \t]*command[ \t]*=[ \t]*"((?:[^"\\]|\\.)*)"/m.exec(found.body);
   const value = cmd ? cmd[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"') : null;
-  if (!isInstallerOwnedPath(root, value)) return null;
+  // JSON 쪽(isInstallerOwnedEntry)과 같은 기준: command **또는 args** 가 우리 폴더면 우리 것.
+  // 문서 MCP 는 command 가 venv 파이썬(`_agent\runtime\venvs`)이고 server.py 가 args 에 있어,
+  // command 만 보던 2.0.51 까지는 업데이트가 이 블록을 건너뛰었다(2026-10-28 업그레이드 실측).
+  const argsLine = /^[ \t]*args[ \t]*=.*$/m.exec(found.body);
+  const argsText = argsLine ? argsLine[0].replace(/\\\\/g, '\\') : '';
+  if (!isInstallerOwnedPath(root, value) && !isInstallerOwnedPath(root, argsText)) return null;
 
   const newCmdLine = /^[ \t]*command[ \t]*=.*$/m.exec(block);
   const newArgsLine = /^[ \t]*args[ \t]*=.*$/m.exec(block);
@@ -634,8 +751,19 @@ export async function run(ctx) {
 
   // ── 4. 클로드 .claude.json 의 mcpServers (6종 — self-improve 는 플러그인 몫) ─
   const specs = mcpServerSpecs(ctx);
-  const claudeSpecs = specs.filter((s) => s.claude !== false);
+  const directClaudeSpecs = specs.filter((s) => s.claude !== false);
   writePlaywrightWrapper(ctx, { fs, root, recorded, note, log });
+  // ── 4-1. MCP 중계기: 로컬 MCP 를 안내원 항목으로(설계-MCP중계기.md 9절) ───
+  const claudeJson = readJsonSafe(fs, claudeConfigJsonPath(root));
+  const claudeRelay = relaySpecs(ctx, directClaudeSpecs, 'claude', {
+    fs, existingArgsFor: (n) => claudeJson?.mcpServers?.[n]?.args ?? null,
+  });
+  const codexRelay = relaySpecs(ctx, specs, 'codex', { fs });
+  const claudeSpecs = claudeRelay.specs;
+  recorded.relay = {
+    claude: claudeRelay.relayed, codex: codexRelay.relayed, reason: claudeRelay.reason ?? null,
+    registry: writeRelayRegistry(root, [...claudeRelay.registry, ...codexRelay.registry], { fs }),
+  };
   const claudeMcp = writeClaudeMcpServers(ctx, claudeSpecs, { fs, root });
   recorded.claude.mcp = claudeSpecs.map((s) => s.name);
   recorded.claude.mcpViaPlugin = specs.filter((s) => s.claude === false).map((s) => s.name);
@@ -646,7 +774,7 @@ export async function run(ctx) {
   for (const f of writeSecrets(ctx, { fs, root })) note('claude', f);
 
   // ── 6. 코덱스 config.toml ─────────────────────────────────────────────
-  recorded.codex.config = writeCodexConfig(ctx, specs, { fs, root, log });
+  recorded.codex.config = writeCodexConfig(ctx, codexRelay.specs, { fs, root, log });
   recorded.codex.mcp = specs.map((s) => s.name);
   note('codex', codexConfigTomlPath(root));
 
@@ -686,6 +814,11 @@ export async function run(ctx) {
   }
   const edge = ctx?.precheck?.edge?.present ?? ctx?.precheck?.recorded?.edge?.present;
   if (edge === false) addPending('브라우저 조작(Playwright)', '엣지 브라우저를 찾지 못함 — 엣지를 설치하면 바로 쓰입니다');
+
+  // ── 11. MCP 중계기 메뉴판 조사(일회성 — 매 세션이 아니라 설치·업데이트 때 한 번) ──
+  if (recorded.relay.claude.length || recorded.relay.codex.length) {
+    recorded.relay.survey = await runRelaySurvey(ctx, { fs, root, log });
+  }
 
   // 진입 파일이 아직 없는 MCP 는 기록만 남긴다(⑤-9 검사가 사람에게 보여 준다).
   for (const spec of specs) {
@@ -988,11 +1121,13 @@ function writeClaudeMcpServers(ctx, specs, { fs, root }) {
         if (!isInstallerOwnedEntry(root, existing)) continue;
         // env는 병합(그 사람이 손으로 더한 키를 지우지 않는다), args는
         // 우리 소유 경로 부분만 새 값으로(그 사람이 더한 인자는 살린다).
+        // 안내원 항목은 인자가 정확히 정해진 모양이다 — 사용자가 더한 인자는
+        // relaySpecs 가 이미 실제 명령(등록부) 쪽으로 옮겼다.
         const merged = {
           ...existing,
           type: wanted.type,
           command: wanted.command,
-          args: mergeOwnedArgs(root, existing.args, wanted.args),
+          args: spec.relayed ? wanted.args : mergeOwnedArgs(root, existing.args, wanted.args),
           env: { ...(existing.env ?? {}), ...(wanted.env ?? {}) },
         };
         if (JSON.stringify(merged) === JSON.stringify(existing)) continue;

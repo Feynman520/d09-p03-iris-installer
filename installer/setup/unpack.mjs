@@ -91,7 +91,7 @@ export const UNPACK_ORDER = [
   // 런타임
   'node', 'python', 'pyyaml', 'uv', 'age', 'git',
   // 에이전트·중계기·앱
-  'codex', 'teamclaude', 'manage', 'dash', 'face', 'messenger', 'updater',
+  'codex', 'teamclaude', 'manage', 'dash', 'face', 'messenger', 'updater', 'mcp-relay',
   // 도구
   'superpowers', 'self-improve', 'playwright-mcp', 'ui-ux-pro-max',
   'hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation',
@@ -135,6 +135,8 @@ export const V2_LAYOUT = {
   face: { kind: 'archive', strip: 0, mode: 'slot', carryOver: ['state', 'modules'] },
   messenger: { kind: 'module', moduleName: 'messenger' },
   updater: { kind: 'archive', strip: 0, mode: 'slot' },
+  // MCP 중계기(설계-MCP중계기.md 9절): 동봉 python 으로 도는 표준 라이브러리 파이썬 묶음.
+  'mcp-relay': { kind: 'archive', strip: 0, mode: 'slot' },
   superpowers: { kind: 'archive', strip: 0, mode: 'slot' },
   'self-improve': { kind: 'archive', strip: 0, mode: 'slot' },
   'playwright-mcp': { kind: 'archive', strip: 0, mode: 'slot' },
@@ -370,6 +372,13 @@ export function v2Verifiers(ctx) {
     const text = fs.readFileSync(entry, 'utf8');
     const ok = text.includes('export async function applyPlan');
     return { ok, detail: ok ? entry : `${entry} 에 applyPlan 이 없음` };
+  };
+  V['mcp-relay'] = async () => {
+    const entry = path.join(dest('mcp-relay'), 'relay.py');
+    const shim = path.join(dest('mcp-relay'), 'mcp_relay', 'shim.py');
+    if (!fs.existsSync(entry) || !fs.existsSync(shim)) return { ok: false, detail: `${entry} 또는 mcp_relay\shim.py 없음` };
+    const ok = fs.readFileSync(entry, 'utf8').includes('def main(') && fs.readFileSync(shim, 'utf8').includes('class Shim');
+    return { ok, detail: ok ? entry : `${entry} 내용이 중계기 진입점이 아님` };
   };
   V['document-mcp-wheelhouse'] = async () => {
     const d = dest('document-mcp-wheelhouse');

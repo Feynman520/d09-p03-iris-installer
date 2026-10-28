@@ -30,7 +30,8 @@ export const VENV_PARTS = Object.freeze(['python', 'uv', 'document-mcp-wheelhous
 
 // 이 부품들의 판이 바뀌면 실행기·바로가기(⑤-7)를 다시 쓴다 — 전부 `.cmd` 안에
 // 판 폴더 이름이 그대로 박히는 부품들이다.
-export const RELAY_PARTS = Object.freeze(['node', 'face', 'dash', 'teamclaude', 'manage', 'updater', 'messenger']);
+// `mcp-relay` 는 실행기(`<이름> Face.cmd`)의 공용 중계기 kick 줄 때문에 여기에 있다(설계-MCP중계기.md 7절).
+export const RELAY_PARTS = Object.freeze(['node', 'face', 'dash', 'teamclaude', 'manage', 'updater', 'messenger', 'mcp-relay']);
 
 // 업데이트가 건드리지 않는 단계(사람의 영혼 쪽).
 export const KEEP_DONE = Object.freeze(['skeleton', 'structure', 'ontology', 'checks']);

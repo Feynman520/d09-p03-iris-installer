@@ -8,7 +8,7 @@
     "dest 는 영혼 루트 기준 '폴더' 경로다(POSIX 구분자). '/' 는 영혼 루트 자체."
   ],
   "schema": 2,
-  "package": { "version": "2.0.51" },
+  "package": { "version": "2.0.52" },
   "parts": {
     "node": {
       "kind": "url",
@@ -185,6 +185,16 @@
       "file": "updater/iris-updater.zip",
       "dest": "_agent/shared/tools/updater",
       "license": "MIT"
+    },
+    "mcp-relay": {
+      "kind": "dir",
+      "source": "./mcp-relay",
+      "exclude": ["tests", "AGENTS.md", "CLAUDE.md", "__pycache__", "mcp_relay/__pycache__"],
+      "file": "tools/iris-mcp-relay.zip",
+      "dest": "_agent/shared/tools/mcp-relay",
+      "entry": "relay.py",
+      "license": "MIT",
+      "note": "IRIS MCP 중계기(설계 정본 = docs/설계-MCP중계기.md). P03 이 원본을 관리한다. 동봉 python 으로 돈다(표준 라이브러리만)."
     },
     "superpowers": {
       "kind": "git",
