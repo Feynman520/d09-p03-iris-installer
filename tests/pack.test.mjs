@@ -372,6 +372,9 @@ test('pack: zip tree is 설계 3-1 -- 설치가 안 되면.txt at the root (BOM 
     assert.ok(fs.existsSync(at('payload', 'policy', f)), `payload/policy/${f} missing`);
   }
   assert.ok(!fs.existsSync(at('payload', 'policy', 'README.md')), 'payload-src/policy/README.md is a note to us; it must not ship');
+  // The Windows zip's root-AGENTS.md is the source byte for byte -- the macOS policy patch must not leak in.
+  assert.ok(fs.readFileSync(at('payload', 'policy', 'root-AGENTS.md')).equals(fs.readFileSync(path.join(REPO, 'payload-src', 'policy', 'root-AGENTS.md'))),
+    'Windows payload/policy/root-AGENTS.md must be a byte copy of payload-src/policy/root-AGENTS.md');
   assert.ok(fs.existsSync(at('payload', 'policy', 'licenses', 'README.md')), 'policy/licenses/README.md explains the folder to the user and must ship');
   assert.ok(fs.existsSync(at('payload', 'policy', 'licenses', 'NOTICES.md')));
   assert.ok(fs.existsSync(at('payload', 'policy', 'licenses', 'node-LICENSE')), 'harvested licences must survive the policy copy');
@@ -637,4 +640,11 @@ test('pack (macOS): zip root has IRIS-설치.command and IRIS-삭제.command, bo
     assert.equal(fs.statSync(f).mode & 0o111, 0o111, `${n} must keep its exec bit through the zip`);
   }
   assert.equal(fs.existsSync(path.join(extractDir, 'IRIS-삭제.cmd')), false, 'no Windows launcher at the macOS zip root');
+  // D-M21: the macOS zip's root-AGENTS.md carries the Mac lines (patches/policy/rules.darwin.json).
+  const agents = fs.readFileSync(path.join(extractDir, 'payload', 'policy', 'root-AGENTS.md'), 'utf8');
+  assert.match(agents, /문서 분담\(macOS\)/);
+  assert.match(agents, /`ieumoffice`/);
+  assert.match(agents, /MCP로 등록하지 않고/);
+  assert.match(agents, /Chrome → Edge → 설치기가 받은 Chrome for Testing/);
+  assert.doesNotMatch(agents, /%TEMP%|_agent\\claude\\tools/);
 });

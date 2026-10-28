@@ -6,6 +6,7 @@ import { sha256File } from '../lib/manifest.mjs';
 import { zipDir } from '../lib/zip.mjs';
 import { sanitize } from './sanitize.mjs';
 import { loadRules } from './rules.mjs';
+import { applyPatches } from './patch-teamclaude.mjs';
 
 // Project root (one level up from build/), independent of process.cwd() --
 // same convention as build/collect.mjs's ROOT_DIR. installer/ and
@@ -32,6 +33,8 @@ const DEFAULT_PRESETS_FILE = path.join(ROOT_DIR, 'installer', 'ui', 'presets.jso
 // finding 6).
 const PATCH_RULES_REL = path.join('patches', 'teamclaude', 'rules.json');
 const DEFAULT_PATCH_RULES_FILE = path.join(ROOT_DIR, PATCH_RULES_REL);
+// macOS zip 에서만 정책 템플릿 몇 줄을 맥에 맞게 바꾸는 규칙(문서 분담·브라우저·경로, docs/설계-macOS.md D-M21).
+const DEFAULT_MAC_POLICY_PATCHES = path.join(ROOT_DIR, 'patches', 'policy', 'rules.darwin.json');
 const CMD_NAME = 'IRIS-설치.cmd';
 // (2.0.39, docs/설계-삭제기.md) The uninstaller launcher sits at the zip root
 // next to the install .cmd, so "extract, double-click to remove" needs nothing
@@ -423,6 +426,7 @@ export async function pack({
   lockFile = DEFAULT_LOCK_FILE,
   payloadSrcDir = DEFAULT_PAYLOAD_SRC_DIR,
   presetsFile = DEFAULT_PRESETS_FILE,
+  macPolicyPatchesFile = DEFAULT_MAC_POLICY_PATCHES,
   rules = null,
   log = () => {},
   // Build target (build/lock-target.mjs). The default is the Windows zip,
@@ -449,6 +453,10 @@ export async function pack({
 
   // ---- 1. the repo's own contributions to payload\ (policy, presets, fixtures)
   const addedPayloadRels = addRepoPayloadSources(payloadSrc, { payloadSrcDir, presetsFile });
+  // macOS: 정책 템플릿(원본은 Windows 와 한 벌)의 몇 줄을 맥에 맞게 바꾼다 — 아래 sanitize 관문은 바뀐 글을 본다.
+  if (mac && macPolicyPatchesFile && fs.existsSync(macPolicyPatchesFile)) {
+    await applyPatches(path.join(payloadSrc, 'policy'), JSON.parse(fs.readFileSync(macPolicyPatchesFile, 'utf8')), log);
+  }
 
   // ---- 2. payload\policy\licenses\NOTICES.md (I4)
   const licensesDir = path.join(payloadSrc, 'policy', 'licenses');
