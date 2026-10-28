@@ -123,11 +123,14 @@
     },
     "document-mcp-wheelhouse": {
       "requirementsIn": "payload-src/manifests/python-locks/document-mcp-darwin/requirements.in",
-      "requirementsInSha256": "47aaf63a433203ed5ccee861891be6cc2a8ac1aea2549947321fefb4b9250096",
+      "requirementsInSha256": "e590d9c763b940023eb719bf61aba1c0ae80af5d9adfa49054257cdf13220189",
       "requirementsLock": "payload-src/manifests/python-locks/document-mcp-darwin/requirements.lock",
-      "sha256": "c8d7fad6ee5a22a4aa1c74029dd0d915d3c4f8b39bfd913ef1c3ce0703ebd4b8",
+      "sha256": "d52f08cff5073c0021a0f2b832bc4e36ed0faff54c5bba3710d02bdc8b2846cb",
       "platform": "macosx_13_0_arm64",
-      "expectedCount": 34
+      "expectedCount": 48,
+      "runtimePackages": ["python-docx", "openpyxl", "python-pptx", "pdfplumber", "reportlab", "defusedxml", "pandas", "pypdf[crypto]", "pillow", "lxml"],
+      "runtimeImports": ["docx", "openpyxl", "pptx", "pdfplumber", "reportlab", "defusedxml", "pandas", "pypdf", "PIL", "lxml"],
+      "runtimeNote": "D-M21(2026-10-28 사용자 결정 '문서는 파이썬 라이브러리 먼저'): 문서 스킬은 세션의 python(tools/python, 심 python3)으로 돈다. venv 단계가 같은 바퀴집에서 이 꾸러미들을 동봉 파이썬에도 오프라인으로 깐다. Windows 잠금표에는 이 칸이 없어 하는 일이 없다."
     },
     "playwright-chromium": {
       "$comment": "macOS 브라우저 조작(D-M17 개정 2026-10-28): Chrome·Edge 가 없는 Mac 에서만 ⑦ 단계가 받는다. Playwright 가 같은 판 playwright-core(browsers.json chromium revision)로 쓰는 바로 그 Chrome for Testing 이라 playwright-mcp 를 올리면 이 칸도 함께 올린다(verify/static ㉒ 가 맞춰 본다).",
