@@ -1,5 +1,6 @@
 // 2.0.33 — 로그인 단계에서 구독을 다시 고른다(설계 조각 ①, 2026-09-21 사용자 결정).
 // 친구 PC 실측: 클로드 로그인이 막히자 완료도 못 하고 뒤로도 못 갔다. `POST /api/online/choice` 로 빼거나 더한다.
+import './_scratch-workdir.mjs'; // macOS: keep server.log out of the real ~/Library (see that file)
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

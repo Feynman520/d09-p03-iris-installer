@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { run } from '../../lib/run.mjs';
 import { extractZip } from '../../lib/zip.mjs';
@@ -173,6 +173,13 @@ export async function checkRootPath(root, fsutil = defaultFsutil) {
 export function stripMotw(target) {
   let stat;
   try { stat = fs.statSync(target); } catch { return 0; }
+  // macOS: the "came from the internet" mark is the com.apple.quarantine
+  // xattr, which Gatekeeper checks before a bundled binary may run
+  // (docs/설계-macOS.md D-M05). One recursive xattr call clears a whole tree.
+  if (process.platform === 'darwin') {
+    const r = spawnSync('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', target], { stdio: 'ignore' });
+    return r.status === 0 ? 1 : 0;
+  }
   if (stat.isFile()) {
     try { fs.rmSync(`${target}:Zone.Identifier`, { force: true }); } catch { /* not NTFS / no stream */ }
     return 1;
@@ -596,7 +603,7 @@ export const defaultNpmInstall = ({ nodeExe, npmCli, prefix, spec, cacheDir }) =
   const basePath = process.env.PATH ?? process.env.Path ?? '';
   const env = { ...process.env, npm_config_cache: cacheDir };
   for (const k of Object.keys(env)) if (k.toLowerCase() === 'path') delete env[k];
-  env.PATH = basePath ? `${nodeDir};${basePath}` : nodeDir;
+  env.PATH = basePath ? `${nodeDir}${path.delimiter}${basePath}` : nodeDir;
   return run(
     nodeExe,
     [npmCli, 'install', '-g', '--prefix', prefix, spec, '--no-fund', '--no-audit'],
@@ -915,7 +922,9 @@ export async function install({
   }
 
   // --- 2. shims -----------------------------------------------------------
-  const shims = writeShims(root, activeAgents);
+  // v1 install() is the Windows-only legacy path (v2 runs the setup engine
+  // instead, server.mjs), so it keeps writing the .cmd set on any machine.
+  const shims = writeShims(root, activeAgents, { platform: 'win32' });
   emit({ part: 'shims', pct: 100, status: 'done' });
 
   // --- 3. minimal soul-state (never over an existing one) -----------------

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isWindows, shimFileName } from './platform.mjs';
 
 // <root>\_agent\shared\shims\ is the single directory added to the user's
 // PATH (docs/설계.md 2-2). Each .cmd is a thin forwarder that pins the
@@ -181,8 +182,131 @@ export function relayAutostartVbs() {
   ]);
 }
 
+// ---------------------------------------------------------------------------
+// macOS (docs/설계-macOS.md D-M07) — 위 `.cmd` 들과 같은 일을 하는 POSIX sh 판.
+//
+// 규칙: ASCII · LF · 실행 권한, 확장자 없음. 경로는 전부 심 폴더 기준 상대라
+// 영혼 폴더를 옮겨도 산다(`%~dp0` 자리 = `$D`). PATH 로 불려도 `$0` 은 심의 전체
+// 경로다. `CDPATH=` 는 사용자의 CDPATH 설정이 `cd` 출력을 섞지 못하게 한다.
+//
+// 부품 안쪽 자리는 설계-macOS 2절 표(installer/lib/platform.mjs toolLayout)와 같다:
+//   node   = tools/node/bin/node          python = tools/python/bin/python3
+//   git    = tools/git/bin/git(동봉 dugite) → 없으면 /usr/bin/git
+//   claude = tools/claude/claude(sh 전달자)
+//   codex  = tools/codex/node_modules/@openai/codex/bin/codex.js(동봉 node 로)
+// 에이전트 심은 설정 폴더를 `..` 없는 절대 경로로 넘긴다(에이전트가 그 문자열을 저장한다).
+// ---------------------------------------------------------------------------
+function lf(lines) {
+  return lines.join('\n') + '\n';
+}
+
+const POSIX_HEAD = ['#!/bin/sh', 'D=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)'];
+
+function posixNodeShim() {
+  return lf([...POSIX_HEAD, 'exec "$D/../tools/node/bin/node" "$@"']);
+}
+// 동봉 Git = dugite-native(D-M13). 그 git 은 어디서든 돌지만 하위 명령(git-remote-https 등)·
+// 시스템 설정·템플릿 자리는 환경변수로 알려 줘야 한다 — dugite 자신(lib/git-environment.ts)이
+// macOS 에서 하는 것과 같은 세 값. 그래서 PATH 에는 git/bin 을 넣지 않고 늘 이 심을 거친다.
+function posixGitShim() {
+  return lf([
+    ...POSIX_HEAD,
+    'if [ -x "$D/../tools/git/bin/git" ]; then',
+    '  G=$(CDPATH= cd -- "$D/../tools/git" && pwd)',
+    '  export GIT_EXEC_PATH="$G/libexec/git-core"',
+    '  export GIT_TEMPLATE_DIR="$G/share/git-core/templates"',
+    '  if [ -z "${GIT_CONFIG_SYSTEM:-}" ]; then export GIT_CONFIG_SYSTEM="$G/etc/gitconfig"; fi',
+    '  exec "$G/bin/git" "$@"',
+    'fi',
+    'exec /usr/bin/git "$@"',
+  ]);
+}
+function posixPythonShim() {
+  return lf([...POSIX_HEAD, 'exec "$D/../tools/python/bin/python3" "$@"']);
+}
+// 문서 보조 엔진 이음오피스(D-M21): ⑦ 단계가 받은 공식 앱 안의 명령어(앱 자신의 실행기가 동봉 Electron 을
+// node 로 돌린다). 에이전트가 부르는 유일한 길이다 — MCP 로 등록하지 않는다. 아직 받지 못했으면 대기라고 알리고 3 으로 끝난다.
+export function posixIeumOfficeShim() {
+  return lf([
+    ...POSIX_HEAD,
+    '# IRIS: IeumOffice document CLI (auxiliary engine, fetched at setup step 7). CLI only - never registered as an MCP server.',
+    'C="$D/../tools/ieumoffice/IeumOffice.app/Contents/Resources/cli/ieumoffice"',
+    'if [ -x "$C" ]; then exec "$C" "$@"; fi',
+    "echo '[IRIS] IeumOffice is not installed yet (pending) - reopen the IRIS installer where the internet works; use the Python document libraries meanwhile' >&2",
+    'exit 3',
+  ]);
+}
+
+// P02 Face 의 macOS 판 wake.mjs 도 글자까지 같은 사본을 가진다(Windows agentShim 과 같은 규칙).
+// `$A` = <root>/_agent (정리된 절대 경로) — 설정 폴더·PATH·CLI 를 모두 여기서 잇는다.
+export function posixAgentShim(agent) {
+  const { envName, envDir } = AGENT_SHIMS[agent];
+  // codex 는 npm 의 .bin 링크·`#!/usr/bin/env node` 에 기대지 않고 동봉 node 로 진입 파일을 부른다.
+  const target = agent === 'claude'
+    ? '"$A/shared/tools/claude/claude"'
+    : '"$A/shared/tools/node/bin/node" "$A/shared/tools/codex/node_modules/@openai/codex/bin/codex.js"';
+  return lf([
+    ...POSIX_HEAD,
+    'A=$(CDPATH= cd -- "$D/../.." && pwd)',
+    'export ANTHROPIC_BASE_URL="http://127.0.0.1:3456"',
+    `export ${envName}="$A/${envDir}"`,
+    'export PATH="$A/shared/tools/node/bin:$PATH"',
+    'if [ -x "$D/relay-ensure" ]; then "$D/relay-ensure"; fi',
+    `exec ${target} "$@"`,
+  ]);
+}
+
+export function posixRelayEnsure() {
+  return lf([
+    '#!/bin/sh',
+    '# IRIS: make sure the TeamClaude relay (127.0.0.1:3456) is up before an agent starts. Quiet when it already is.',
+    'D=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+    'if [ -x "$D/../tools/node/bin/node" ]; then "$D/../tools/node/bin/node" "$D/relay-ensure.mjs"; fi',
+    'exit 0',
+  ]);
+}
+
+// Windows relayEnsureMjs 와 같은 순서·같은 약속(최대 8초, 늘 0 으로 끝남). 다른 것은
+// 부품 자리와 관리 스크립트뿐이다: PowerShell 대신 동봉 node 로 teamclaude-manage.mjs(D-M14).
+export function posixRelayEnsureMjs() {
+  return [
+    '// IRIS relay-ensure (macOS): if nothing answers on 127.0.0.1:3456, start the TeamClaude relay through its manage script and wait (max 8 s). Always exits 0.',
+    "import net from 'node:net';",
+    "import path from 'node:path';",
+    "import fs from 'node:fs';",
+    "import { spawn } from 'node:child_process';",
+    "import { fileURLToPath } from 'node:url';",
+    'const here = path.dirname(fileURLToPath(import.meta.url));   // <root>/_agent/shared/shims',
+    'const shared = path.dirname(here);                            // <root>/_agent/shared',
+    'const port = Number(process.env.IRIS_RELAY_PORT || 3456);',
+    'const waitMs = Number(process.env.IRIS_RELAY_WAIT_MS || 8000);',
+    "const probe = () => new Promise((res) => { const s = net.connect({ host: '127.0.0.1', port }); const done = (v) => { try { s.destroy(); } catch {} res(v); }; s.setTimeout(400, () => done(false)); s.once('connect', () => done(true)); s.once('error', () => done(false)); });",
+    'if (await probe()) process.exit(0);',
+    "const manage = process.env.IRIS_RELAY_MANAGE || path.join(shared, 'tools', 'teamclaude', 'teamclaude-manage.mjs');",
+    "const node = path.join(shared, 'tools', 'node', 'bin', 'node');",
+    "const entry = path.join(shared, 'tools', 'teamclaude', 'node_modules', '@karpeleslab', 'teamclaude', 'src', 'index.js');",
+    "if (!fs.existsSync(manage)) { process.stderr.write('[IRIS] relay helper missing - open the IRIS window once to start the relay\\n'); process.exit(0); }",
+    'const env = { ...process.env };',
+    "if (!env.TEAMCLAUDE_CONFIG) env.TEAMCLAUDE_CONFIG = path.join(shared, 'portable-state', 'teamclaude', 'teamclaude.json');",
+    "try { const c = spawn(node, [manage, 'start', '--node', node, '--entry', entry], { env, stdio: 'ignore', detached: true }); c.unref(); } catch { process.exit(0); }",
+    'const t0 = Date.now();',
+    'while (Date.now() - t0 < waitMs) { await new Promise((r) => setTimeout(r, 250)); if (await probe()) process.exit(0); }',
+    "process.stderr.write('[IRIS] relay did not answer on 127.0.0.1:' + port + ' in time - open the IRIS window once, then retry\\n');",
+    'process.exit(0);',
+    '',
+  ].join('\n');
+}
+
 export function shimsDir(root) {
   return path.join(root, '_agent', 'shared', 'shims');
+}
+
+// 실행 권한(0755)을 맞춘다. 이미 맞으면 손대지 않는다(재실행 "변경 0").
+function ensureExecutable(file) {
+  const mode = fs.statSync(file).mode & 0o777;
+  if (mode === 0o755) return false;
+  fs.chmodSync(file, 0o755);
+  return true;
 }
 
 // A shim whose bytes are already exactly right is left alone -- not rewritten
@@ -204,25 +328,39 @@ function writeIfChanged(file, text) {
 // ['claude','codex'] the user actually logged in with. A subscription that
 // was not chosen still has its files on disk but gets no shim, so it stays
 // asleep until the dashboard wakes it (설계.md 2-2, 5절 ③).
-export function writeShims(root, activeAgents = []) {
+// `platform` picks the .cmd set (Windows) or the POSIX sh set (macOS); the
+// default is this machine, so a Windows run is exactly what it always was.
+export function writeShims(root, activeAgents = [], { platform = process.platform } = {}) {
   const dir = shimsDir(root);
   fs.mkdirSync(dir, { recursive: true });
   const written = [];
   const changed = [];
+  const win = isWindows(platform);
 
-  for (const [name, text] of [
-    ['node.cmd', nodeShim()], ['git.cmd', gitShim()], ['python.cmd', pythonShim()], ['py.cmd', pyShim()],
-    ['relay-ensure.cmd', relayEnsureCmd()], ['relay-ensure.mjs', relayEnsureMjs()], ['relay-autostart.vbs', relayAutostartVbs()],
-  ]) {
+  const fixed = win
+    ? [
+      ['node.cmd', nodeShim()], ['git.cmd', gitShim()], ['python.cmd', pythonShim()], ['py.cmd', pyShim()],
+      ['relay-ensure.cmd', relayEnsureCmd()], ['relay-ensure.mjs', relayEnsureMjs()], ['relay-autostart.vbs', relayAutostartVbs()],
+    ]
+    : [
+      ['node', posixNodeShim()], ['git', posixGitShim()], ['python', posixPythonShim()], ['python3', posixPythonShim()],
+      ['ieumoffice', posixIeumOfficeShim()],
+      ['relay-ensure', posixRelayEnsure()], ['relay-ensure.mjs', posixRelayEnsureMjs()],
+    ];
+  for (const [name, text] of fixed) {
     const file = path.join(dir, name);
-    if (writeIfChanged(file, text)) changed.push(file);
+    let touched = writeIfChanged(file, text);
+    if (!win && !name.endsWith('.mjs') && ensureExecutable(file)) touched = true;
+    if (touched) changed.push(file);
     written.push(file);
   }
 
   for (const agent of ['claude', 'codex']) {
     if (!activeAgents.includes(agent)) continue;
-    const file = path.join(dir, `${agent}.cmd`);
-    if (writeIfChanged(file, agentShim(agent))) changed.push(file);
+    const file = path.join(dir, shimFileName(agent, { platform }));
+    let touched = writeIfChanged(file, win ? agentShim(agent) : posixAgentShim(agent));
+    if (!win && ensureExecutable(file)) touched = true;
+    if (touched) changed.push(file);
     written.push(file);
   }
   return { dir, written, changed };

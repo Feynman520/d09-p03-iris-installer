@@ -1,3 +1,4 @@
+import './_scratch-workdir.mjs'; // macOS: keep server.log out of the real ~/Library (see that file)
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -1114,6 +1115,71 @@ test('사용자에게 나가는 message 어디에도 중계기 제품 이름이 
 // 로그인·중계기가 끝나는 이 순간이 `ready` 로 바뀌는 유일한 자리다 —
 // 서버가 그때 갱신을 부르지 않으면 Face 는 다 끝난 영혼을 열고도 첫 인사 대신
 // 「설치 이어하기」 카드를 보여 준다.
+// 2026-10-28 D-M17 개정: macOS 에서 Chrome·Edge 가 없으면 ⑦ 이 Chrome for Testing 을 받고,
+// 받았으면 ⑨ 검사가 남겨 둔 "브라우저 조작" 대기를 인수 문서에서 뺀다. Windows 는 이 단계를 지나지 않는다.
+test('macOS ⑦: 브라우저 조작용 Chrome for Testing 을 받으면 그 대기가 빠지고, 이음오피스를 못 받으면 대기가 더해진다', { skip: process.platform === 'win32' && 'Windows 는 Edge — 이 단계 없음' }, async () => {
+  const browserCalls = [];
+  const ieumCalls = [];
+  const s = await start({
+    onlineRunner: {
+      ...okOnline(),
+      installPlaywrightBrowser: async (a) => {
+        browserCalls.push(a);
+        a.onProgress?.({ done: 10, total: 100 });
+        return { ok: true, state: 'done', source: 'playwright-cdn' };
+      },
+      // D-M21: 이음오피스를 받지 못한 경우 — 설치는 이어지고, 남은 일에 더해진다.
+      installIeumOffice: async (a) => {
+        ieumCalls.push(a);
+        return { ok: false, state: 'pending', code: 'E-ONLINE-IEUMOFFICE', message: 'x' };
+      },
+    },
+  });
+  const { url, soulRoot } = s;
+  try {
+    await answerQuestions(url, ['claude']);
+    await post(url, '/api/structure', { nodes: TREE });
+    await post(url, '/api/summary/confirm');
+    await post(url, '/api/setup/start');
+    await waitForProgress(url, (b) => b.percent === 100, 'setup 100%');
+    const receipt = readReceipt(soulRoot);
+    for (const id of SETUP_STAGE_IDS) {
+      receipt.setup[id] = { status: 'done', startedAt: '2026-09-15T00:00:00.000Z', finishedAt: '2026-09-15T00:01:00.000Z', recorded: {}, pending: [] };
+    }
+    writeReceipt(soulRoot, receipt);
+    const handoffFile = path.join(soulRoot, '_agent', 'setup', 'handoff.json');
+    fs.writeFileSync(handoffFile, JSON.stringify({
+      schema: 1, packageVersion: '2.0.0', state: 'login-pending', subscriptions: ['claude'], leadAgent: 'claude',
+      login: { claude: 'waiting', chatgpt: 'not-needed' }, relay: { state: 'pending', accounts: 0 },
+      setup: { allDone: true, failed: null }, folders: [], nameEnMissing: [], deferred: [],
+      pendingCapabilities: [
+        { capability: '브라우저 조작(Playwright)', reason: 'Chrome·Edge 가 없음' },
+        { capability: '문서 자동화(엑셀)', reason: 'LibreOffice 가 없음' },
+      ],
+      checks: { pass: 11, pending: 1, fail: 0 }, messenger: { installed: true, prompted: false },
+      resume: { installerPath: '_agent/setup/installer/IRIS-설치.command', args: ['--resume'] }, setupCompletedAt: null,
+    }, null, 2), 'utf8');
+
+    await post(url, '/api/online/start');
+    const st = await waitForOnline(url, (b) => b.stage === 'login' || b.stage === 'relay', 'the login phase');
+    assert.equal(browserCalls.length, 1, '⑦ 이 브라우저 단계를 한 번 부른다');
+    assert.equal(browserCalls[0].root, soulRoot);
+    assert.equal(st.browser?.state, 'done', '상태 조회에 브라우저 단계 결과가 실린다');
+    assert.equal(ieumCalls.length, 1, '⑦ 이 이음오피스 단계를 한 번 부른다');
+    assert.equal(st.ieumoffice?.state, 'pending', '상태 조회에 이음오피스 단계 결과가 실린다');
+    await post(url, '/api/online/login', { provider: 'claude' });
+    await waitForOnline(url, (b) => b.logins.claude?.state === 'done', 'claude login done');
+    const relay = await (await post(url, '/api/online/relay')).json();
+    assert.equal(relay.ok, true);
+    const handoff = JSON.parse(fs.readFileSync(handoffFile, 'utf8'));
+    assert.equal(handoff.state, 'ready');
+    assert.deepEqual(handoff.pendingCapabilities.map((p) => p.capability), ['문서 자동화(엑셀)', '문서 보조 엔진(이음오피스)'],
+      '받은 브라우저 조작은 남은 일에서 빠지고, 받지 못한 이음오피스는 더해진다');
+  } finally {
+    await s.close();
+  }
+});
+
 test('중계기가 끝나면 handoff.json 이 ready 로 바뀐다 (Face 가 쓴 칸은 그대로)', async () => {
   const s = await start();
   const { url, soulRoot } = s;

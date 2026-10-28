@@ -1,3 +1,4 @@
+import './_scratch-workdir.mjs'; // macOS: the real precheck's writability probe must not create ~/Library/.../IRIS-Installer
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -7,6 +8,12 @@ import {
 } from '../installer/lib/precheck.mjs';
 
 const GB = 1024 ** 3;
+
+// The Windows check table, pinned to Windows whatever machine runs the test
+// (docs/설계-macOS.md D-M01): platform, OS build and CPU are injected, every
+// other dependency is whatever the test passes.
+const WIN_DEPS = { platform: 'win32', osRelease: '10.0.26100', arch: 'x64' };
+const precheckWin = (o = {}) => precheck({ ...o, deps: { ...WIN_DEPS, ...(o.deps ?? {}) } });
 
 // A runFn that answers the merged PS_BUNDLE_SCRIPT invocation with one JSON
 // object (Task 25: disk/ntfs/powershell now share a single powershell.exe
@@ -30,7 +37,7 @@ const FULL_OK_FIELDS = {
 test('precheck shape (network may be off)', async () => {
   const p = await precheck({ timeoutMs: 5000 });
   assert.equal(typeof p.os.ok, 'boolean');
-  assert.equal(p.arch.value, 'x64');
+  assert.equal(p.arch.value, process.platform === 'darwin' ? 'arm64' : 'x64');
   assert.ok(p.disk.freeGB >= 0);
   assert.equal(typeof p.net.claude, 'boolean');
   assert.equal(typeof p.net.chatgpt, 'boolean');
@@ -47,12 +54,17 @@ test('precheck shape (network may be off)', async () => {
   assert.ok(Array.isArray(p.warnings));
   assert.equal(typeof p.info, 'object');
   assert.equal(typeof p.recorded, 'object');
-  assert.ok(p.recorded.ntfs);
-  assert.ok(p.recorded.powershell);
   assert.ok(Array.isArray(p.recorded.ports));
   assert.ok(p.recorded.edge);
-  assert.ok(p.recorded.sac);
   assert.ok(p.recorded.existing);
+  if (process.platform === 'darwin') {
+    assert.ok(p.recorded.home);
+    assert.ok(p.recorded.gatekeeper);
+  } else {
+    assert.ok(p.recorded.ntfs);
+    assert.ok(p.recorded.powershell);
+    assert.ok(p.recorded.sac);
+  }
 });
 
 test('precheck never throws even with a near-zero timeout', async () => {
@@ -221,7 +233,7 @@ test('checkNtfs: an fs error whose message contains a username never leaks into 
   assert.equal(r.detail, 'EPERM');
   assert.ok(!JSON.stringify(r).includes(username), `leaked username into checkNtfs result: ${JSON.stringify(r)}`);
 
-  const p = await precheck({
+  const p = await precheckWin({
     timeoutMs: 1000,
     deps: {
       runFn: psRunFn(FULL_OK_FIELDS),
@@ -243,7 +255,7 @@ test('checkNtfs: an fs error whose message contains a username never leaks into 
 // never stop the install; a genuinely bad value (read successfully) still
 // blocks exactly as before.
 test('checkNtfs: fs-type probe unknown -> precheck() gives the "확인하지 못했습니다" WARNING with id ntfs-unknown (canProceed stays true), not the old blocking wording', async () => {
-  const p = await precheck({
+  const p = await precheckWin({
     timeoutMs: 1000,
     deps: {
       runFn: async () => ({ code: 0, out: '', err: '', timedOut: true }), // times out on both attempts
@@ -291,7 +303,7 @@ test('checkPowerShell: ConstrainedLanguage -> not ok, precheck() gives the exact
   assert.equal(r.languageMode, 'ConstrainedLanguage');
   assert.ok(!r.unknown, 'a successfully-read ConstrainedLanguage value must not be flagged unknown');
 
-  const p = await precheck({
+  const p = await precheckWin({
     timeoutMs: 1000,
     deps: { runFn: psRunFn({ ...FULL_OK_FIELDS, languageMode: 'ConstrainedLanguage' }) },
   });
@@ -305,7 +317,7 @@ test('checkPowerShell: ConstrainedLanguage -> not ok, precheck() gives the exact
 // a blocker -- bootstrap.ps1 running at all already proves PowerShell 5.1+
 // exists on this machine, so "couldn't confirm it" must not stop the install.
 test('checkPowerShell: spawn/timeout failure -> precheck() gives the "확인하지 못했습니다" WARNING with id powershell-unknown (canProceed stays true)', async () => {
-  const p = await precheck({
+  const p = await precheckWin({
     timeoutMs: 1000,
     deps: { runFn: async () => { const e = new Error('spawn EPERM'); e.code = 'EPERM'; throw e; } },
   });
@@ -341,7 +353,7 @@ test('precheck: a probe that times out once but succeeds on the doubled-timeout 
     if (calls === 1) return { code: 0, out: '', err: '', timedOut: true };
     return { code: 0, out: JSON.stringify(FULL_OK_FIELDS), err: '', timedOut: false };
   };
-  const p = await precheck({
+  const p = await precheckWin({
     timeoutMs: 1000,
     deps: {
       runFn,
@@ -369,7 +381,7 @@ test('precheck: a probe still slow after the retry reports "unknown" wording for
     if (!isBundleCall(args)) return { code: 1, out: '', err: '', timedOut: false };
     return { code: 0, out: '', err: '', timedOut: true };
   };
-  const p = await precheck({
+  const p = await precheckWin({
     timeoutMs: 1000,
     deps: {
       runFn,
@@ -407,7 +419,7 @@ test('precheck: the merged PS bundle call uses Get-CimInstance Win32_LogicalDisk
     if (!isBundleCall(args)) return { code: 1, out: '', err: '', timedOut: false };
     return { code: 0, out: JSON.stringify(FULL_OK_FIELDS), err: '', timedOut: false };
   };
-  await precheck({
+  await precheckWin({
     timeoutMs: 1000,
     deps: {
       runFn,
@@ -426,7 +438,7 @@ test('precheck: the merged PS bundle call uses Get-CimInstance Win32_LogicalDisk
 });
 
 test('precheck: fast/happy path leaves the pre-v2 compat fields (disk/ntfs/powershell shapes) exactly as before this task', async () => {
-  const p = await precheck({
+  const p = await precheckWin({
     timeoutMs: 1000,
     deps: {
       runFn: psRunFn(FULL_OK_FIELDS),
@@ -485,7 +497,7 @@ test('checkPorts: open + unrecognized response -> foreign -> blocker per port', 
   assert.ok(r.ports.every((p) => p.state === 'foreign'));
   assert.equal(r.foreign.length, 4);
 
-  const p = await precheck({ timeoutMs: 1000, deps: { probeOpenFn: async () => true, fetchFn: async () => ({ status: 200, text: async () => 'nope' }) } });
+  const p = await precheckWin({ timeoutMs: 1000, deps: { probeOpenFn: async () => true, fetchFn: async () => ({ status: 200, text: async () => 'nope' }) } });
   for (const port of [3456, 3457, 3458, 3460]) {
     assert.ok(p.blockers.find((b) => b.id === `port-${port}`), `expected a blocker for port ${port}`);
   }
@@ -516,7 +528,7 @@ test('checkPorts: one port\'s probeOpenFn throws -> that port is "unknown", the 
   assert.ok(r.ports.filter((p) => p.port !== 3457).every((p) => p.state === 'free'));
   assert.equal(r.foreign.length, 0, '"unknown" must not count as foreign / must not block');
 
-  const p = await precheck({ timeoutMs: 1000, deps: { probeOpenFn: async (port) => { if (port === 3457) throw new Error('boom'); return false; }, fetchFn: async () => ({ status: 200, text: async () => '' }) } });
+  const p = await precheckWin({ timeoutMs: 1000, deps: { probeOpenFn: async (port) => { if (port === 3457) throw new Error('boom'); return false; }, fetchFn: async () => ({ status: 200, text: async () => '' }) } });
   assert.ok(!p.blockers.find((b) => b.id === 'port-3457'), 'an unknown-state port must never be a blocker');
 });
 
@@ -554,7 +566,7 @@ test('checkEdge: not found anywhere -> absent, precheck() warns (not a blocker)'
   const r = await checkEdge(1000, { existsFn: () => false, runFn: async () => ({ code: 1, out: '' }), envFn: {} });
   assert.equal(r.present, false);
 
-  const p = await precheck({ timeoutMs: 1000, deps: { existsFn: () => false, runFn: async () => ({ code: 1, out: '' }) } });
+  const p = await precheckWin({ timeoutMs: 1000, deps: { existsFn: () => false, runFn: async () => ({ code: 1, out: '' }) } });
   assert.ok(p.warnings.find((w) => w.id === 'edge'));
   assert.ok(!p.blockers.find((b) => b.id === 'edge'), 'missing Edge must never be a blocker');
 });
@@ -579,12 +591,12 @@ test('precheck: SAC 켜짐(1) -> warning sac-on 하나, blocker 없음; 평가(2
   const sacRun = (state) => async (exe, args) => (args.includes('VerifiedAndReputablePolicyState')
     ? { code: 0, out: `HKEY_LOCAL_MACHINE\\...\\Policy\n    VerifiedAndReputablePolicyState    REG_DWORD    0x${state}` }
     : { code: 0, out: '' });
-  const on = await precheck({ timeoutMs: 1000, deps: { runFn: sacRun(1) } });
+  const on = await precheckWin({ timeoutMs: 1000, deps: { runFn: sacRun(1) } });
   assert.ok(!on.blockers.find((b) => b.id.startsWith('sac')), 'SAC 는 막지 않는다');
   const w = on.warnings.find((x) => x.id === 'sac-on');
   assert.ok(w, 'sac-on warning 이 있어야 한다');
   assert.ok(/스마트 앱 컨트롤/.test(w.message) && /끄기/.test(w.message), '끄는 길을 안내한다');
-  const evalMode = await precheck({ timeoutMs: 1000, deps: { runFn: sacRun(2) } });
+  const evalMode = await precheckWin({ timeoutMs: 1000, deps: { runFn: sacRun(2) } });
   assert.ok(!evalMode.warnings.find((x) => x.id === 'sac-on'));
 });
 
@@ -593,7 +605,7 @@ test('checkSac: key not found -> state 0, never a blocker/warning', async () => 
   assert.equal(r.state, 0);
   assert.equal(r.ok, true);
 
-  const p = await precheck({ timeoutMs: 1000, deps: { runFn: async (exe, args) => (args.includes('VerifiedAndReputablePolicyState') ? { code: 1, out: '' } : { code: 0, out: '' }) } });
+  const p = await precheckWin({ timeoutMs: 1000, deps: { runFn: async (exe, args) => (args.includes('VerifiedAndReputablePolicyState') ? { code: 1, out: '' } : { code: 0, out: '' }) } });
   assert.ok(!p.blockers.find((b) => b.id === 'sac'));
   assert.ok(!p.warnings.find((w) => w.id === 'sac'));
 });
@@ -628,7 +640,7 @@ test('checkExisting: honors IRIS_INSTALLER_SOUL_NAME for the rehearsal soul root
 
 test('precheck: every dependency throwing still yields a complete, well-shaped result', async () => {
   const throwingRun = async () => { throw new Error('spawn EPERM'); };
-  const p = await precheck({
+  const p = await precheckWin({
     timeoutMs: 500,
     deps: {
       runFn: throwingRun,
@@ -653,7 +665,7 @@ test('precheck: every dependency throwing still yields a complete, well-shaped r
 // ---------------------------------------------------------------------------
 
 test('compat: a v2-only blocker (ntfs) does not change allOk/canProceedOffline', async () => {
-  const p = await precheck({
+  const p = await precheckWin({
     timeoutMs: 1000,
     deps: {
       // Task 25: one merged JSON response instead of per-command branching --

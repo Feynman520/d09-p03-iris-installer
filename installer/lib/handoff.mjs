@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { run } from '../../lib/run.mjs';
 import { toolsDir } from './install.mjs';
 import { writeReceipt, markStep } from './receipt.mjs';
+import { installerWorkDir } from './platform.mjs';
 
 // Step ⓕ of the wizard: hand the finished soul over to IRIS-Face and get out
 // of the way. Nothing here is interactive -- the person has already logged in
@@ -25,7 +26,9 @@ export function setupDir(root) { return path.join(root, '_agent', 'setup'); }
 export function firstRequestPath(root) { return path.join(setupDir(root), 'first-request.txt'); }
 export function firstSessionSpecPath(root) { return path.join(setupDir(root), 'first-session.json'); }
 export function faceDirFor(root) { return path.join(toolsDir(root), 'face'); }
-export function nodeExeFor(root) { return path.join(toolsDir(root), 'node', 'node.exe'); }
+export function nodeExeFor(root, { platform = process.platform } = {}) {
+  return platform === 'win32' ? path.join(toolsDir(root), 'node', 'node.exe') : path.join(toolsDir(root), 'node', 'bin', 'node');
+}
 export function faceLogPath(root) { return path.join(setupDir(root), 'face-launch.log'); }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +113,8 @@ export function writeFirstRequest(root, { edition = 'claude', manifest } = {}) {
 // is not slowed down; an older updater part without the file is simply skipped.
 export const AGENT_UPDATE_KICK = 'if exist "%~dp0_agent\\shared\\tools\\updater\\agents.mjs" "%IRIS_FACE_NODE%" "%~dp0_agent\\shared\\tools\\updater\\agents.mjs" --kick >nul 2>&1';
 
-export function faceLauncherContent() {
+export function faceLauncherContent({ platform = process.platform } = {}) {
+  if (platform !== 'win32') return macFaceLauncherContent();
   return [
     '@echo off',
     'chcp 65001 >nul',
@@ -133,7 +137,112 @@ export function faceLauncherContent() {
   ].join('\r\n');
 }
 
-export function faceLauncherPath(root, name) { return path.join(root, `${name} Face.cmd`); }
+export function faceLauncherPath(root, name, { platform = process.platform } = {}) {
+  return path.join(root, `${name} Face${platform === 'win32' ? '.cmd' : '.command'}`);
+}
+
+// ---- macOS (docs/설계-macOS.md D-M10) ----------------------------------------
+// `<영혼>/<이름> Face.command` = 같은 일을 하는 sh(ASCII·LF·실행 권한). Finder 에서 두 번
+// 누르면 터미널이 잠깐 뜬다 — 사람이 보통 여는 문은 ~/Applications 의 `<이름>.app`
+// (아래 writeMacAppLauncher)이고, 이 파일은 그 앱이 부르는 실체다.
+// 전역 환경변수를 걸지 않으므로(D-M08) 여기서 IRIS 창에 필요한 값을 건다.
+export const MAC_AGENT_UPDATE_KICK = 'if [ -f "$R/_agent/shared/tools/updater/agents.mjs" ]; then "$IRIS_FACE_NODE" "$R/_agent/shared/tools/updater/agents.mjs" --kick >/dev/null 2>&1; fi';
+
+export function macFaceLauncherContent() {
+  return [
+    '#!/bin/sh',
+    '# IRIS: Claude Code / Codex sessions in one window.',
+    '# Daemon 127.0.0.1:3458 + window. Usage: this file [--browser] [--no-open]',
+    'R=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+    'export IRIS_ROOT="$R"',
+    'export IRIS_FACE_NODE="$R/_agent/shared/tools/node/bin/node"',
+    'export TEAMCLAUDE_CONFIG="${TEAMCLAUDE_CONFIG:-$R/_agent/shared/portable-state/teamclaude/teamclaude.json}"',
+    'export PATH="$R/_agent/shared/shims:$R/_agent/shared/tools/node/bin:$PATH"',
+    MAC_AGENT_UPDATE_KICK,
+    'exec "$IRIS_FACE_NODE" "$R/_agent/shared/tools/face/launch.mjs" "$@"',
+    '',
+  ].join('\n');
+}
+
+// iris.ico(IRIS 창 아이콘, Windows 바로가기와 같은 원천) 안의 PNG 판 → ICNS. PNG 를 그대로 담는 판 종류만 쓰므로
+// 외부 도구(sips·iconutil) 없이 만든다(macOS 10.7+). 1x 자리와 Retina(@2x) 자리를 함께 채운다.
+const ICNS_1X = { 16: 'icp4', 32: 'icp5', 64: 'icp6', 128: 'ic07', 256: 'ic08', 512: 'ic09', 1024: 'ic10' };
+const ICNS_2X = { 32: 'ic11', 64: 'ic12', 256: 'ic13', 512: 'ic14' };
+export function icoToIcns(ico) {
+  const entries = [];
+  try {
+    for (let i = 0, n = ico.readUInt16LE(4); i < n; i++) {
+      const e = 6 + 16 * i;
+      const w = ico[e] || 256;
+      const len = ico.readUInt32LE(e + 8);
+      const off = ico.readUInt32LE(e + 12);
+      if (ico.readUInt32BE(off) !== 0x89504e47) continue; // BMP 판은 건너뛴다
+      for (const type of [ICNS_1X[w], ICNS_2X[w]]) {
+        if (type && !entries.some((x) => x.type === type)) entries.push({ type, data: ico.subarray(off, off + len) });
+      }
+    }
+  } catch { return null; }
+  if (!entries.length) return null;
+  const total = 8 + entries.reduce((sum, x) => sum + 8 + x.data.length, 0);
+  const out = Buffer.alloc(total);
+  out.write('icns', 0, 'ascii');
+  out.writeUInt32BE(total, 4);
+  let at = 8;
+  for (const x of entries) {
+    out.write(x.type, at, 'ascii');
+    out.writeUInt32BE(8 + x.data.length, at + 4);
+    x.data.copy(out, at + 8);
+    at += 8 + x.data.length;
+  }
+  return out;
+}
+
+function xmlText(v) {
+  return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * `<appsDir>/<이름>.app` — 영혼의 `<이름> Face.command` 를 부르기만 하는 작은 앱 꾸러미.
+ * LSUIElement 라 앱 자신은 Dock 에 남지 않는다(창은 IRIS 창 자신이 띄운다). 이 PC 에서
+ * 만든 파일이라 격리 표식이 없어 Gatekeeper 검사를 받지 않는다.
+ */
+export function writeMacAppLauncher(root, name, {
+  appsDir = path.join(os.homedir(), 'Applications'),
+  iconIco = path.join(root, '_agent', 'shared', 'tools', 'face', 'app', 'iris.ico'),
+} = {}) {
+  const app = path.join(appsDir, `${name}.app`);
+  const contents = path.join(app, 'Contents');
+  const exe = path.join(contents, 'MacOS', name);
+  fs.mkdirSync(path.dirname(exe), { recursive: true });
+  // 앱 아이콘: IRIS 창 부품이 놓은 iris.ico 에서(없거나 읽지 못하면 아이콘 없이 — 기본 앱 모양).
+  let icns = null;
+  try { icns = icoToIcns(fs.readFileSync(iconIco)); } catch { /* 부품 없음 */ }
+  if (icns) {
+    fs.mkdirSync(path.join(contents, 'Resources'), { recursive: true });
+    fs.writeFileSync(path.join(contents, 'Resources', 'AppIcon.icns'), icns);
+  }
+  fs.writeFileSync(path.join(contents, 'Info.plist'), [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    `  <key>CFBundleName</key><string>${xmlText(name)}</string>`,
+    `  <key>CFBundleDisplayName</key><string>${xmlText(name)}</string>`,
+    '  <key>CFBundleIdentifier</key><string>com.iris-workspace.launcher</string>',
+    `  <key>CFBundleExecutable</key><string>${xmlText(name)}</string>`,
+    '  <key>CFBundlePackageType</key><string>APPL</string>',
+    '  <key>CFBundleVersion</key><string>1</string>',
+    '  <key>LSUIElement</key><true/>',
+    ...(icns ? ['  <key>CFBundleIconFile</key><string>AppIcon</string>'] : []),
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n'), 'utf8');
+  const target = faceLauncherPath(root, name, { platform: 'darwin' });
+  fs.writeFileSync(exe, `#!/bin/sh\nexec '${String(target).replace(/'/g, "'\\''")}' "$@"\n`, { encoding: 'utf8', mode: 0o755 });
+  fs.chmodSync(exe, 0o755);
+  return { appPath: app, icon: Boolean(icns) };
+}
 
 // PowerShell is run from a temp .ps1 written as UTF-8 *with BOM* rather than
 // through -Command: a Korean soul name in a -Command string arrives mangled
@@ -157,13 +266,23 @@ const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // of the real desktop. When it is null the script asks Windows itself
 // ([Environment]::GetFolderPath) -- the desktop is often redirected (OneDrive)
 // and guessing %USERPROFILE%\Desktop would silently create a dead shortcut.
-export async function writeFaceLauncher(root, name, { desktopDir = null, runPs = defaultRunPs, skipShortcut = false } = {}) {
-  const cmdPath = faceLauncherPath(root, name);
+export async function writeFaceLauncher(root, name, { desktopDir = null, runPs = defaultRunPs, skipShortcut = false, platform = process.platform } = {}) {
+  const cmdPath = faceLauncherPath(root, name, { platform });
   fs.mkdirSync(root, { recursive: true });
-  fs.writeFileSync(cmdPath, faceLauncherContent(), 'utf8');
+  fs.writeFileSync(cmdPath, faceLauncherContent({ platform }), 'utf8');
+  if (platform !== 'win32') fs.chmodSync(cmdPath, 0o755);
 
   if (skipShortcut) {
     return { cmdPath, lnkPath: null, shortcut: { ok: false, detail: 'skipped' } };
+  }
+  if (platform !== 'win32') {
+    // macOS: 바탕화면 대신 ~/Applications 의 앱 꾸러미(D-M10). desktopDir 은 시험·연습용 자리.
+    try {
+      const { appPath } = writeMacAppLauncher(root, name, desktopDir ? { appsDir: desktopDir } : {});
+      return { cmdPath, lnkPath: appPath, shortcut: { ok: true, detail: appPath } };
+    } catch (err) {
+      return { cmdPath, lnkPath: null, shortcut: { ok: false, detail: String(err?.message ?? err) } };
+    }
   }
 
   // Desktop shortcut = "<name>.lnk" ("IRIS" -- the one thing that lives
@@ -259,8 +378,9 @@ export function launchFace({
   env,
   spawnFn = spawn,
   logFile,
+  platform = process.platform,
 } = {}) {
-  const exe = nodeExe ?? (nodeDir ? path.join(nodeDir, 'node.exe') : nodeExeFor(root));
+  const exe = nodeExe ?? (nodeDir ? (platform === 'win32' ? path.join(nodeDir, 'node.exe') : path.join(nodeDir, 'bin', 'node')) : nodeExeFor(root, { platform }));
   const dir = faceDir ?? faceDirFor(root);
   const specPath = spec ?? firstSessionSpecPath(root);
   const args = [
@@ -313,6 +433,15 @@ export function relaunchFace({
     windowsHide: true,
     env: env ? { ...process.env, ...env } : process.env,
   };
+  if (process.platform !== 'win32') {
+    // macOS: 영혼의 `<이름> Face.command` 가 정본 실행기다(IRIS_FACE_NODE·TEAMCLAUDE_CONFIG·PATH 를 건다).
+    const launcher = faceLauncherPath(root, path.basename(root), { platform: 'darwin' });
+    if (fs.existsSync(launcher)) {
+      const child = spawnFn('/bin/sh', [launcher], { ...spawnOpts, stdio: 'ignore' });
+      child.unref?.();
+      return { ok: true, how: 'command', pid: child.pid, launcher };
+    }
+  }
   if (fs.existsSync(vbs)) {
     // Same line as the desktop .cmd (faceLauncherContent): the .vbs uses
     // IRIS_FACE_NODE and otherwise a bare "node" looked up on PATH -- and this
@@ -411,9 +540,7 @@ export async function waitFaceReady({
 // ---------------------------------------------------------------------------
 
 export function defaultWorkDir(env = process.env) {
-  return env.LOCALAPPDATA
-    ? path.join(env.LOCALAPPDATA, 'IRIS-Installer')
-    : path.join(os.tmpdir(), 'IRIS-Installer');
+  return installerWorkDir({ env });
 }
 
 // The unpacked node under %LOCALAPPDATA%\IRIS-Installer\node is ~100 MB of

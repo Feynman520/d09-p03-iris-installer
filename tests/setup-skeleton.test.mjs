@@ -68,6 +68,8 @@ function makeCtx(label, { root: rootOverride, decisions } = {}) {
     decisions: decisions ?? { later: true, nodes: [] },
     choice: { subscriptions: ['claude'], leadAgent: 'claude' },
     offline: true,
+    // 이 파일은 Windows 판(desktop.ini·attrib)을 잰다. macOS 판(Finder 아이콘)은 맨 끝 시험.
+    platform: 'win32',
     log: (line) => logs.push(line),
     progress: () => {},
     run: async (exe, args) => { runCalls.push([exe, ...args]); return { code: 0, out: '', err: '' }; },
@@ -272,4 +274,20 @@ test('payload: partPath 는 manifest 의 file 값을, partDir 은 zip 이름에�
   assert.equal(partDir(ctx, 'ontology'), path.join(ctx.payloadDir, 'setup', 'ontology'));
   assert.equal(partDir(ctx, 'pyyaml'), null, '휠 파일은 폴더가 아니다');
   assert.equal(partPath(ctx, '없는부품'), null);
+});
+
+test('skeleton(macOS): desktop.ini 없이 _cosmos.ico 를 놓고 Finder 아이콘을 한 번만 건다(D-M11)', async () => {
+  const ctx = makeCtx('mac-icon');
+  ctx.platform = 'darwin';
+  ctx.run = async (exe, args) => { ctx.runCalls.push([exe, ...args]); return { code: 0, out: 'ok\n', err: '' }; };
+  const { recorded } = await skeleton.run(ctx);
+  assert.equal(recorded.icon.desktopIni, 'not-applicable');
+  assert.equal(recorded.icon.finderIcon, 'set');
+  assert.ok(!fs.existsSync(path.join(ctx.root, 'desktop.ini')));
+  assert.ok(fs.existsSync(path.join(ctx.root, '_cosmos.ico')));
+  const call = ctx.runCalls.find(([exe]) => exe === '/usr/bin/osascript');
+  assert.ok(call && call.includes('JavaScript') && call.at(-1) === ctx.root, JSON.stringify(ctx.runCalls));
+  assert.ok(!ctx.runCalls.some(([exe]) => exe === 'attrib'));
+  const again = await skeleton.run(ctx);
+  assert.equal(again.recorded.icon.finderIcon, 'already', '두 번째 실행은 다시 걸지 않는다');
 });

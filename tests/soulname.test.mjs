@@ -10,7 +10,8 @@ after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
 test('soul name rules', () => {
   assert.equal(validateSoulName('NOVA').ok, true);
-  assert.equal(validateSoulName('NOVA').path, 'C:\\NOVA');
+  assert.equal(validateSoulName('NOVA', { platform: 'win32' }).path, 'C:\\NOVA');
+  assert.equal(validateSoulName('NOVA', { platform: 'darwin', homedir: '/Users/someone' }).path, '/Users/someone/NOVA');
   for (const [n, why] of [['', 'empty'], ['a<b', 'chars'], ['NOVA.', 'trailing'], ['CON', 'reserved'], ['Windows', 'system'], ['Program Files', 'system']]) {
     assert.equal(validateSoulName(n).reason, why, n);
   }

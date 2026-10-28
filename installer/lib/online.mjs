@@ -45,6 +45,7 @@ import {
 import { ensureProxy } from './proxy.mjs';
 import { readReceipt, writeReceipt, setInstalled } from './receipt.mjs';
 import { writeShims } from './shims.mjs';
+import { checkAutomationBrowser } from './precheck-darwin.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -75,6 +76,8 @@ export const CODES = {
   net: 'E-ONLINE-NET',
   claude: 'E-ONLINE-CLAUDE',
   documentSkills: 'E-ONLINE-DOCSKILLS',
+  browser: 'E-ONLINE-BROWSER',
+  ieumoffice: 'E-ONLINE-IEUMOFFICE',
   relay: 'E-ONLINE-RELAY',
 };
 
@@ -290,8 +293,19 @@ export async function checkNet({
 // the child exits (reasoning and measurements there; tests/agent-update.test.mjs
 // pins the two copies together). The updater is shipped as its own part, so
 // this is a copy, not an import.
-export function claudeForwarderText(version, binName = 'claude.exe') {
+export function claudeForwarderText(version, binName = 'claude.exe', { platform = process.platform } = {}) {
+  if (platform !== 'win32') {
+    // macOS(docs/설계-macOS.md 2절): `<tools>/claude/claude` sh 전달자. `exec` 로 넘기므로 셸이
+    // 이 파일을 다시 읽을 일이 없다 — 업데이터가 세션 중에 바꿔 써도 안전하다(.cmd 의 `&exit/b` 와 같은 목적).
+    // updater/agents.mjs claudeForwarder 와 글자까지 같아야 한다(tests/agent-update.test.mjs).
+    return ['#!/bin/sh', `exec "$(dirname -- "$0")/${version}/${binName === 'claude.exe' ? 'claude' : binName}" "$@"`, ''].join('\n');
+  }
   return ['@echo off', `"%~dp0${version}\\${binName}" %*&exit/b${' '.repeat(40)}`].join('\r\n') + '\r\n';
+}
+
+// downloads.claude.ai manifest 의 platforms 열쇠.
+export function claudeManifestKey(platform = process.platform) {
+  return platform === 'win32' ? 'win32-x64' : 'darwin-arm64';
 }
 
 async function sha256File(file, { createReadStream = fs.createReadStream } = {}) {
@@ -368,9 +382,11 @@ export async function installClaude({
   downloadFn = downloadToFile,
   hashFileFn = sha256File,
   env = process.env,
+  platform = process.platform,
 } = {}) {
   const deps = { readReceiptFn, writeReceiptFn };
   void subscriptions;
+  const win = platform === 'win32';
 
   const theLock = lock ?? readLock({ zipRoot });
   const part = theLock?.parts?.claude;
@@ -381,12 +397,17 @@ export async function installClaude({
   }
 
   const version = part.version;
-  const binName = part.binName ?? 'claude.exe';
+  const binName = part.binName ?? (win ? 'claude.exe' : 'claude');
   const dir = claudeDir(root);
   const versionDir = path.join(dir, version);
   const exePath = path.join(versionDir, binName);
   const partPath = `${exePath}.part`;
-  const cmdPath = path.join(dir, 'claude.cmd');
+  // 전달자: Windows claude.cmd, macOS claude(sh). 심(lib/shims.mjs)이 이것을 부른다.
+  const cmdPath = path.join(dir, win ? 'claude.cmd' : 'claude');
+  const writeForwarder = (text) => {
+    fsImpl.writeFileSync(cmdPath, text, 'ascii');
+    if (!win) fsImpl.chmodSync(cmdPath, 0o755);
+  };
 
   // `--version` only. This is the single process this module ever runs against
   // a model vendor's CLI, and it makes no model request.
@@ -465,7 +486,7 @@ export async function installClaude({
       clearTimeout(timer);
     }
 
-    const officialSha = String(manifest?.platforms?.['win32-x64']?.checksum ?? '').toLowerCase();
+    const officialSha = String(manifest?.platforms?.[claudeManifestKey(platform)]?.checksum ?? '').toLowerCase();
     const lockedSha = String(part.sha256).toLowerCase();
     if (officialSha !== lockedSha) {
       // The official manifest and our lock disagree: the pinned version was
@@ -496,11 +517,13 @@ export async function installClaude({
 
     if (fsImpl.existsSync(exePath)) fsImpl.rmSync(exePath, { force: true });
     fsImpl.renameSync(partPath, exePath);
+    // macOS: 내려받은 파일에는 실행 권한이 없다.
+    if (!win) fsImpl.chmodSync(exePath, 0o755);
 
     const probe = await probeVersion(exePath);
     if (!probe.ok) throw new Error(`--version did not report ${version} (${probe.out})`);
 
-    fsImpl.writeFileSync(cmdPath, claudeForwarderText(version, binName), 'ascii');
+    writeForwarder(claudeForwarderText(version, binName, { platform }));
     const shims = writeShimsFn(root, ALL_AGENTS);
 
     const seconds = Math.round((Date.now() - started) / 100) / 10;
@@ -529,9 +552,12 @@ export async function installClaude({
   try {
     if (!fb.npm || !fb.version) throw new Error('lock.parts.claude.fallback incomplete');
     const soulNode = path.join(toolsDir(root), 'node');
-    const nodeBase = fsImpl.existsSync(path.join(soulNode, 'node.exe')) ? soulNode : (nodeDir ?? soulNode);
-    const nodeExe = path.join(nodeBase, 'node.exe');
-    const npmCli = path.join(nodeBase, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const nodeIn = (base) => (win ? path.join(base, 'node.exe') : path.join(base, 'bin', 'node'));
+    const nodeBase = fsImpl.existsSync(nodeIn(soulNode)) ? soulNode : (nodeDir ?? soulNode);
+    const nodeExe = nodeIn(nodeBase);
+    const npmCli = win
+      ? path.join(nodeBase, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      : path.join(nodeBase, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
     const cacheDir = path.join(root, '_agent', 'runtime', 'host', 'npm-cache');
     fsImpl.mkdirSync(dir, { recursive: true });
     fsImpl.mkdirSync(cacheDir, { recursive: true });
@@ -541,6 +567,8 @@ export async function installClaude({
     const r = await npmInstall({ nodeExe, npmCli, prefix: dir, cacheDir, spec: `${fb.npm}@${fb.version}` });
     if (r.code !== 0) throw new Error((r.err || r.out || 'npm failed').slice(0, 300));
 
+    // macOS 의 `npm -g --prefix` 는 실행 파일을 <prefix>/bin 에 둔다 — 전달자가 그쪽을 가리키게 한다.
+    if (!win) writeForwarder('#!/bin/sh\nexec "$(dirname -- "$0")/bin/claude" "$@"\n');
     const probe = await probeVersion(cmdPath, fb.version);
     if (!probe.ok) throw new Error(`--version did not report ${fb.version} (${probe.out})`);
 
@@ -784,6 +812,171 @@ export async function installDocumentSkills({
     }
     return pendingOut('download-failed', String(err?.message ?? err));
   }
+}
+
+// ---------------------------------------------------------------------------
+// ⑥-2c macOS 브라우저 조작용 Chrome for Testing (D-M17 개정, 2026-10-28)
+// ---------------------------------------------------------------------------
+//
+// Windows 는 Edge 가 늘 있어 Playwright MCP 가 바로 돈다. Mac 은 Safari 뿐인 경우가 많아,
+// 시스템에 Chrome·Edge 가 없으면 Playwright 가 쓰는 바로 그 Chrome for Testing 을
+// 잠금표(`lock.parts['playwright-chromium']`: 주소·SHA-256·크기 고정)대로 받아
+// `_agent/shared/tools/playwright-browsers/chromium-<revision>/` 에 놓는다. 그 폴더 이름과
+// 안쪽 모양(`chrome-mac-arm64/…app`)·`INSTALLATION_COMPLETE` 표식은 Playwright 가
+// `PLAYWRIGHT_BROWSERS_PATH` 아래에서 찾는 그대로다. 실제로 어느 브라우저를 쓸지는
+// 실행 래퍼(adapters.mjs playwrightWrapperText)가 그때그때 고른다: Chrome → Edge → 이것.
+// 실패해도 설치는 멈추지 않는다 — `pending` 으로 남고, Chrome 을 설치하면 그대로 켜진다.
+
+export const PLAYWRIGHT_BROWSER_PART = 'playwright-chromium';
+
+const COMPLETE_MARKER = 'INSTALLATION_COMPLETE';
+
+/**
+ * 잠금표의 내려받기 부품 하나(`url`·`sha256`·`bytes`·`top`·`executable`·`dest`)를 받아 푼다 —
+ * Chrome for Testing 과 이음오피스(D-M21)가 같이 쓴다. 반쯤 풀린 폴더가 보이지 않게 `<dest>.partial` 에서
+ * 풀고 이름만 바꾼다. 다 풀리면 `INSTALLATION_COMPLETE` 표식(Playwright 가 찾는 이름)에 SHA-256 을 적어,
+ * 잠금표의 판이 바뀌면 다시 받는다(빈 표식 = Playwright 가 스스로 깐 것, 그대로 쓴다).
+ * 실패는 늘 `pending`(설치는 멈추지 않는다).
+ */
+async function installDownloadPart({
+  root, part, partName, source, progressSource, pendingMessage, code, record,
+  onProgress, log, fetchFn, fsImpl, downloadFn, listArchiveFn, extractZipFn, env,
+}) {
+  const pendingOut = (reason, detail = null) => {
+    record({ state: 'pending', reason, verified: false });
+    log(`${partName} pending: ${reason}${detail ? ` — ${detail}` : ''}`);
+    return { ok: false, state: 'pending', code, message: pendingMessage(reason), detail };
+  };
+
+  if (!part.url || !/^[0-9a-f]{64}$/i.test(String(part.sha256 ?? '')) || !part.dest || !part.executable || !part.top) {
+    return pendingOut('lock-missing', `lock.parts.${partName} incomplete`);
+  }
+  let dest;
+  try {
+    dest = assertInside(root, path.join(root, String(part.dest).split('/').join(path.sep)), { fs: fsImpl });
+  } catch (err) {
+    return pendingOut('bad-dest', String(err?.message ?? err));
+  }
+  const want = String(part.sha256).toLowerCase();
+  const exe = path.join(dest, ...String(part.executable).split('/'));
+  const marker = path.join(dest, COMPLETE_MARKER);
+  const info = (from) => ({
+    state: 'installed', version: part.version ?? null, revision: part.revision ?? null, sha256: want,
+    source: from, path: relToRoot(root, dest), verified: true,
+  });
+  const markerText = (() => { try { return String(fsImpl.readFileSync(marker, 'utf8')).trim().toLowerCase(); } catch { return null; } })();
+  if (fsImpl.existsSync(exe) && (markerText === '' || markerText === want)) {
+    record(info('existing'));
+    return { ok: true, state: 'done', source: 'existing', path: dest };
+  }
+  if (isOffline(env)) return pendingOut('offline', RESUME_SENTENCE);
+
+  const work = path.join(root, '_agent', 'setup', 'downloads');
+  const zipPath = path.join(work, `${partName}-${part.revision ?? part.version ?? 'x'}.zip`);
+  const stage = `${dest}.partial`;
+  try {
+    fsImpl.mkdirSync(work, { recursive: true });
+    fsImpl.rmSync(stage, { recursive: true, force: true });
+    onProgress({ phase: 'download', source: progressSource, done: 0, total: part.bytes ?? null });
+    const got = await downloadFn(part.url, zipPath, {
+      fetchFn, expectedBytes: part.bytes ?? null, env,
+      onProgress: (p) => { try { onProgress({ phase: 'download', source: progressSource, ...p }); } catch { /* ignore */ } },
+    });
+    if (String(got?.sha256 ?? '').toLowerCase() !== want) throw new Error(`sha256 mismatch (got=${got?.sha256}, want=${want})`);
+
+    const entries = await listArchiveFn(zipPath);
+    const unsafe = entries.filter((e) => unsafeArchiveEntry(e));
+    if (unsafe.length) throw new Error(`archive has unsafe entry path(s): ${unsafe.slice(0, 3).join(', ')}`);
+    if (archiveTopFolder(entries) !== part.top) throw new Error(`archive top folder is not ${part.top}`);
+
+    await extractZipFn(zipPath, stage);
+    if (!fsImpl.existsSync(path.join(stage, ...String(part.executable).split('/')))) throw new Error(`executable not in archive: ${part.executable}`);
+    fsImpl.writeFileSync(path.join(stage, COMPLETE_MARKER), `${want}\n`);
+    fsImpl.rmSync(dest, { recursive: true, force: true });
+    fsImpl.renameSync(stage, dest);
+    try { fsImpl.rmSync(zipPath, { force: true }); } catch { /* 청소는 최선 노력 */ }
+
+    record(info(source));
+    log(`${partName} ${part.version ?? ''}${part.revision ? ` (r${part.revision})` : ''} -> ${relToRoot(root, dest)}`);
+    return { ok: true, state: 'done', source, path: dest };
+  } catch (err) {
+    try { fsImpl.rmSync(zipPath, { force: true }); } catch { /* 최선 노력 */ }
+    try { fsImpl.rmSync(stage, { recursive: true, force: true }); } catch { /* 같음 */ }
+    return pendingOut('download-failed', String(err?.message ?? err));
+  }
+}
+
+/**
+ * States: `skipped`(Windows · 잠금표에 없음 · 시스템에 Chrome/Edge 있음) · `done` · `pending`(정직한 실패).
+ * @returns {Promise<{ok:boolean, state:string, reason?:string, channel?:string, path?:string, source?:string, code?:string, message?:string, detail?:any}>}
+ */
+export async function installPlaywrightBrowser({
+  root, lock, zipRoot, platform = process.platform,
+  onProgress = () => {}, log = () => {},
+  fetchFn = fetch, fsImpl = fs,
+  downloadFn = downloadToFile,
+  listArchiveFn = listArchive,
+  extractZipFn = extractZip,
+  browserCheckFn = checkAutomationBrowser,
+  readReceiptFn = readReceipt, writeReceiptFn = writeReceipt,
+  env = process.env,
+} = {}) {
+  const deps = { readReceiptFn, writeReceiptFn };
+  if (platform === 'win32') return { ok: true, state: 'skipped', reason: 'windows' };
+  const theLock = lock ?? readLock({ zipRoot });
+  const part = theLock?.parts?.[PLAYWRIGHT_BROWSER_PART];
+  if (!part) return { ok: true, state: 'skipped', reason: 'not-in-lock' };
+  const record = (info) => patchReceipt(root, (receipt) => { setInstalled(receipt, PLAYWRIGHT_BROWSER_PART, info); }, deps);
+
+  const system = (() => { try { return browserCheckFn(); } catch { return { present: false }; } })();
+  if (system?.present) {
+    record({ state: 'not-installed', reason: 'system-browser', channel: system.channel ?? null });
+    log(`playwright browser skipped (system ${system.channel ?? 'browser'} at ${system.path ?? '?'})`);
+    return { ok: true, state: 'skipped', reason: 'system-browser', channel: system.channel ?? null };
+  }
+
+  return installDownloadPart({
+    root, part, partName: PLAYWRIGHT_BROWSER_PART, source: 'playwright-cdn', progressSource: 'playwright', code: CODES.browser, record,
+    pendingMessage: (reason) => `브라우저 조작용 Chrome for Testing 을 내려받지 못했습니다(${reason}). Chrome 을 설치하면 바로 켜집니다.`,
+    onProgress, log, fetchFn, fsImpl, downloadFn, listArchiveFn, extractZipFn, env,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// ⑥-2d macOS 문서 보조 엔진 이음오피스 (D-M21, 2026-10-28 사용자 결정)
+// ---------------------------------------------------------------------------
+//
+// 문서는 파이썬 라이브러리(문서 스킬)가 먼저이고, 이음오피스는 그것이 못 하는 일(옛 .hwp 만들기·
+// 쪽 그림 렌더·PDF→워드 등)을 맡는 보조 엔진이다. 공식 GitHub 릴리스(잠금표: 주소·SHA-256·크기 고정)를
+// `_agent/shared/tools/ieumoffice/IeumOffice.app` 에 풀고, 에이전트는 심 `ieumoffice`(shims.mjs)로만 부른다 —
+// MCP 로 등록하지 않는다. Windows 는 설치 프로그램(Setup.exe)만 배포되어 아직 싣지 않는다.
+
+export const IEUMOFFICE_PART = 'ieumoffice';
+
+/**
+ * States: `skipped`(Windows · 잠금표에 없음) · `done` · `pending`(정직한 실패).
+ */
+export async function installIeumOffice({
+  root, lock, zipRoot, platform = process.platform,
+  onProgress = () => {}, log = () => {},
+  fetchFn = fetch, fsImpl = fs,
+  downloadFn = downloadToFile,
+  listArchiveFn = listArchive,
+  extractZipFn = extractZip,
+  readReceiptFn = readReceipt, writeReceiptFn = writeReceipt,
+  env = process.env,
+} = {}) {
+  const deps = { readReceiptFn, writeReceiptFn };
+  if (platform === 'win32') return { ok: true, state: 'skipped', reason: 'windows' };
+  const theLock = lock ?? readLock({ zipRoot });
+  const part = theLock?.parts?.[IEUMOFFICE_PART];
+  if (!part) return { ok: true, state: 'skipped', reason: 'not-in-lock' };
+  const record = (info) => patchReceipt(root, (receipt) => { setInstalled(receipt, IEUMOFFICE_PART, info); }, deps);
+  return installDownloadPart({
+    root, part, partName: IEUMOFFICE_PART, source: 'github-release', progressSource: 'ieumoffice', code: CODES.ieumoffice, record,
+    pendingMessage: (reason) => `문서 보조 엔진(이음오피스)을 내려받지 못했습니다(${reason}). 문서 일은 파이썬 라이브러리와 문서 MCP 로 합니다.`,
+    onProgress, log, fetchFn, fsImpl, downloadFn, listArchiveFn, extractZipFn, env,
+  });
 }
 
 // ---------------------------------------------------------------------------

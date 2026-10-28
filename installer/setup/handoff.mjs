@@ -22,6 +22,11 @@ export const HANDOFF_SCHEMA = 1;
 
 // 재개 진입점. 계약이 글자 그대로 정한 경로라 다른 이름을 쓰면 Face 가 못 찾는다.
 export const RESUME_INSTALLER_PATH = '_agent/setup/installer/IRIS-설치.cmd';
+// macOS(D-M04): 같은 자리의 .command. IRIS 창(P02)은 인수 문서의 resume.installerPath 를 그대로 연다.
+export const RESUME_INSTALLER_PATH_MAC = '_agent/setup/installer/IRIS-설치.command';
+export function resumeInstallerPath(platform = process.platform) {
+  return platform === 'win32' ? RESUME_INSTALLER_PATH : RESUME_INSTALLER_PATH_MAC;
+}
 export const RESUME_ARGS = Object.freeze(['--resume']);
 
 export function setupDir(root) { return path.join(root, '_agent', 'setup'); }
@@ -252,7 +257,7 @@ export function buildHandoff(ctx, {
     diagnosticsPath: relOf(root, diagnosticsPath),
     firstMessage: firstMessageText({ nameEnMissing, interview }),
     messenger: messengerBlock(ctx, receipt, { fs }),
-    resume: { installerPath: RESUME_INSTALLER_PATH, args: [...RESUME_ARGS] },
+    resume: { installerPath: resumeInstallerPath(ctx?.platform ?? process.platform), args: [...RESUME_ARGS] },
     setupCompletedAt: setup.allDone ? now.toISOString() : null,
   };
 }
@@ -274,13 +279,21 @@ export function readHandoff(root, { fs = nodeFs } = {}) {
   }
 }
 
+// ⑨ 검사(checks.mjs checkEdge)·⑤-6(adapters.mjs)가 대기 기능에 적는 브라우저 조작의 이름 — 글자가 같아야 한다(시험이 묶음).
+export const BROWSER_CAPABILITY = '브라우저 조작(Playwright)';
+// ⑦ 에서 macOS 문서 보조 엔진(이음오피스, D-M21)을 받지 못했을 때 남은 일에 더하는 이름.
+export const IEUMOFFICE_CAPABILITY = '문서 보조 엔진(이음오피스)';
+
 /**
  * refreshHandoffAfterOnline(ctx) — 로그인·중계기가 끝난 뒤 서버가 부른다.
  *
  * 설치기가 ⑨ 검사에서 이 파일을 쓸 때는 아직 로그인 전이라 `login-pending`
  * 이다. 온라인 묶음이 끝나면 같은 파일의 로그인·중계기·상태만 갱신한다.
  * Face 가 이미 고쳐 둔 `messenger.prompted` 는 건드리지 않는다(계약: 그 칸만
- * Face 의 것이다).
+ * Face 의 것이다). `ctx.resolvedCapabilities`(이름 목록)에 든 대기 기능은 ⑦ 에서
+ * 풀린 것이라 `pendingCapabilities` 에서 뺀다(macOS 브라우저 조작 — 그 밖에는 비어 있다).
+ * `ctx.addedCapabilities`({capability, reason, howToEnable} 목록)는 ⑦ 에서 새로 대기가 된 기능이라
+ * 같은 이름이 없을 때만 더한다(macOS 이음오피스 내려받기 실패).
  */
 export function refreshHandoffAfterOnline(ctx, { fs = ctx?.fs ?? nodeFs, now = new Date() } = {}) {
   const root = ctx.root;
@@ -294,8 +307,16 @@ export function refreshHandoffAfterOnline(ctx, { fs = ctx?.fs ?? nodeFs, now = n
   const subscriptions = Array.isArray(prior.subscriptions) ? prior.subscriptions : [];
   const login = loginBlock(receipt, subscriptions);
   const setup = setupSummary(receipt, { assumeDone: [] });
+  const resolved = new Set(Array.isArray(ctx.resolvedCapabilities) ? ctx.resolvedCapabilities : []);
+  const added = (Array.isArray(ctx.addedCapabilities) ? ctx.addedCapabilities : []).filter((p) => p?.capability);
+  let pendingCapabilities = Array.isArray(prior.pendingCapabilities) ? prior.pendingCapabilities.filter((p) => !resolved.has(p?.capability)) : null;
+  if (added.length) {
+    pendingCapabilities = pendingCapabilities ?? [];
+    for (const p of added) if (!pendingCapabilities.some((q) => q?.capability === p.capability)) pendingCapabilities.push(p);
+  }
   const next = {
     ...prior,
+    ...((resolved.size || added.length) && pendingCapabilities ? { pendingCapabilities } : {}),
     writtenAt: now.toISOString(),
     login,
     relay: relayBlock(receipt),
@@ -385,6 +406,8 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
     ?? (ctx.payloadDir ? path.dirname(ctx.payloadDir) : null);
   const version = packageVersionOf(ctx);
   const had = readCopyVersion(fs, root);
+  const win = (ctx.platform ?? process.platform) === 'win32';
+  const entryName = win ? 'IRIS-설치.cmd' : 'IRIS-설치.command';
   // 판을 알 수 없으면(꾸러미 표가 없는 시험 등) 갈아 끼우지 않는다 — 모르는
   // 이유로 멀쩡한 사본을 버리는 것이 낡은 사본보다 나쁘다.
   const stale = Boolean(version) && fs.existsSync(finalDir) && had !== version;
@@ -392,7 +415,7 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
 
   const result = {
     dir: relOf(root, finalDir),
-    entry: RESUME_INSTALLER_PATH,
+    entry: resumeInstallerPath(win ? 'win32' : 'darwin'),
     copied: 0,
     kept: 0,
     ok: false,
@@ -421,6 +444,13 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
   });
   result.copied += tree.written.length;
   result.kept += tree.kept.length;
+  // macOS: 복사는 내용만 옮기므로 Finder 가 실행할 sh 진입점(삭제기 사본 등)의 실행 권한을 되살린다.
+  if (!win) {
+    for (const n of ['IRIS-삭제.command', 'IRIS-설치.command', 'bootstrap.sh']) {
+      const f = path.join(dest, 'installer', n);
+      try { if (fs.existsSync(f) && (fs.statSync(f).mode & 0o777) !== 0o755) fs.chmodSync(f, 0o755); } catch { /* 그 파일이 없는 판 */ }
+    }
+  }
 
   // ② 옆에 있는 lib\ (server.mjs 가 `../lib/run.mjs` 로 부른다)
   if (fs.existsSync(path.join(zipRoot, 'lib'))) {
@@ -434,11 +464,13 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
   }
 
   // ③ 진입점 — 계약이 정한 **정확한** 자리. zip 루트 것이 먼저, 없으면 installer\ 안의 같은 파일.
-  const entryDst = path.join(dest, 'IRIS-설치.cmd');
-  let entry = copyFileIfAbsent(fs, root, path.join(zipRoot, 'IRIS-설치.cmd'), entryDst);
+  const entryDst = path.join(dest, entryName);
+  let entry = copyFileIfAbsent(fs, root, path.join(zipRoot, entryName), entryDst);
   if (!entry.written && !entry.kept) {
-    entry = copyFileIfAbsent(fs, root, path.join(zipRoot, 'installer', 'IRIS-설치.cmd'), entryDst);
+    entry = copyFileIfAbsent(fs, root, path.join(zipRoot, 'installer', entryName), entryDst);
   }
+  // macOS: Finder·IRIS 창이 실행하려면 실행 권한이 있어야 한다(복사는 내용만 옮긴다).
+  if (!win && fs.existsSync(entryDst)) fs.chmodSync(entryDst, 0o755);
   if (entry.written) result.copied += 1;
   if (entry.kept) result.kept += 1;
 
@@ -474,7 +506,7 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
   }
 
   // ⑦ 낡은 사본이었으면 여기서 한 번에 바꿔 끼운다(직전 것은 한 세대만 보관).
-  if (stale && fs.existsSync(path.join(dest, 'IRIS-설치.cmd'))) {
+  if (stale && fs.existsSync(path.join(dest, entryName))) {
     const prev = assertInside(root, `${finalDir}.prev`, { fs });
     try { fs.rmSync(prev, { recursive: true, force: true }); } catch { /* 없으면 그만 */ }
     fs.renameSync(finalDir, prev);
@@ -483,13 +515,13 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
     log(`[handoff] 설치기 사본을 ${version} 판으로 바꿔 끼웠습니다(직전 판은 installer.prev 에 남김).`);
   }
 
-  const entryFinal = path.join(finalDir, 'IRIS-설치.cmd');
+  const entryFinal = path.join(finalDir, entryName);
   result.ok = fs.existsSync(entryFinal);
   if (!result.ok) {
-    result.missing.push('IRIS-설치.cmd');
-    log('[handoff] 설치기 사본에 IRIS-설치.cmd 가 없습니다 — 「설치 이어하기」가 동작하지 않습니다.');
+    result.missing.push(entryName);
+    log(`[handoff] 설치기 사본에 ${entryName} 가 없습니다 — 「설치 이어하기」가 동작하지 않습니다.`);
   } else {
-    log(`[handoff] 설치기 사본 준비 — 새로 ${result.copied}개·그대로 ${result.kept}개 (${RESUME_INSTALLER_PATH})`);
+    log(`[handoff] 설치기 사본 준비 — 새로 ${result.copied}개·그대로 ${result.kept}개 (${result.entry})`);
   }
   return result;
 }

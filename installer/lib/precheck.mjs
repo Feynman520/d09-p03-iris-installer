@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { run } from '../../lib/run.mjs';
 import { isOffline } from '../../lib/net.mjs';
+import { isMac, soulRootFor } from './platform.mjs';
 
 // docs/설계-v2.md 4-2 "검사표" is the source of truth for what each check
 // means and whether it blocks. Summary:
@@ -29,9 +30,11 @@ const EDGE_APP_PATHS_KEY = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\
 const SAC_POLICY_KEY = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy';
 const SAC_POLICY_VALUE = 'VerifiedAndReputablePolicyState';
 
-function checkOs() {
+// `release`/`arch` are injectable so the Windows check table can be exercised
+// from any machine (docs/설계-macOS.md D-M01); real runs use the defaults.
+function checkOs({ release = os.release() } = {}) {
   try {
-    const detail = os.release(); // e.g. '10.0.26200' on Windows
+    const detail = release; // e.g. '10.0.26200' on Windows
     const build = Number(detail.split('.')[2]);
     if (!Number.isFinite(build)) return { ok: false, build: null, detail };
     return { ok: build >= MIN_BUILD, build, detail };
@@ -40,9 +43,9 @@ function checkOs() {
   }
 }
 
-function checkArch() {
+function checkArch({ arch = os.arch() } = {}) {
   try {
-    const value = os.arch();
+    const value = arch;
     return { ok: value === 'x64', value };
   } catch (err) {
     return { ok: false, value: null, detail: String(err?.message ?? err) };
@@ -426,18 +429,18 @@ export async function checkSac(timeoutMs, { runFn = run } = {}) {
   }
 }
 
-// The soul root is always C:\IRIS except on the developer PC rehearsing the
-// installer (IRIS_INSTALLER_SOUL_NAME) -- same override server.mjs itself
-// uses (docs/설계-v2.md 11절 / server.mjs soulName default).
-function resolveSoulRoot(envFn) {
+// The soul root is always C:\IRIS (~/IRIS on macOS) except on the developer
+// PC rehearsing the installer (IRIS_INSTALLER_SOUL_NAME) -- same override
+// server.mjs itself uses (docs/설계-v2.md 11절 / server.mjs soulName default).
+function resolveSoulRoot(envFn, { platform, homedir } = {}) {
   const name = envFn.IRIS_INSTALLER_SOUL_NAME || 'IRIS';
-  return `C:\\${name}`;
+  return soulRootFor(name, { platform, homedir });
 }
 
 // Never a blocker -- an existing package-receipt.json means "offer
 // resume/reinstall", not "stop" (task-10-brief.md / 검사표 "기존 설치" row).
-export function checkExisting({ fsFn = fs, envFn = process.env } = {}) {
-  const receiptPath = path.join(resolveSoulRoot(envFn), '_agent', 'setup', 'package-receipt.json');
+export function checkExisting({ fsFn = fs, envFn = process.env, platform, homedir } = {}) {
+  const receiptPath = path.join(resolveSoulRoot(envFn, { platform, homedir }), '_agent', 'setup', 'package-receipt.json');
   try {
     const raw = fsFn.readFileSync(receiptPath, 'utf8');
     const json = JSON.parse(raw);
@@ -479,8 +482,14 @@ function pushWarning(warnings, id, message) {
 // server is rewired onto the new blockers/warnings/info/recorded shape in
 // Task 11 -- this task only adds the new shape alongside the old one.
 export async function precheck({ timeoutMs = 15000, deps = {} } = {}) {
-  const osResult = checkOs();
-  const arch = checkArch();
+  if (isMac(deps.platform)) {
+    // 같은 모양의 결과를 내는 macOS 검사표(docs/설계-macOS.md 3절). 동적 import 인 까닭:
+    // precheck-darwin.mjs 가 이 파일의 checkNet·checkPorts·checkExisting 을 다시 쓴다.
+    const { precheckDarwin } = await import('./precheck-darwin.mjs');
+    return precheckDarwin({ timeoutMs, deps });
+  }
+  const osResult = checkOs({ release: deps.osRelease });
+  const arch = checkArch({ arch: deps.arch });
   const bundle = await runPsBundle(timeoutMs, deps);
   const disk = checkDisk(bundle);
   const ntfs = checkNtfs(bundle, deps);

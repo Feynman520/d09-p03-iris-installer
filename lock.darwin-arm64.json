@@ -1,0 +1,167 @@
+{
+  "$comment": [
+    "macOS(Apple Silicon) 잠금표 덮어쓰기 (docs/설계-macOS.md D-M12). lock.json(= Windows) 위에 이 파일이 '다른 칸만' 덮는다 -- 펼치는 규칙은 build/lock-target.mjs.",
+    "부품 값 = 이 대상에서 바뀌는 칸만(칸 하나는 통째로 바뀐다). null 부품 = 이 대상에는 싣지 않는다. 칸 값 null = 그 칸을 뺀다.",
+    "잠금 원칙은 lock.json 과 같다: 판·URL·SHA-256 고정, latest/main/HEAD 금지. 지문 출처는 각 sha256Source.",
+    "npm 부품(codex·teamclaude·playwright-mcp·ui-ux-pro-max)은 칸이 같다 -- Mac 에서 빌드하면 npm 이 그 대상의 선택 의존(예: @openai/codex-darwin-arm64)을 고른다. 빌드는 대상과 같은 운영체제에서 한다."
+  ],
+  "target": "darwin-arm64",
+  "parts": {
+    "node": {
+      "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+      "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+      "sha256Source": "vendor SHASUMS256.txt (2026-10-27)",
+      "bytes": 52909993,
+      "file": "runtime/node-v24.21.0-darwin-arm64.tar.gz",
+      "note": "Node 24 LTS macOS arm64. 압축 안에 node-v24.21.0-darwin-arm64/ 한 겹(strip 1) -> bin/node."
+    },
+    "python": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-aarch64-apple-darwin-install_only.tar.gz",
+      "sha256": "3ee3ee547cedfeb7c2b16b2b7156039f7b470bb8f857e226fd3d2eb11db83c76",
+      "sha256Source": "vendor release SHA256SUMS (2026-10-27)",
+      "bytes": 25135464,
+      "file": "runtime/cpython-3.12.14+20260901-aarch64-apple-darwin-install_only.tar.gz",
+      "note": "Windows 와 같은 python-build-standalone 판의 macOS arm64 묶음. 최상위 python/ 한 겹(strip 1) -> bin/python3, lib/python3.12/site-packages."
+    },
+    "pyyaml": {
+      "url": "https://files.pythonhosted.org/packages/89/a0/6cf41a19a1f2f3feab0e9c0b74134aa2ce6849093d5517a0c550fe37a648/pyyaml-6.0.3-cp312-cp312-macosx_11_0_arm64.whl",
+      "sha256": "fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0",
+      "sha256Source": "PyPI JSON API digests.sha256 (2026-10-27)",
+      "bytes": 173973,
+      "file": "runtime/pyyaml-6.0.3-cp312-cp312-macosx_11_0_arm64.whl",
+      "dest": "_agent/shared/tools/python/lib/python3.12/site-packages"
+    },
+    "uv": {
+      "url": "https://files.pythonhosted.org/packages/ce/c7/00f207b279547db0ed7dd519d6c505358eda7e976811ba2c0ac58b8e79c6/uv-0.12.14-py3-none-macosx_11_0_arm64.whl",
+      "sha256": "54ba5330871a025b3e44bde14e60bc8a182e7a50510be05c580637a9d8410099",
+      "sha256Source": "PyPI JSON API digests.sha256 (2026-10-27)",
+      "bytes": 16677928,
+      "file": "runtime/uv-0.12.14-py3-none-macosx_11_0_arm64.whl",
+      "fallback": {
+        "version": "0.11.21",
+        "url": "https://files.pythonhosted.org/packages/a5/f7/31d62c17837c9ae79cc6d5351fc5d54e8926e78b0315b4b6c187e0d1d50d/uv-0.11.21-py3-none-macosx_11_0_arm64.whl",
+        "sha256": "9c11169a049ec8bf9ddc6a9f55fba9a240942ec8005faaaf4393f00ff7a4c16e",
+        "note": "Windows 잠금표의 대체 판과 같은 0.11.21 의 macOS arm64 바퀴."
+      }
+    },
+    "age": {
+      "url": "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-darwin-arm64.tar.gz",
+      "sha256": "e2020b073c44f692685a24d6abc378817eb81ffaaf49fd0531ef8565f767f2f5",
+      "sha256Source": "computed 2026-10-27 from official release URL (릴리스에 SHA256SUMS 자산이 없다 -- Windows 판과 같은 사정)",
+      "bytes": 18106798,
+      "file": "runtime/age-v1.3.2-darwin-arm64.tar.gz"
+    },
+    "git": {
+      "version": "2.53.0-4",
+      "url": "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283-macOS-arm64.tar.gz",
+      "sha256": "f9dc64635a5b62fbd7ad95db73268bbb8912255ac516d65d37bf7af22fcb8ffe",
+      "sha256Source": "vendor release asset .sha256 (2026-10-27)",
+      "bytes": 62348987,
+      "file": "runtime/dugite-native-v2.53.0-4098283-macOS-arm64.tar.gz",
+      "note": "D-M13: macOS 에는 공식 이동식 Git(MinGit) 이 없어 GitHub Desktop 이 쓰는 dugite-native 를 싣는다. 겉껍질 없음(strip 0) -> bin/git, libexec/git-core. 쓰려면 GIT_EXEC_PATH 등이 필요해 늘 심(shims/git)으로 부른다."
+    },
+    "claude": {
+      "url": "https://downloads.claude.ai/claude-code-releases/2.1.272/darwin-arm64/claude",
+      "sha256": "195e24e8e1f9bf46f1eaee72d434a33e18f9f5796f29a6348a00d16c5f8aee75",
+      "sha256Source": "official manifest.json platforms.darwin-arm64.checksum (2026-10-27)",
+      "bytes": 210702192,
+      "binName": "claude"
+    },
+    "manage": {
+      "source": "patches/teamclaude/teamclaude-manage.mjs",
+      "file": "relay/teamclaude-manage.mjs",
+      "note": "D-M14: PowerShell 관리 스크립트의 macOS 판(node). 3456 을 잡은 프로세스가 동봉 node + TeamClaude 진입 파일일 때만 멈춘다."
+    },
+    "hooks-posix": {
+      "kind": "dir",
+      "source": "payload-src/macos/hooks",
+      "exclude": ["__pycache__"],
+      "file": "tools/hooks-posix.zip",
+      "dest": "_agent/claude/scripts",
+      "license": "MIT",
+      "note": "D-M18: block-blanket-kill.ps1 의 macOS 판(파이썬). hooks 와 같은 폴더에 섞여 산다(merge) -- 따로 둔 까닭은 Windows zip 의 hooks.zip 을 바꾸지 않기 위해서다."
+    },
+    "dash": {
+      "patches": "patches/dash/rules.darwin.json"
+    },
+    "hwp-automation": {
+      "commit": "3a9f287746e86c15afe73c3faa1498eeb54f2c62",
+      "pinnedAt": "2026-10-27",
+      "dest": "_agent/shared/tools/document-mcp/hwp/3a9f287",
+      "requires": [
+        "python-hwpx (wheelhouse)",
+        "LibreOffice (optional: approximate HWPX PDF)"
+      ],
+      "note": "M6: 한컴 COM 대신 python-hwpx(engine/mac), HWPX PDF 만 LibreOffice 근사본"
+    },
+    "excel-automation": {
+      "commit": "e59f6681bd17bee2f293aeab344304248efeb2b1",
+      "pinnedAt": "2026-10-27",
+      "dest": "_agent/shared/tools/document-mcp/excel/e59f668",
+      "requires": [
+        "LibreOffice"
+      ],
+      "note": "M6: Office COM 대신 LibreOffice(engine/lo_bridge.py, 별도 설치)"
+    },
+    "ppt-automation": {
+      "commit": "c0aebfc97c8470931ea8cc8071c0d18e549debbe",
+      "pinnedAt": "2026-10-27",
+      "dest": "_agent/shared/tools/document-mcp/ppt/c0aebfc",
+      "requires": [
+        "LibreOffice"
+      ],
+      "note": "M6: Office COM 대신 LibreOffice(engine/lo_bridge.py, 별도 설치)"
+    },
+    "word-automation": {
+      "commit": "37adb552386d54012930fbbf5e148589488089d4",
+      "pinnedAt": "2026-10-27",
+      "dest": "_agent/shared/tools/document-mcp/word/37adb55",
+      "requires": [
+        "LibreOffice"
+      ],
+      "note": "M6: Office COM 대신 LibreOffice(engine/lo_bridge.py, 별도 설치)"
+    },
+    "document-mcp-wheelhouse": {
+      "requirementsIn": "payload-src/manifests/python-locks/document-mcp-darwin/requirements.in",
+      "requirementsInSha256": "e590d9c763b940023eb719bf61aba1c0ae80af5d9adfa49054257cdf13220189",
+      "requirementsLock": "payload-src/manifests/python-locks/document-mcp-darwin/requirements.lock",
+      "sha256": "d52f08cff5073c0021a0f2b832bc4e36ed0faff54c5bba3710d02bdc8b2846cb",
+      "platform": "macosx_13_0_arm64",
+      "expectedCount": 48,
+      "runtimePackages": ["python-docx", "openpyxl", "python-pptx", "pdfplumber", "reportlab", "defusedxml", "pandas", "pypdf[crypto]", "pillow", "lxml"],
+      "runtimeImports": ["docx", "openpyxl", "pptx", "pdfplumber", "reportlab", "defusedxml", "pandas", "pypdf", "PIL", "lxml"],
+      "runtimeNote": "D-M21(2026-10-28 사용자 결정 '문서는 파이썬 라이브러리 먼저'): 문서 스킬은 세션의 python(tools/python, 심 python3)으로 돈다. venv 단계가 같은 바퀴집에서 이 꾸러미들을 동봉 파이썬에도 오프라인으로 깐다. Windows 잠금표에는 이 칸이 없어 하는 일이 없다."
+    },
+    "playwright-chromium": {
+      "$comment": "macOS 브라우저 조작(D-M17 개정 2026-10-28): Chrome·Edge 가 없는 Mac 에서만 ⑦ 단계가 받는다. Playwright 가 같은 판 playwright-core(browsers.json chromium revision)로 쓰는 바로 그 Chrome for Testing 이라 playwright-mcp 를 올리면 이 칸도 함께 올린다(verify/static ㉒ 가 맞춰 본다).",
+      "kind": "url",
+      "version": "154.0.8037.0",
+      "revision": "1244",
+      "url": "https://cdn.playwright.dev/builds/cft/154.0.8037.0/mac-arm64/chrome-mac-arm64.zip",
+      "sha256": "087abf7d9405bde17889b4ccbe7d12f4a4d12a0164cc087fedd3bfe46817baa7",
+      "sha256Source": "이 PC 에서 받아 계산(2026-10-28). 받은 파일의 MD5 가 배포처가 알려 준 x-goog-hash md5=13EW+NUGhESltk/0A1yDng== 와 같다",
+      "bytes": 191396177,
+      "top": "chrome-mac-arm64",
+      "executable": "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+      "dest": "_agent/shared/tools/playwright-browsers/chromium-1244",
+      "redistribute": "download",
+      "downloadWhy": "Google Chrome for Testing 은 Google 이 배포하는 시험용 Chrome 이라 꾸러미에 싣지 않고, 시스템에 Chrome·Edge 가 없을 때만 설치 중에 Playwright 공식 배포처에서 받는다(191MB)",
+      "license": "Chrome for Testing — Chromium(BSD-3-Clause 등 오픈소스) + Google 구성 요소, Google 배포 조건"
+    },
+    "ieumoffice": {
+      "$comment": "macOS 문서 보조 엔진(D-M21, 2026-10-28 사용자 결정): 이음오피스 공식 GitHub 릴리스를 ⑦ 단계가 받는다. 에이전트는 심 `ieumoffice`(명령어)로만 쓴다 — MCP 로 등록하지 않고(도구 설명 약 3만 토큰), 앱의 AI 기능은 쓰지 않는다(중계기 우회). 판을 올릴 때는 릴리스의 SHA-256 을 사람이 확인해 함께 고친다.",
+      "kind": "url",
+      "version": "0.12.7",
+      "url": "https://github.com/pblsketch/openoffice/releases/download/v0.12.7/IeumOffice-0.12.7-arm64-mac.zip",
+      "sha256": "7c501e4ea09c9140818f2a4ee1187717c9803cc65e4150a96e3f3945e7686c30",
+      "sha256Source": "GitHub 릴리스 첨부의 digest(2026-10-28 조회) — 이 PC 에서 받은 파일로 계산한 값과 같다",
+      "bytes": 237854279,
+      "top": "IeumOffice.app",
+      "executable": "IeumOffice.app/Contents/Resources/cli/ieumoffice",
+      "dest": "_agent/shared/tools/ieumoffice",
+      "redistribute": "download",
+      "downloadWhy": "이음오피스(Apache-2.0)는 공식 빌드를 그대로 쓰도록 꾸러미에 싣지 않고, 설치 중에 공식 GitHub 릴리스에서 받는다(238MB). 받지 못해도 설치는 끝나며, 문서 일은 파이썬 라이브러리와 문서 MCP 로 한다",
+      "license": "Apache-2.0 (https://github.com/pblsketch/openoffice)"
+    }
+  }
+}

@@ -14,7 +14,7 @@ import {
 } from '../installer/lib/login.mjs';
 import { run } from '../lib/run.mjs';
 
-const TAR = 'C:\\Windows\\System32\\tar.exe';
+import { TAR } from '../lib/zip.mjs';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-install-'));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
@@ -521,7 +521,7 @@ test('install: a throwing onProgress listener cannot take the install down', asy
 
 test('writeShims: no agent chosen -> runtime shims only; both -> plus two agent shims', () => {
   const root = path.join(tmp, 'shims-none');
-  writeShims(root, []);
+  writeShims(root, [], { platform: 'win32' });
   assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'shared', 'shims')).sort(), ['git.cmd', 'node.cmd', 'py.cmd', 'python.cmd', 'relay-autostart.vbs', 'relay-ensure.cmd', 'relay-ensure.mjs']);
   for (const f of ['git.cmd', 'python.cmd', 'py.cmd']) {
     const text = fs.readFileSync(path.join(root, '_agent', 'shared', 'shims', f), 'utf8');
@@ -531,7 +531,7 @@ test('writeShims: no agent chosen -> runtime shims only; both -> plus two agent 
   assert.match(fs.readFileSync(path.join(root, '_agent', 'shared', 'shims', 'py.cmd'), 'utf8'), /tools\\python\\python\.exe" %args%/);
 
   const root2 = path.join(tmp, 'shims-both');
-  writeShims(root2, ['claude', 'codex']);
+  writeShims(root2, ['claude', 'codex'], { platform: 'win32' });
   assert.deepEqual(
     fs.readdirSync(path.join(root2, '_agent', 'shared', 'shims')).sort(),
     ['claude.cmd', 'codex.cmd', 'git.cmd', 'node.cmd', 'py.cmd', 'python.cmd', 'relay-autostart.vbs', 'relay-ensure.cmd', 'relay-ensure.mjs'],

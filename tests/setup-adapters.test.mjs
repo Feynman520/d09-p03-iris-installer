@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import * as adapters from '../installer/setup/adapters.mjs';
+import { loadLockForTarget } from '../build/lock-target.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOOKS_SRC = path.join(REPO, 'payload-src', 'policy', 'hooks');
@@ -60,6 +61,8 @@ function makePayload(label) {
   return dir;
 }
 
+const WIN = { platform: 'win32' };
+
 function makeCtx(label, { apps = {}, edge = true, tools = {}, precheck } = {}) {
   const root = path.join(tmp, label, 'soul-IRIS');
   fs.mkdirSync(root, { recursive: true });
@@ -73,6 +76,8 @@ function makeCtx(label, { apps = {}, edge = true, tools = {}, precheck } = {}) {
     lock: LOCK,
     choice: { subscriptions: ['claude'], leadAgent: 'claude' },
     precheck: precheck ?? { edge: { present: edge } },
+    // 이 파일의 시험은 Windows 판 연결부를 잰다(어느 PC 에서나). macOS 판은 platform: 'darwin' 으로 따로.
+    platform: 'win32',
     offline: true,
     log: (line) => logs.push(line),
     progress: () => {},
@@ -207,15 +212,15 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
     'excel-automation', 'hwp-automation', 'pdf-automation', 'playwright', 'ppt-automation', 'word-automation',
   ]);
   assert.equal(cj.mcpServers.playwright.type, 'stdio');
-  assert.equal(cj.mcpServers.playwright.command, adapters.playwrightWrapper(root));
+  assert.equal(cj.mcpServers.playwright.command, adapters.playwrightWrapper(root, WIN));
   assert.equal(cj.mcpServers.playwright.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, '1');
   for (const name of ['hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation']) {
-    assert.equal(cj.mcpServers[name].command, adapters.venvPythonPath(root), `${name} 은 venv 파이썬으로`);
+    assert.equal(cj.mcpServers[name].command, adapters.venvPythonPath(root, WIN), `${name} 은 venv 파이썬으로`);
     assert.match(cj.mcpServers[name].args[0], /server\.py$/);
   }
 
   // 플레이라이트 래퍼: 엣지 채널 + 작업 폴더 고정, ASCII·CRLF
-  const wrap = fs.readFileSync(adapters.playwrightWrapper(root), 'utf8');
+  const wrap = fs.readFileSync(adapters.playwrightWrapper(root, WIN), 'utf8');
   assert.match(wrap, /--browser msedge/);
   assert.match(wrap, /cd \/d "%~dp0work"/);
   assert.ok(wrap.includes('\r\n'));
@@ -255,7 +260,7 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
     assert.ok(adapters.hasTable(toml, `mcp_servers.${name}`), `코덱스 MCP 없음: ${name}`);
   }
   assert.match(toml, /\[mcp_servers\.self-improve\.env\]\nSELF_IMPROVE_DIR = "/);
-  assert.ok(toml.includes('\\\\'), 'TOML 문자열의 역슬래시는 두 번 적어야 한다');
+  if (process.platform === 'win32') assert.ok(toml.includes('\\\\'), 'TOML 문자열의 역슬래시는 두 번 적어야 한다');
 
   // --- 코덱스 스킬: 플러그인 통째로가 아니라 스킬 단위(T03 5절) -----------
   const skills = agentFile(root, 'codex', 'skills');
@@ -468,7 +473,7 @@ test('adapters(업데이트): 우리가 쓴 MCP 항목은 새 판 경로로 갱�
   assert.equal(cj.mcpServers.mine.command, 'C:\\my\\thing.exe', '그 사람이 더한 항목은 그대로');
 
   const toml = fs.readFileSync(tomlPath, 'utf8');
-  assert.match(toml, /self-improve[\\\\]+9\.9\.9/, '코덱스 쪽도 새 판 경로');
+  assert.match(toml, /self-improve[\\\\/]+9\.9\.9/, '코덱스 쪽도 새 판 경로');
   assert.equal((toml.match(/\[mcp_servers\.self-improve\]/g) ?? []).length, 1, '블록이 늘어나면 안 된다');
   assert.equal((toml.match(/\[mcp_servers\.pdf-automation\]/g) ?? []).length, 1);
   assert.match(toml, /\[mcp_servers\.self-improve\.env\]/, '하위 env 테이블도 함께 갈아 끼운다');
@@ -523,7 +528,7 @@ test('adapters(업데이트, Task 24b #2): 코덱스 TOML 은 command·args 줄�
   await adapters.run({ ...ctx, lock: nextLock });
 
   const toml = fs.readFileSync(tomlPath, 'utf8');
-  assert.match(toml, /self-improve[\\\\]+9\.9\.8/, '우리 command/args 줄은 새 판 경로로 갱신된다');
+  assert.match(toml, /self-improve[\\\\/]+9\.9\.8/, '우리 command/args 줄은 새 판 경로로 갱신된다');
   assert.match(toml, /MY_USER_KEY = "keep-me"/, '그 사람이 env 하위 테이블에 더한 줄은 그대로 남는다');
   assert.equal((toml.match(/\[mcp_servers\.self-improve\]/g) ?? []).length, 1, '블록이 늘어나면 안 된다');
 });
@@ -644,7 +649,7 @@ test('adapters: UI/UX 스킬 생성기를 오프라인·코덱스 대상으로 �
   const { recorded, pending } = await ctx && await adapters.run(ctx);
   const call = ctx.runCalls.find((c) => String(c[1] ?? '').includes('ui-ux-pro-max'));
   assert.ok(call, 'ui-ux-pro-max 를 부르지 않았다');
-  assert.equal(call[0], adapters.nodeExePath(ctx.root));
+  assert.equal(call[0], adapters.nodeExePath(ctx.root, WIN));
   assert.deepEqual(call.slice(2), ['init', '--ai', 'codex', '--offline']);
   assert.equal(recorded.codex.uiUx.status, 'ok');
   assert.ok(!pending.some((p) => p.capability === '코덱스 UI/UX 스킬'));
@@ -676,4 +681,159 @@ test('adapters: 잠금표 dest 가 바뀌면 경로도 따라간다(경로를 �
   assert.equal(adapters.toolVersion(ctx, 'foo'), '1.2.3');
   // 판이 없으면 dest 의 마지막 칸(커밋 짧은 해시)
   assert.equal(adapters.toolVersion({ root: fake, lock: { parts: { bar: { dest: 'a/b/da823e8' } } } }, 'bar'), 'da823e8');
+});
+
+test('adapters(macOS): sh 래퍼·파이썬 훅·bin 경로, 잠금표에 없는 문서 MCP 는 등록하지 않는다(D-M16·17·18)', { skip: process.platform === 'win32' && 'POSIX 경로·실행 비트' }, async () => {
+  const ctx = makeCtx('mac', { precheck: { recorded: { edge: { present: true, channel: 'msedge' } } } });
+  ctx.platform = 'darwin';
+  const parts = { ...LOCK.parts };
+  for (const p of ['hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation']) delete parts[p];
+  ctx.lock = { ...LOCK, parts };
+  const MAC = { platform: 'darwin' };
+  const { recorded, pending } = await adapters.run(ctx);
+  const root = ctx.root;
+
+  const cj = readJson(agentFile(root, 'claude', '.claude.json'));
+  assert.deepEqual(Object.keys(cj.mcpServers).sort(), ['pdf-automation', 'playwright']);
+  assert.equal(cj.mcpServers.playwright.command, adapters.playwrightWrapper(root, MAC));
+  assert.equal(cj.mcpServers['pdf-automation'].command, adapters.venvPythonPath(root, MAC));
+  assert.ok(adapters.venvPythonPath(root, MAC).endsWith('/document-mcp/bin/python'));
+
+  const wrapFile = adapters.playwrightWrapper(root, MAC);
+  const wrap = fs.readFileSync(wrapFile, 'utf8');
+  assert.match(wrap, /^#!\/bin\/sh\n/);
+  assert.match(wrap, /--browser "\$B" "\$@"/, '브라우저는 실행할 때 고른다(D-M17 개정)');
+  assert.ok(wrap.indexOf('Google Chrome.app') < wrap.indexOf('Microsoft Edge.app'), 'Chrome 이 Edge 보다 먼저');
+  assert.ok(!wrap.includes('PLAYWRIGHT_BROWSERS_PATH'), '잠금표에 Chrome for Testing 이 없으면 그 갈래도 없다');
+  assert.equal(fs.statSync(wrapFile).mode & 0o777, 0o755);
+
+  const settings = readJson(agentFile(root, 'claude', 'settings.json'));
+  const cmds = JSON.stringify(settings.hooks);
+  assert.ok(cmds.includes('block-blanket-kill-posix.py') && !/powershell -NoProfile/i.test(cmds), cmds.slice(0, 300));
+  assert.ok(cmds.includes(adapters.pythonShimPath(root, MAC)));
+  const codexHooks = JSON.stringify(readJson(path.join(root, '_agent', 'codex', 'hooks.json')));
+  assert.ok(!codexHooks.includes('& \\"'), '코덱스 훅에 파워셸 호출 연산자가 없다');
+  assert.ok(codexHooks.includes('block-blanket-kill-posix.py'));
+
+  const toml = fs.readFileSync(agentFile(root, 'codex', 'config.toml'), 'utf8');
+  assert.ok(!adapters.hasTable(toml, 'mcp_servers.word-automation'));
+  assert.ok(toml.includes(`[projects.'${root}']`), '코덱스 신뢰 표는 경로 그대로');
+  assert.ok(!recorded.claude.files.some((f) => f.includes('\\')), '기록 경로도 / 로');
+  assert.ok(!pending.some((p) => /오피스|한컴/.test(p.reason)), '맥에서는 오피스·한컴 대기를 만들지 않는다');
+});
+
+test('adapters(macOS, M6): 네 문서 MCP 도 등록 — 엑셀·PPT·워드는 LibreOffice 대기, 한글은 요구 없음, 영혼 안 LibreOffice 프로필', { skip: process.platform === 'win32' && 'POSIX 경로' }, async () => {
+  const MAC = { platform: 'darwin' };
+  for (const libreOffice of [false, true]) {
+    const ctx = makeCtx(`mac-m6-${libreOffice}`, { precheck: { recorded: { edge: { present: true, channel: 'msedge' } } } });
+    ctx.platform = 'darwin';
+    ctx.libreOffice = libreOffice;
+    ctx.lock = loadLockForTarget('darwin-arm64').lock;
+    const { pending } = await adapters.run(ctx);
+    const root = ctx.root;
+    const cj = readJson(agentFile(root, 'claude', '.claude.json'));
+    for (const name of ['hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation']) {
+      assert.ok(cj.mcpServers[name], `${name} 등록`);
+      assert.equal(cj.mcpServers[name].command, adapters.venvPythonPath(root, MAC));
+    }
+    assert.equal(cj.mcpServers['excel-automation'].env.IRIS_LO_PROFILE_DIR, path.join(root, '_agent', 'shared', 'portable-state', 'libreoffice', 'excel-automation'));
+    assert.ok(cj.mcpServers['hwp-automation'].args[0].endsWith('/document-mcp/hwp/3a9f287/server.py'), cj.mcpServers['hwp-automation'].args[0]);
+    const lo = pending.filter((p) => /LibreOffice/.test(p.reason));
+    if (libreOffice) assert.equal(lo.length, 0, 'LibreOffice 가 있으면 대기 없음');
+    else assert.deepEqual(lo.map((p) => p.capability).sort(), ['문서 자동화(엑셀)', '문서 자동화(워드)', '문서 자동화(파워포인트)'], '없으면 엑셀·PPT·워드만 대기(한글은 아님)');
+    assert.ok(!pending.some((p) => /오피스|한컴/.test(p.reason)), '맥에서는 오피스·한컴 대기를 만들지 않는다');
+  }
+});
+
+test('hasLibreOffice: 알려진 자리 중 하나라도 있으면 true(IRIS_SOFFICE 포함)', () => {
+  const seen = new Set(['/custom/soffice']);
+  const fakeFs = { existsSync: (p) => seen.has(p) };
+  assert.equal(adapters.hasLibreOffice({ env: { IRIS_SOFFICE: '/custom/soffice' } }, { fs: fakeFs, home: '/h' }), true);
+  assert.equal(adapters.hasLibreOffice({ env: {} }, { fs: fakeFs, home: '/h' }), false);
+  assert.equal(adapters.hasLibreOffice({ libreOffice: true }), true);
+});
+
+// 2026-10-28 macOS 실설치: 캐시 사본의 hooks/run-hook.cmd 가 0644 로 복사돼 첫 세션의 SessionStart 훅이
+// "Permission denied" 로 실패했다. 복사는 원본의 실행 권한을 지켜야 한다(Windows 엔 실행 비트가 없다).
+test('adapters(macOS): 플러그인 캐시 사본은 원본의 실행 권한을 지킨다', { skip: process.platform === 'win32' }, async () => {
+  const ctx = makeCtx('exec-bits', { apps: { office: true, hancom: true } });
+  const sp = under(ctx.root, LOCK.parts.superpowers.dest);
+  fs.mkdirSync(path.join(sp, 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(sp, 'hooks', 'run-hook.cmd'), ': << \'CMDBLOCK\'\n');
+  fs.writeFileSync(path.join(sp, 'hooks', 'hooks.json'), '{}\n');
+  fs.chmodSync(path.join(sp, 'hooks', 'run-hook.cmd'), 0o755);
+  fs.chmodSync(path.join(sp, 'hooks', 'hooks.json'), 0o644);
+  await adapters.run(ctx);
+  const cache = adapters.pluginCacheDir(ctx.root, 'superpowers', '6.3.0');
+  assert.equal(fs.statSync(path.join(cache, 'hooks', 'run-hook.cmd')).mode & 0o777, 0o755, '훅 실행 파일은 0755');
+  assert.equal(fs.statSync(path.join(cache, 'hooks', 'hooks.json')).mode & 0o111, 0, '실행 비트가 없던 파일에 새로 붙이지 않는다');
+});
+
+// 2026-10-28 D-M17 개정: macOS 래퍼가 실행할 때마다 브라우저를 고른다 — Chrome → Edge → ⑦ 이 받아 둔 Chrome for Testing.
+// 진짜 sh 로 래퍼를 돌리고, node 자리에는 받은 인수·PLAYWRIGHT_BROWSERS_PATH 를 적는 가짜를 둔다.
+// 래퍼의 `/Applications/` 는 시험 폴더로 바꿔 끼운다(이 PC 의 진짜 앱 폴더를 보지 않게).
+test('adapters(macOS): 플레이라이트 래퍼가 Chrome → Edge → Chrome for Testing 순으로 고른다', { skip: process.platform === 'win32' && 'sh 래퍼' }, async () => {
+  const { spawnSync } = await import('node:child_process');
+  const lock = loadLockForTarget('darwin-arm64').lock;
+  const base = path.join(tmp, 'mac-wrap');
+  const tools = path.join(base, 'soul', '_agent', 'shared', 'tools');
+  const sysApps = path.join(base, 'Applications');
+  const home = path.join(base, 'home');
+  const text = adapters.playwrightWrapperText({ platform: 'darwin', lock, root: path.join(base, 'soul') })
+    .split('"/Applications/').join(`"${sysApps}/`);
+  const wrapper = path.join(tools, 'playwright-mcp', 'playwright-mcp');
+  fs.mkdirSync(path.dirname(wrapper), { recursive: true });
+  fs.writeFileSync(wrapper, text, { mode: 0o755 });
+  const node = path.join(tools, 'node', 'bin', 'node');
+  fs.mkdirSync(path.dirname(node), { recursive: true });
+  fs.writeFileSync(node, '#!/bin/sh\nprintf "%s\\n" "PBP=${PLAYWRIGHT_BROWSERS_PATH:-}" "$@"\n', { mode: 0o755 });
+  const exe = (p) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, '', { mode: 0o755 }); };
+  const chrome = 'Google Chrome.app/Contents/MacOS/Google Chrome';
+  const edge = 'Microsoft Edge.app/Contents/MacOS/Microsoft Edge';
+  const cft = path.join(tools, ...lock.parts['playwright-chromium'].dest.replace('_agent/shared/tools/', '').split('/'), ...lock.parts['playwright-chromium'].executable.split('/'));
+  const runIt = () => {
+    const r = spawnSync('/bin/sh', [wrapper, '--caps', 'vision'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: home } });
+    assert.equal(r.status, 0, r.stderr);
+    const [pbp, ...args] = r.stdout.trim().split('\n');
+    const i = args.indexOf('--browser');
+    return { browser: args[i + 1], pbp: pbp.slice(4), args };
+  };
+  let r = runIt();
+  assert.equal(r.browser, 'chrome', '아무것도 없으면 chrome(Playwright 가 "Chrome 이 없다"고 알린다)');
+  assert.equal(r.pbp, '');
+  assert.deepEqual(r.args.slice(-2), ['--caps', 'vision'], '받은 인수는 그대로 넘긴다');
+  exe(cft);
+  r = runIt();
+  assert.equal(r.browser, 'chromium', 'Chrome·Edge 가 없고 받아 둔 Chrome for Testing 이 있으면 chromium');
+  assert.equal(fs.realpathSync(r.pbp), fs.realpathSync(path.join(tools, 'playwright-browsers')), 'PLAYWRIGHT_BROWSERS_PATH = chromium-<rev> 의 부모');
+  exe(path.join(home, 'Applications', edge));
+  r = runIt();
+  assert.equal(r.browser, 'msedge');
+  assert.equal(r.args[r.args.indexOf('--executable-path') + 1], path.join(home, 'Applications', edge), '~/Applications 판은 실행 파일을 직접 넘긴다');
+  assert.equal(r.pbp, '');
+  exe(path.join(sysApps, edge));
+  r = runIt();
+  assert.equal(r.browser, 'msedge');
+  assert.ok(!r.args.includes('--executable-path'), '/Applications 판은 채널만');
+  exe(path.join(home, 'Applications', chrome));
+  r = runIt();
+  assert.equal(r.browser, 'chrome', 'Chrome 이 Edge 보다 먼저');
+  assert.equal(r.args[r.args.indexOf('--executable-path') + 1], path.join(home, 'Applications', chrome));
+  exe(path.join(sysApps, chrome));
+  r = runIt();
+  assert.equal(r.browser, 'chrome');
+  assert.ok(!r.args.includes('--executable-path'));
+});
+
+test('adapters(macOS): Chrome·Edge 가 없으면 대기 문구는 "⑦ 이 Chrome for Testing 을 받는다"', { skip: process.platform === 'win32' && 'POSIX 경로' }, async () => {
+  const ctx = makeCtx('mac-nobrowser', { precheck: { recorded: { edge: { present: false, channel: null } } } });
+  ctx.platform = 'darwin';
+  ctx.lock = loadLockForTarget('darwin-arm64').lock;
+  const { pending } = await adapters.run(ctx);
+  const p = pending.find((x) => x.capability === '브라우저 조작(Playwright)');
+  assert.equal(p?.reason, adapters.MAC_BROWSER_PENDING);
+  const { BROWSER_CAPABILITY } = await import('../installer/setup/handoff.mjs');
+  assert.equal(BROWSER_CAPABILITY, '브라우저 조작(Playwright)', '인수 문서가 ⑦ 뒤에 빼는 이름과 같은 글자');
+  const wrap = fs.readFileSync(adapters.playwrightWrapper(ctx.root, { platform: 'darwin' }), 'utf8');
+  assert.ok(wrap.includes('PLAYWRIGHT_BROWSERS_PATH="$D/../playwright-browsers"'), '래퍼가 Chrome for Testing 자리를 안다');
 });

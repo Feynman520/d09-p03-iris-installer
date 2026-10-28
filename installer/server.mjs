@@ -31,6 +31,7 @@ import {
 } from './lib/state.mjs';
 import { precheck as defaultPrecheck } from './lib/precheck.mjs';
 import { validateSoulName } from './lib/soulname.mjs';
+import { installerWorkDir } from './lib/platform.mjs';
 import {
   validateNodes, buildDecisions, writeDecisions, readDecisions, decisionsPath,
 } from './lib/structure-rules.mjs';
@@ -368,7 +369,7 @@ export function startServer({
   // ⑦ 뒤 검사 12·13 다시 재기 — 시험은 가짜를 넣어 실제 중계기에 닿지 않게 한다.
   relayRecheckFn = null,
   // 2.0.38: 업데이트가 Claude Code 를 채울지 가르는 유무 검사(root → boolean) — 시험은 가짜를 넣는다.
-  claudePresentFn = (root) => fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', 'claude.cmd')),
+  claudePresentFn = (root) => fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', process.platform === 'win32' ? 'claude.cmd' : 'claude')),
   // 2.0.39: 업데이트가 설치기 사본(_agent\setup\installer)을 새 판으로 바꿔 끼우는 함수(ctx → 결과) — 시험은 가짜를 넣는다.
   copyInstallerFn = null,
   faceDir,
@@ -400,9 +401,7 @@ export function startServer({
   const version = readPackageVersion(zipRoot);
   const userEnvSkipped = noUserEnv || process.env.IRIS_INSTALLER_NO_USER_ENV === '1';
   const userEnvRecord = [];
-  const logDir = workDir ?? (process.env.LOCALAPPDATA
-    ? path.join(process.env.LOCALAPPDATA, 'IRIS-Installer')
-    : path.join(os.tmpdir(), 'IRIS-Installer'));
+  const logDir = workDir ?? installerWorkDir();
   const serverLog = path.join(logDir, 'server.log');
 
   if (userEnvSkipped) {
@@ -1080,6 +1079,39 @@ export function startServer({
       } else {
         state.online.documentSkills = { state: 'skipped', code: null };
       }
+      // macOS(D-M17 개정 2026-10-28): 시스템에 Chrome·Edge 가 없으면 브라우저 조작용 Chrome for Testing 을 받는다.
+      // Windows 는 Edge 가 늘 있어 이 줄을 지나지 않는다. 받지 못해도 멈추지 않는다(pending — Chrome 을 설치하면 켜짐).
+      if (process.platform !== 'win32' && typeof onlineRunner.installPlaywrightBrowser === 'function') {
+        state.online.stage = 'browser';
+        state.online.browser = { state: 'checking', code: null, done: 0, total: null };
+        save();
+        const b = await onlineRunner.installPlaywrightBrowser({
+          root, zipRoot: state.zipRoot, lock: readLock(state.zipRoot), log,
+          // 진행은 메모리에만(상태 조회가 그대로 내보낸다) — 몇 MB 마다 파일로 쓰지 않는다.
+          onProgress: (p) => { state.online.browser = { ...state.online.browser, state: 'downloading', done: p?.done ?? 0, total: p?.total ?? null }; },
+        });
+        state.online.browser = {
+          state: b?.ok ? (b.state === 'skipped' ? 'skipped' : 'done') : 'pending',
+          reason: b?.reason ?? null, code: b?.code ?? null, source: b?.source ?? null,
+        };
+        log(`online playwright browser ${state.online.browser.state}${b?.reason ? ` (${b.reason})` : ''}${b?.code ? ` (${b.code})` : ''}`);
+      }
+      // macOS(D-M21, 2026-10-28): 문서 보조 엔진 이음오피스를 공식 GitHub 릴리스에서 받는다. 받지 못해도 멈추지 않는다
+      // (pending — 문서 일은 파이썬 라이브러리와 문서 MCP 로 한다). 잠금표에 이 부품이 없으면(Windows) 지나간다.
+      if (process.platform !== 'win32' && typeof onlineRunner.installIeumOffice === 'function') {
+        state.online.stage = 'ieumoffice';
+        state.online.ieumoffice = { state: 'checking', code: null, done: 0, total: null };
+        save();
+        const io = await onlineRunner.installIeumOffice({
+          root, zipRoot: state.zipRoot, lock: readLock(state.zipRoot), log,
+          onProgress: (p) => { state.online.ieumoffice = { ...state.online.ieumoffice, state: 'downloading', done: p?.done ?? 0, total: p?.total ?? null }; },
+        });
+        state.online.ieumoffice = {
+          state: io?.ok ? (io.state === 'skipped' ? 'skipped' : 'done') : 'pending',
+          reason: io?.reason ?? null, code: io?.code ?? null, source: io?.source ?? null,
+        };
+        log(`online ieumoffice ${state.online.ieumoffice.state}${io?.reason ? ` (${io.reason})` : ''}${io?.code ? ` (${io.code})` : ''}`);
+      }
       state.online.stage = 'login';
       for (const provider of subs) {
         state.online.logins[provider] = state.online.logins[provider]
@@ -1283,9 +1315,15 @@ export function startServer({
       // 유일한 순간이다(계약 = docs/인수문서-handoff-v2.md). 엔진처럼 동적으로
       // 부른다 — 이 모듈이 없어도 서버는 떠야 한다.
       try {
-        const { refreshHandoffAfterOnline } = await import('./setup/handoff.mjs');
+        const { refreshHandoffAfterOnline, BROWSER_CAPABILITY, IEUMOFFICE_CAPABILITY } = await import('./setup/handoff.mjs');
         const r = refreshHandoffAfterOnline({
           root, receipt: readReceiptFn(root), choice: state.choice, fs, log,
+          // ⑨ 검사 때 대기였다가 ⑦ 에서 풀린 기능(macOS 브라우저 조작)은 남은 일에서 뺀다.
+          resolvedCapabilities: state.online.browser?.state === 'done' ? [BROWSER_CAPABILITY] : [],
+          // ⑦ 에서 이음오피스를 받지 못했으면 남은 일에 더한다(macOS D-M21).
+          addedCapabilities: state.online.ieumoffice?.state === 'pending'
+            ? [{ capability: IEUMOFFICE_CAPABILITY, reason: '공식 릴리스를 내려받지 못함', howToEnable: '인터넷이 되는 곳에서 설치기를 다시 열면 받습니다 — 그동안 문서 일은 파이썬 라이브러리와 문서 MCP 로 합니다' }]
+            : [],
         });
         log(`handoff refresh: ${r?.written ? r.handoff?.state : `skipped(${r?.reason ?? 'unknown'})`}`);
       } catch (err) {
@@ -1792,14 +1830,20 @@ function parseArgs(argv) {
   return args;
 }
 
-const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+// Main-module check on real paths: a symlinked launch path (macOS $TMPDIR is /var -> /private/var,
+// /tmp -> /private/tmp) would otherwise never match import.meta.url and main() would silently not run.
+function isEntryFile(argv1, metaUrl) {
+  try { return fs.realpathSync(argv1) === fs.realpathSync(fileURLToPath(metaUrl)); } catch { return false; }
+}
+const isMain = process.argv[1] && isEntryFile(process.argv[1], import.meta.url);
 if (isMain) {
   const args = parseArgs(process.argv.slice(2));
-  const work = process.env.LOCALAPPDATA
-    ? path.join(process.env.LOCALAPPDATA, 'IRIS-Installer')
-    : path.join(os.tmpdir(), 'IRIS-Installer');
-  const stateFile = path.join(work, 'state.json');
-  startServer({ ...args, stateFile })
+  const stateFile = path.join(installerWorkDir(), 'state.json');
+  // IRIS_INSTALLER_SOUL_ROOT: rehearsal-only absolute root (macOS design doc,
+  // M2) -- puts a whole practice install inside a scratch folder instead of
+  // ~/<name> or C:\<name>. Never set by the launchers.
+  const soulRoot = process.env.IRIS_INSTALLER_SOUL_ROOT || null;
+  startServer({ ...args, stateFile, ...(soulRoot ? { soulRoot } : {}) })
     .then(({ port }) => {
       console.log(`iris-installer server listening on 127.0.0.1:${port}`);
     })

@@ -579,6 +579,7 @@ const INFO_LABEL = {
   ports: '자리(포트)', existing: '기존 설치', net: '인터넷', browser: '기본 브라우저', edge: 'Edge',
   sac: '앱 보호(SAC)', admin: '관리자 권한', antivirus: '백신', node: '이미 있는 Node', python: '이미 있는 Python',
   integrity: '파일 무결성', extracted: '압축 풀기',
+  automationBrowser: '브라우저 조작', gatekeeper: '앱 보호(Gatekeeper)',
 };
 
 function renderPrecheck(result) {
@@ -1300,6 +1301,28 @@ function renderOnlineRows(on) {
       ds.state === 'done' ? 'done' : ds.state === 'downloading' ? 'running' : 'pending',
       '문서 작성 스킬 내려받기',
       ds.state === 'done' ? '받아서 등록했습니다' : ds.state === 'downloading' ? '받는 중' : '받지 못했습니다 — 나중에 다시 열면 이어서 받습니다',
+    ]);
+  }
+  // macOS: Chrome·Edge 가 없을 때만 나오는 줄(있으면 skipped 라 그리지 않는다). Windows 에는 이 값이 없다.
+  const br = o.browser || {};
+  if (br.state && br.state !== 'skipped') {
+    const pct = br.total ? ' ' + Math.min(100, Math.round(100 * (Number(br.done) || 0) / br.total)) + '%' : '';
+    rows.push([
+      br.state === 'done' ? 'done' : (br.state === 'downloading' || br.state === 'checking') ? 'running' : 'pending',
+      '브라우저 조작용 Chrome 내려받기',
+      br.state === 'done' ? '받았습니다 — 브라우저 조작을 바로 쓸 수 있습니다' : br.state === 'downloading' ? '받는 중' + pct + ' (약 190MB)' :
+        br.state === 'checking' ? '확인 중' : '받지 못했습니다 — Chrome 을 설치하면 바로 켜집니다',
+    ]);
+  }
+  // macOS: 문서 보조 엔진(이음오피스, D-M21). Windows 에는 이 값이 없다.
+  const io = o.ieumoffice || {};
+  if (io.state && io.state !== 'skipped') {
+    const pct = io.total ? ' ' + Math.min(100, Math.round(100 * (Number(io.done) || 0) / io.total)) + '%' : '';
+    rows.push([
+      io.state === 'done' ? 'done' : (io.state === 'downloading' || io.state === 'checking') ? 'running' : 'pending',
+      '문서 보조 엔진(이음오피스) 내려받기',
+      io.state === 'done' ? '받았습니다 — 한글(.hwp) 만들기·쪽 그림 확인 등에 씁니다' : io.state === 'downloading' ? '받는 중' + pct + ' (약 238MB)' :
+        io.state === 'checking' ? '확인 중' : '받지 못했습니다 — 문서 일은 파이썬 라이브러리와 문서 MCP 로 합니다. 나중에 다시 열면 이어서 받습니다',
     ]);
   }
   const relay = o.relay || {};

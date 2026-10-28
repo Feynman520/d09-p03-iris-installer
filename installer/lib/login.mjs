@@ -210,7 +210,36 @@ export function descendantPids(treeText, pid) {
  *    「브라우저가 열리지 않았으면 여기」 링크가 한 번도 안 떴다(CLI 가 브라우저를 스스로 열어 가려져 있었음).
  *  - npm 감싸개(cmd.exe → claude)로 띄우면 포트는 손자 프로세스에 있다 → 자기 PID 에 없으면 자손으로 넓힌다.
  */
-export async function listeningPorts(pid, { runFn = run } = {}) {
+/** `lsof -Fn` 출력의 수신 주소 줄(`n127.0.0.1:54545`, `n[::1]:54545`, `n*:54545`) → 포트(루프백 먼저). */
+export function parseLsofListeners(output) {
+  const loop = []; const rest = [];
+  for (const line of String(output ?? '').split('\n')) {
+    const m = line.match(/^n(.+):(\d+)$/);
+    if (!m) continue;
+    const port = Number(m[2]);
+    if (/^(127\.0\.0\.1|\[::1\]|localhost)$/i.test(m[1])) loop.push(port); else rest.push(port);
+  }
+  return [...new Set([...loop, ...rest])];
+}
+
+// macOS: netstat 은 PID 를 주지 않는다 — lsof 로 그 PID(없으면 자손)의 수신 포트를 본다.
+async function listeningPortsMac(pid, { runFn = run } = {}) {
+  const portsOf = async (p) => {
+    const r = await runFn('/usr/sbin/lsof', ['-nP', '-a', '-p', String(p), '-iTCP', '-sTCP:LISTEN', '-Fn'], { timeoutMs: 10000 });
+    return parseLsofListeners(r?.out ?? '');
+  };
+  const own = await portsOf(pid);
+  if (own.length) return own;
+  const t = await runFn('/bin/ps', ['-axo', 'pid=,ppid='], { timeoutMs: 10000 });
+  for (const d of descendantPids(t?.out ?? '', pid)) {
+    const ports = await portsOf(d);
+    if (ports.length) return ports;
+  }
+  return [];
+}
+
+export async function listeningPorts(pid, { runFn = run, platform = process.platform } = {}) {
+  if (platform !== 'win32') return listeningPortsMac(pid, { runFn });
   const r = await runFn('netstat', ['-ano', '-p', 'tcp'], {});
   const text = r?.out ?? r?.stdout ?? '';
   const own = parseNetstatListeners(text, pid);
@@ -228,12 +257,20 @@ const defaultListeningPorts = (pid) => listeningPorts(pid);
 /** claude.cmd 전달자(`"%~dp0<판>\claude.exe" %*`)가 가리키는 실제 exe. 전달자·exe 가 없으면 null. */
 export function resolveClaudeExe(root, { fs: fsImpl = fs } = {}) {
   const dir = path.join(toolsDir(root), 'claude');
-  let text;
-  try { text = fsImpl.readFileSync(path.join(dir, 'claude.cmd'), 'utf8'); } catch { return null; }
-  const m = text.match(/"%~dp0([^"]+)"/);
-  if (!m) return null;
-  const exe = path.join(dir, m[1]);
-  return fsImpl.existsSync(exe) ? exe : null;
+  // Windows 전달자 claude.cmd(`"%~dp0<판>\claude.exe"`), macOS 전달자 claude(`exec "$(dirname -- "$0")/<판>/claude"`).
+  const forms = [
+    ['claude.cmd', /"%~dp0([^"]+)"/],
+    ['claude', /exec "\$\(dirname -- "\$0"\)\/([^"]+)"/],
+  ];
+  for (const [name, re] of forms) {
+    let text;
+    try { text = fsImpl.readFileSync(path.join(dir, name), 'utf8'); } catch { continue; }
+    const m = text.match(re);
+    if (!m) continue;
+    const exe = path.join(dir, ...m[1].split(/[\\/]/));
+    return fsImpl.existsSync(exe) ? exe : null;
+  }
+  return null;
 }
 
 /** 지금 이 설치기 프로세스가 띄운 파이프 로그인의 요약. 시작한 적 없으면 null. 비밀 없음(주소·PID·종료 코드뿐). */
@@ -246,6 +283,11 @@ export function resetPipedLogin(provider) { piped.delete(provider); }
 /** 이 설치기가 띄운 로그인 프로세스 하나(PID 지정)와 그 자식만 끝낸다 — 이름으로 끄지 않는다. */
 function defaultKillTree(pid) {
   if (!pid) return;
+  if (process.platform !== 'win32') {
+    // macOS: 창 없는 로그인은 CLI 를 감싸개 없이 직접 띄우므로 그 PID 하나만 끝내면 된다.
+    try { process.kill(pid, 'SIGTERM'); } catch { /* 이미 끝났으면 그만 */ }
+    return;
+  }
   try {
     const k = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     k.on('error', () => {}); k.unref();
@@ -268,27 +310,39 @@ export function startPipedLogin({
   spawnFn = spawn, portsFn = defaultListeningPorts, portPollMs = 300, portTries = 20,
   existsFn = fs.existsSync, killFn = defaultKillTree,
   dryRun = false, log = () => {}, now = () => Date.now(),
+  platform = process.platform,
 } = {}) {
   const tools = toolsDir(root);
+  const win = platform === 'win32';
   const env = { ...process.env };
   delete env.ANTHROPIC_BASE_URL;
-  env.PATH = `${nodeDir};${env.PATH ?? ''}`;
+  // macOS: node 압축 폴더 안 bin 이 PATH 칸이다.
+  env.PATH = win ? `${nodeDir};${env.PATH ?? ''}` : `${path.join(nodeDir, 'bin')}:${env.PATH ?? ''}`;
   env.TEAMCLAUDE_CONFIG = teamclaudeConfigPath ?? resolveTeamclaudeConfigPath({ root });
   if (provider === 'claude') env.CLAUDE_CONFIG_DIR = path.join(root, '_agent', 'claude');
   else env.CODEX_HOME = path.join(root, '_agent', 'codex');
 
   let cmd; let args; let verbatim = false;
   // 전달자(claude.cmd·codex.cmd) — 1순위 받기(claude.ai)면 exe 를 가리키고, 2순위(npm)면 npm 이 만든 감싸개다.
-  const cmdPath = provider === 'claude' ? path.join(tools, 'claude', 'claude.cmd') : path.join(tools, 'codex', 'codex.cmd');
+  // macOS: claude 는 전달자 claude(sh)가 가리키는 실행 파일을, codex 는 동봉 node 로 진입 파일을 직접 띄운다(감싸개 없음).
+  const codexJs = path.join(tools, 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+  const cmdPath = provider === 'claude'
+    ? path.join(tools, 'claude', win ? 'claude.cmd' : 'claude')
+    : (win ? path.join(tools, 'codex', 'codex.cmd') : codexJs);
   const exe = provider === 'claude' ? resolveClaudeExe(root) : null;
   if (exe) {
     cmd = exe; args = ['auth', 'login', '--claudeai'];
+  } else if (!win) {
+    const soulNode = path.join(tools, 'node', 'bin', 'node');
+    cmd = existsFn(soulNode) ? soulNode : path.join(nodeDir, 'bin', 'node');
+    args = provider === 'claude' ? [cmdPath, 'auth', 'login', '--claudeai'] : [cmdPath, 'login'];
   } else {
     // .cmd 는 셸 없이 파이프로 못 띄운다 → cmd.exe /d /s /c "<경로>" <인수>
     const loginArgs = provider === 'claude' ? 'auth login --claudeai' : 'login';
     cmd = COMSPEC; args = ['/d', '/s', '/c', `""${cmdPath}" ${loginArgs}"`]; verbatim = true;
   }
   const opts = { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env, ...(verbatim ? { windowsVerbatimArguments: true } : {}) };
+  // (macOS 의 claude 전달자는 sh 라 node 로 돌릴 수 없다 — 그 경우는 위에서 exe 로 이미 갈렸다.)
   if (dryRun) return { started: false, dryRun: true, mode: 'piped', cmd, args, env };
   if (!exe && !existsFn(cmdPath)) {
     log(`login ${provider}: CLI not found (${path.basename(cmdPath)} missing) -- not starting`);
@@ -346,8 +400,17 @@ export function startPipedLogin({
  *
  * @returns {'pending'|'done'}
  */
-export function cliLoginStatus({ provider, root, existsSync = fs.existsSync } = {}) {
-  return existsSync(credentialPath(provider, root)) ? 'done' : 'pending';
+export function cliLoginStatus({ provider, root, existsSync = fs.existsSync, readFileSync = fs.readFileSync, platform = process.platform } = {}) {
+  if (existsSync(credentialPath(provider, root))) return 'done';
+  // macOS: Claude Code 는 토큰을 파일이 아니라 키체인에 둔다(.credentials.json 이 생기지 않는다). 대신 로그인하면
+  // 같은 설정 폴더의 .claude.json 에 계정 정보(oauthAccount: 이메일 등, 토큰 아님)를 적는다 — 그 칸이 생겼는지만 본다.
+  if (provider === 'claude' && platform !== 'win32') {
+    try {
+      const cfg = JSON.parse(readFileSync(path.join(root, '_agent', 'claude', '.claude.json'), 'utf8'));
+      if (cfg?.oauthAccount && typeof cfg.oauthAccount === 'object') return 'done';
+    } catch { /* 아직 없음 */ }
+  }
+  return 'pending';
 }
 
 // ---------------------------------------------------------------------------
@@ -527,14 +590,28 @@ export async function relayImport({
   spawnFn = spawn,
   fetchFn = fetch,
   reloadFn,
+  platform = process.platform,
 } = {}) {
   const configPath = teamclaudeConfigPath ?? resolveTeamclaudeConfigPath({ root });
-  const nodeExe = path.join(nodeDir, 'node.exe');
+  const win = platform === 'win32';
+  const nodeExe = win ? path.join(nodeDir, 'node.exe') : path.join(nodeDir, 'bin', 'node');
   const entryPath = teamclaudeEntryPath(root);
   const doReload = reloadFn ?? ((p) => reloadRunningServer(p, fetchFn));
 
   const startDetachedLogin = (loginProvider) => {
     const args = loginProvider === 'claude' ? ['login'] : ['login', '--codex'];
+    if (!win) {
+      // macOS: 중계기 자신의 브라우저 로그인(브라우저는 TeamClaude 가 `open` 으로 연다). 창 없이 떼어 띄운다.
+      try {
+        const child = spawnFn(nodeExe, [entryPath, ...args], {
+          detached: true, stdio: 'ignore', env: { ...process.env, TEAMCLAUDE_CONFIG: configPath },
+        });
+        child.unref?.();
+        return { ok: true, method: 'login' };
+      } catch {
+        return { ok: false, method: 'login' };
+      }
+    }
     const line = `"${nodeExe}" "${entryPath}" ${args.join(' ')}`;
     try {
       const child = spawnFn(COMSPEC, ['/d', '/s', '/c', line], {
@@ -553,6 +630,10 @@ export async function relayImport({
 
   if (provider === 'claude') {
     const credPath = credentialPath('claude', root);
+    // macOS: Claude Code 의 토큰은 키체인에 있고 이 설정 폴더 전용 항목이라, 중계기의 기본 키체인 가져오기는
+    // 이 Mac 에 원래 있던 **다른** 로그인을 집어 올 수 있다. 파일이 있을 때만 가져오고, 없으면 중계기 자신의
+    // 브라우저 로그인(원래 설계의 대체 경로)으로 간다(docs/설계-macOS.md M3 — 실제 로그인으로 확인할 항목).
+    if (!win && !fs.existsSync(credPath)) return startDetachedLogin('claude');
     const result = await runFn(nodeExe, [entryPath, 'import', '--from', credPath], {
       env: { ...process.env, TEAMCLAUDE_CONFIG: configPath },
     });
