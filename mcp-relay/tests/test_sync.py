@@ -163,6 +163,19 @@ class ScopeGuardTests(unittest.TestCase):
             s.close()
 
 
+class SurveyBackoffTests(unittest.TestCase):
+    def test_failed_survey_is_not_retried_by_the_daemon_for_a_while(self):
+        from mcp_relay import survey
+        with tempfile.TemporaryDirectory() as d:
+            st = store.State(Path(d))
+            reg = {"id": "x.global.bad", "real": {"command": r"C:\nope\missing.exe", "args": []}, "status": "relayed"}
+            st.put_entry(reg)
+            r = survey.survey_one(st, reg, [], Path(d))
+            self.assertFalse(r["ok"])
+            self.assertTrue(survey.recently_failed(st, "x.global.bad"))
+            self.assertEqual(survey.needs_survey(st, reg), "missing")  # status still honest
+
+
 @unittest.skipUnless(sys.platform == "win32", "Windows processes")
 class SweepTests(unittest.TestCase):
     def test_sweep_ends_orphans_only_with_matching_identity(self):

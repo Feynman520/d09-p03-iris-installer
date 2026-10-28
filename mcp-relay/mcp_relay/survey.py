@@ -172,20 +172,50 @@ def survey_one(st: store.State, reg: dict, sources: list, soul_root: Path, *, ti
         cat = run_survey(reg, env=env, cwd=cwd, timeout=timeout)
         cat["fingerprint"] = store.fingerprint(reg["real"].get("command", ""), reg["real"].get("args", []))
         st.put_catalog(entry_id, cat)
+        try:
+            _fail_marker(st, entry_id).unlink()
+        except OSError:
+            pass
         ms = int((time.monotonic() - t0) * 1000)
         st.log("survey-ok", id=entry_id, ms=ms, tools=len(cat.get("tools") or []))
         return {"id": entry_id, "ok": True, "ms": ms, "tools": len(cat.get("tools") or [])}
     except (SurveyError, launch.LaunchError) as exc:
         st.log("survey-fail", id=entry_id, stage=exc.stage, detail=store.redactor()(str(exc))[:300])
+        _mark_failed(st, entry_id)
         return {"id": entry_id, "ok": False, "stage": exc.stage, "detail": str(exc)}
     except OSError as exc:
         st.log("survey-fail", id=entry_id, stage="spawn", detail=str(exc.strerror or exc)[:200])
+        _mark_failed(st, entry_id)
         return {"id": entry_id, "ok": False, "stage": "spawn", "detail": str(exc.strerror or exc)}
     finally:
         try:
             lock_path.unlink()
         except OSError:
             pass
+
+
+FAIL_BACKOFF_SEC = 6 * 3600
+
+
+def _fail_marker(st: store.State, entry_id: str) -> Path:
+    return st.catalog_dir / (store.file_for_id(entry_id)[:-5] + ".survey-failed")
+
+
+def _mark_failed(st: store.State, entry_id: str) -> None:
+    try:
+        st.catalog_dir.mkdir(parents=True, exist_ok=True)
+        _fail_marker(st, entry_id).write_text(store.now_iso(), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def recently_failed(st: store.State, entry_id: str) -> bool:
+    """A server that cannot be surveyed outside its own session (it needs env only that
+    session injects) is not retried by the daemon every pass -- once per 6 hours."""
+    try:
+        return time.time() - _fail_marker(st, entry_id).stat().st_mtime < FAIL_BACKOFF_SEC
+    except OSError:
+        return False
 
 
 def needs_survey(st: store.State, reg: dict) -> str | None:

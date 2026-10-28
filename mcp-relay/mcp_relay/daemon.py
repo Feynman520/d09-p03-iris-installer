@@ -86,7 +86,7 @@ def run_surveys(st: store.State, root: Path, stop: threading.Event) -> None:
     for reg in st.entries():
         if stop.is_set():
             return
-        if reg.get("status") != "relayed" or not survey.needs_survey(st, reg):
+        if reg.get("status") != "relayed" or not survey.needs_survey(st, reg) or survey.recently_failed(st, reg["id"]):
             continue
         survey.survey_one(st, reg, sources, root)
 
