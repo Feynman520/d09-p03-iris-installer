@@ -8,7 +8,7 @@
     "dest 는 영혼 루트 기준 '폴더' 경로다(POSIX 구분자). '/' 는 영혼 루트 자체."
   ],
   "schema": 2,
-  "package": { "version": "2.0.52" },
+  "package": { "version": "2.0.53" },
   "parts": {
     "node": {
       "kind": "url",
@@ -303,14 +303,15 @@
     "pdf-automation": {
       "kind": "git",
       "repo": "https://github.com/Feynman520/d01-p05-pdf-engine-mcp.git",
-      "commit": "b8acf47b4088aeed14983fac5ca1452a72fb5559",
-      "pinnedAt": "2026-07-17",
+      "commit": "564291f4c75b009e483900179ae386bd2657e6f7",
+      "pinnedAt": "2026-11-02",
       "entry": "server.py",
       "requires": [],
       "runtime": "document-mcp",
       "file": "tools/pdf-automation.zip",
-      "dest": "_agent/shared/tools/document-mcp/pdf/b8acf47",
-      "license": "MIT"
+      "dest": "_agent/shared/tools/document-mcp/pdf/564291f",
+      "license": "MIT",
+      "note": "2.0.53: b8acf47 → 564291f(pdf_health 가 pypdfium2 5.x 에서 __version__ 이 없어 실패하던 것을 패키지 메타데이터에서 읽도록 고침, 2026-10-29 사용자 결정 '다음 릴리스 때 함께')."
     },
     "document-mcp-wheelhouse": {
       "kind": "wheelhouse",
@@ -389,6 +390,14 @@
       "dest": "_agent/claude/tools",
       "license": "MIT",
       "note": "코덱스 구독 우선 -> OpenAI API 폴백. 키가 없으면 pending. 원본(이 PC 의 _agent/claude/tools/gen-image.py)은 설정 폴더 경로를 통째로 박아 두어 정화가 막았다 -- T08 이 CLAUDE_CONFIG_DIR·CODEX_HOME·IRIS_ROOT 에서 유도하도록 일반화한 사본을 저장소 안에 두고 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다)."
+    },
+    "iris-auth": {
+      "kind": "dir",
+      "source": "payload-src/tools/iris-auth",
+      "file": "tools/iris-auth.zip",
+      "dest": "_agent/shared/tools/iris-auth",
+      "license": "MIT",
+      "note": "로그인 열쇠 만료 감시·1년 열쇠 발급 도구(status.mjs·longkey.mjs·lib.mjs + 시험). IRIS 창(Face paths.mjs authDir() = _agent/shared/tools/iris-auth)이 찾으면 설정 → 계정·보안 「로그인 열쇠」 절·만료 3일 전 알림·「1년 열쇠 받기」가 켜진다. 2.0.53 전에는 개발 PC 에만 있어 설치 PC 에서 그 절이 통째로 없었다(2026-11-02 사용자 신고). 원본은 개발 PC 의 _agent/claude/tools/iris-auth 이며, 실측 계정 이름을 뺀 사본을 저장소 안에 두고 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다). 예약 작업용 check-hidden.vbs 는 싣지 않는다 — 알림은 IRIS 창 데몬이 30분마다 부른다."
     },
     "ontology": {
       "kind": "dir",
