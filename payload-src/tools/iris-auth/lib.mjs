@@ -89,7 +89,7 @@ export function summaryLine(result) {
   const parts = [];
   if (expired.length) parts.push(`만료 ${expired.length}개: ${expired.join(', ')}`);
   if (soon.length) parts.push(`곧 만료 ${soon.length}개: ${soon.join(', ')}`);
-  return `${parts.join(' / ')} — IRIS 설정 → 인증에서 갱신`;
+  return `${parts.join(' / ')} — IRIS 설정 → 계정·보안에서 갱신`;
 }
 
 /** 알림 풍선을 띄울지: 같은 내용이면 12시간에 한 번, 내용이 바뀌면 바로. */

@@ -137,7 +137,9 @@ function startOnline() {
   }, SPEED);
 }
 
-const LOGIN_REASON = value('login-reason', '');   // window-closed · page-blocked · import-failed
+const LOGIN_REASON = value('login-reason', '');   // window-closed · page-blocked · import-failed · import-timeout · import-profile
+const LOGIN_DETAIL = value('login-detail', '');   // 2.0.54: 실패 원인 한 줄(화면의 「원인: …」)
+const RELAY_SLOW_MS = Number(value('relay-slow', '0'));
 
 function finishLogin(provider) {
   const l = state.online.logins[provider];
@@ -145,11 +147,12 @@ function finishLogin(provider) {
   l.state = 'waiting';
   l.reason = null;
   if (LOGIN_REASON) {
-    setTimeout(() => { l.state = 'failed'; l.reason = LOGIN_REASON; }, SPEED);
+    setTimeout(() => { l.state = 'failed'; l.reason = LOGIN_REASON; l.detail = LOGIN_DETAIL || null; }, SPEED);
     return;
   }
-  setTimeout(() => { l.state = 'cli-done'; l.cli = 'done'; }, SPEED);
-  setTimeout(() => { l.state = 'done'; l.relay = 'done'; }, SPEED * 2);
+  // 2.0.54: --relay-slow <ms> = 옮겨 담기가 그만큼 걸린다(화면의 "n초째"·30초 넘김 안내 확인용)
+  setTimeout(() => { l.state = 'cli-done'; l.cli = 'done'; l.relayStartedAt = Date.now(); l.relayPhase = 'importing'; }, SPEED);
+  setTimeout(() => { l.state = 'done'; l.relay = 'done'; }, RELAY_SLOW_MS || SPEED * 2);
 }
 
 function allLoginsDone() {

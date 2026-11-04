@@ -37,6 +37,22 @@ function credentialPath(provider, root) {
     : path.join(root, '_agent', 'codex', 'auth.json');
 }
 
+// 2.0.54: Claude 계정 옮겨 담기(teamclaude import) 기다림 한도. 정상이면 몇 초(프로필 질문 1번 + 파일 저장).
+export const RELAY_IMPORT_TIMEOUT_MS = 60000;
+// 대화형 로그인으로 넘겨도 같은 자리(프로필 질문·망)에서 막힐 실패.
+export const RELAY_NO_FALLBACK_RE = /Could not identify|profile|fetch failed|ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|certificate|self[- ]signed|UNABLE_TO_|socket hang up|network/i;
+
+/** CLI 출력에서 사람에게 보일 마지막 원인 한 줄(토큰처럼 보이는 긴 문자열은 가린다). 없으면 null. */
+export function relayFailureLine(result) {
+  if (result?.timedOut) return `60초 안에 끝나지 않았습니다(계정 확인 질문에 답이 오지 않음)`;
+  const lines = `${result?.err ?? ''}\n${result?.out ?? ''}`.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const hit = lines.filter((l) => /(could not|failed|error|warning|denied|refused|HTTP \d{3})/i.test(l));
+  const pick = (hit.length ? hit[hit.length - 1] : lines[lines.length - 1]) ?? null;
+  if (!pick) return result && result.code != null ? `종료 코드 ${result.code}` : null;
+  const scrubbed = pick.replace(/sk-ant-[\w-]+/g, 'sk-ant-…').replace(/[A-Za-z0-9_\-.]{48,}/g, '…');
+  return scrubbed.length > 240 ? scrubbed.slice(0, 239) + '…' : scrubbed;
+}
+
 function teamclaudeEntryPath(root) {
   return path.join(
     toolsDir(root), 'teamclaude',
@@ -553,13 +569,22 @@ export async function relayImport({
 
   if (provider === 'claude') {
     const credPath = credentialPath('claude', root);
+    // 2.0.54(2026-11-04 교장선생님 PC 신고 "옮겨 담는 중에서 가만히 멈춤"): 기다림 한도 10분 → 60초.
+    // 중계기의 import 는 Anthropic 에 "이 계정은 누구냐"(프로필)를 한 번 묻고 저장한다 — 정상이면 몇 초.
     const result = await runFn(nodeExe, [entryPath, 'import', '--from', credPath], {
       env: { ...process.env, TEAMCLAUDE_CONFIG: configPath },
+      timeoutMs: RELAY_IMPORT_TIMEOUT_MS,
     });
-    if (result.code === 0) {
+    if (result.code === 0 && !result.timedOut) {
       return { ok: true, method: 'import' };
     }
-    return startDetachedLogin('claude');
+    const detail = relayFailureLine(result);
+    // 시간 초과·프로필 확인 실패·망 오류는 중계기 자체 로그인 창을 띄워도 같은 질문에서 또 막힌다(두 번째 브라우저만 뜬다).
+    // 그래서 이유를 그대로 돌려주고 화면에 보인다. 그 밖의 실패만 예전처럼 대화형 로그인으로 넘어간다.
+    if (result.timedOut || RELAY_NO_FALLBACK_RE.test(detail ?? '')) {
+      return { ok: false, method: 'import', reason: result.timedOut ? 'import-timeout' : 'import-profile', detail };
+    }
+    return { ...startDetachedLogin('claude'), detail };
   }
 
   // chatgpt / codex

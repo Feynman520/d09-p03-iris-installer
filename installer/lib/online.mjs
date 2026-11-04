@@ -56,6 +56,8 @@ export const LOGIN_WINDOW_MS = 120000;
 // How long the relay hand-over may stay unfinished after the automatic
 // `teamclaude login` retry before it is reported as a hard failure.
 export const RELAY_GRACE_MS = 180000;
+// 2.0.54: 1초 확인 한 번이 옮겨 담기를 기다리는 최대 시간. 빠른 경우(대부분)는 이 안에 끝나 바로 "끝났습니다"가 된다.
+export const RELAY_POLL_WAIT_MS = 1500;
 
 // Probed hosts. `downloads.claude.ai` and `registry.npmjs.org` are the two
 // SOURCES for the same download (either one alone is enough); `claude.ai` and
@@ -836,8 +838,10 @@ export async function startLogin({
     setLoginRecord(root, provider, {
       state: 'waiting', cli: false, relay: false, reused: false, reason: null,
       startedAt: now(), accountsBefore: accounts, relayAttempts: 0, relayMethod: null,
+      relayDetail: null, relayStartedAt: null, relayMs: null,
       mode, pid: started?.pid ?? null,
     }, deps);
+    relayJobs.delete(relayJobKey(root, provider));   // 2.0.54: 앞 시도의 옮겨 담기 결과를 새 로그인에 섞지 않는다
     log(`login ${provider} ${mode === 'piped' ? 'piped process started' : 'console opened'} retry=${retry} pid=${started?.pid ?? '?'}`);
     return { ok: true, state: 'waiting', cli: 'pending', relay: 'pending', reused: false, pid: started?.pid ?? null, mode };
   } catch (err) {
@@ -881,7 +885,7 @@ export async function loginStatus({
   readReceiptFn = readReceipt, writeReceiptFn = writeReceipt,
   pipedInfoFn = pipedLoginInfo,
   now = () => Date.now(),
-  windowMs = LOGIN_WINDOW_MS, relayGraceMs = RELAY_GRACE_MS,
+  windowMs = LOGIN_WINDOW_MS, relayGraceMs = RELAY_GRACE_MS, relayWaitMs = RELAY_POLL_WAIT_MS,
   log = () => {},
 } = {}) {
   const deps = { readReceiptFn, writeReceiptFn };
@@ -945,18 +949,41 @@ export async function loginStatus({
     // ONE attempt, ever. relayImport() itself is the "automatically try
     // `teamclaude login` once" step: when `import --from` fails it starts the
     // relay's own interactive login instead and reports method:'login'.
-    const imported = await relayImportFn({ provider, root, nodeDir, teamclaudeConfigPath: configPath, port });
+    // 2.0.54(2026-11-04 교장선생님 PC 신고 "옮겨 담는 중에서 가만히 멈춤 — 멈춘 건지 진행 중인지 모름"):
+    // 옮겨 담기를 이 1초 확인 안에서 끝까지 기다리면 그동안 화면이 아무 변화 없이 굳는다. 그래서 일을 뒤에서 돌리고
+    // (같은 설치 프로그램 안에서 한 번만), 확인은 잠깐(relayWaitMs)만 기다린 뒤 "n초째"를 그릴 수 있게 돌아간다.
+    const key = relayJobKey(root, provider);
+    let job = relayJobs.get(key);
+    if (!job) {
+      job = { startedAt: now(), done: false, result: null };
+      job.promise = Promise.resolve()
+        .then(() => relayImportFn({ provider, root, nodeDir, teamclaudeConfigPath: configPath, port }))
+        .then((r) => { job.result = r; }, (e) => { job.result = { ok: false, method: null, detail: String(e?.message ?? e) }; })
+        .finally(() => { job.done = true; });
+      relayJobs.set(key, job);
+      setLoginRecord(root, provider, { relayStartedAt: job.startedAt }, deps);
+      log(`login ${provider} relay import started`);
+    }
+    if (!job.done) await Promise.race([job.promise, new Promise((r) => setTimeout(r, relayWaitMs))]);
+    if (!job.done) {
+      return { state: 'cli-done', cli: 'done', relay: 'pending', reason: null, relayStartedAt: job.startedAt, relayPhase: 'importing' };
+    }
+    relayJobs.delete(key);
+    const imported = job.result;
     const method = imported?.method ?? null;
+    const relayDetail = imported?.detail ?? null;
     setLoginRecord(root, provider, {
-      cli: true, relayAttempts: 1, relayMethod: method, relayAttemptedAt: now(),
+      cli: true, relayAttempts: 1, relayMethod: method, relayAttemptedAt: now(), relayDetail,
+      relayMs: now() - job.startedAt,
     }, deps);
-    log(`login ${provider} relay attempt method=${method ?? 'none'} ok=${imported?.ok === true}`);
+    log(`login ${provider} relay attempt method=${method ?? 'none'} ok=${imported?.ok === true} ms=${now() - job.startedAt}${relayDetail ? ` detail=${relayDetail}` : ''}`);
 
     if (imported?.ok !== true) {
-      setLoginRecord(root, provider, { state: 'failed', relay: false, reason: 'import-failed' }, deps);
+      const reason = imported?.reason === 'import-timeout' || imported?.reason === 'import-profile' ? imported.reason : 'import-failed';
+      setLoginRecord(root, provider, { state: 'failed', relay: false, reason }, deps);
       return {
-        state: 'failed', cli: 'done', relay: 'failed', reason: 'import-failed',
-        message: '로그인은 됐지만 계정 연결에 실패했습니다. 「다시 시도」를 눌러 주세요.',
+        state: 'failed', cli: 'done', relay: 'failed', reason, detail: relayDetail,
+        message: '로그인은 됐지만 계정 연결에 실패했습니다. 「다시 로그인」을 눌러 주세요.',
       };
     }
     if (await relayStatusFn({ teamclaudeConfigPath: configPath, root, provider, accountsBefore }) === 'done') {
@@ -989,17 +1016,27 @@ export async function loginStatus({
   }
   const since = Number(rec.relayAttemptedAt ?? 0);
   if (rec.state === 'failed' || (since > 0 && now() - since >= relayGraceMs)) {
-    setLoginRecord(root, provider, { state: 'failed', relay: false, reason: 'import-failed' }, deps);
+    // 2.0.54: 앞에서 정한 까닭(시간 초과·프로필 확인 실패)과 CLI 의 마지막 말을 지운 채 덮지 않는다.
+    const reason = rec.state === 'failed' && (rec.reason === 'import-timeout' || rec.reason === 'import-profile') ? rec.reason : 'import-failed';
+    setLoginRecord(root, provider, { state: 'failed', relay: false, reason }, deps);
     return {
-      state: 'failed', cli: 'done', relay: 'failed', reason: 'import-failed',
-      message: '로그인은 됐지만 계정 연결에 실패했습니다. 「다시 시도」를 눌러 주세요.',
+      state: 'failed', cli: 'done', relay: 'failed', reason, detail: rec.relayDetail ?? null,
+      message: '로그인은 됐지만 계정 연결에 실패했습니다. 「다시 로그인」을 눌러 주세요.',
     };
   }
   return {
     state: 'cli-done', cli: 'done', relay: 'pending',
     reason: rec.relayMethod === 'login' ? 'import-failed' : null,
+    relayStartedAt: rec.relayStartedAt ?? null, relayPhase: rec.relayMethod === 'login' ? 'login' : 'importing',
   };
 }
+
+// 2.0.54: 뒤에서 도는 옮겨 담기(설치 프로그램 하나 안에서 루트·구독마다 한 개). 서버가 다시 뜨면 비어 있고,
+// 영수증의 relayAttempts 가 0 이면 다시 한 번 시도한다(한 번만 원칙은 영수증이 지킨다).
+const relayJobs = new Map();
+const relayJobKey = (root, provider) => `${String(root ?? '').toLowerCase()}|${provider}`;
+/** 시험용: 뒤에서 도는 일을 비운다. */
+export function resetRelayJobs() { relayJobs.clear(); }
 
 // ---------------------------------------------------------------------------
 // ⑥-4 중계기 시작·확인

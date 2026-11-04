@@ -1178,9 +1178,12 @@ function writeSecrets(ctx, { fs, root }) {
 // ---------------------------------------------------------------------------
 
 function writeCodexConfig(ctx, specs, { fs, root, log }) {
+  const file = assertInside(root, codexConfigTomlPath(root));
+  // 2.0.54: 이력 사본은 이 단계가 무엇이든 건드리기 **전**의 바이트(승인 두 줄도 이 단계가 쓴다).
+  let original = null;
+  try { if (fs.existsSync(file)) original = fs.readFileSync(file); } catch { original = null; }
   // 승인·샌드박스 두 줄은 기존 헬퍼가 정본(최상위 키라 파일 맨 위에 들어간다).
   const perms = seedCodexPermissions(root);
-  const file = assertInside(root, codexConfigTomlPath(root));
 
   let text = '';
   if (fs.existsSync(file)) {
@@ -1274,8 +1277,45 @@ function writeCodexConfig(ctx, specs, { fs, root, log }) {
   if (added.length === 0) {
     return { path: file, written: perms.written === 'unchanged' ? 'unchanged' : 'merged', added: perms.added ?? [], permissions: perms.written };
   }
+  // 2.0.54(2026-11-04 다른 선생님 신고 — 업데이트가 연결 이름을 바꿨는데 언제·무엇이 바뀌었는지 기록이 없었다):
+  // 바꾸기 전 파일을 통째로 백업하고, 무엇을 더했는지(키 이름·연결 이름 전후만, 비밀값 없음)를 이력 한 줄로 남긴다.
+  const history = recordConfigChange({ fs, root, file, before: original, added: [...(perms.added ?? []), ...added], ctx, log });
   atomicWrite(fs, file, text);
-  return { path: file, written: 'merged', added: [...(perms.added ?? []), ...added], permissions: perms.written };
+  return { path: file, written: 'merged', added: [...(perms.added ?? []), ...added], permissions: perms.written, history };
+}
+
+/** 설정 변경 이력 폴더: <영혼>\_agent\setup\config-history\ (history.jsonl + 바꾸기 전 사본) */
+export const configHistoryDir = (root) => path.join(root, '_agent', 'setup', 'config-history');
+
+/** 맨 위(첫 [표] 앞)의 model_provider 값. 없으면 null(= 코덱스 기본 openai). */
+export function topModelProvider(text) {
+  const top = String(text ?? '').split(/^\s*\[/m)[0];
+  const m = top.match(/^\s*model_provider\s*=\s*["']([^"']+)["']/m);
+  return m ? m[1] : null;
+}
+
+function recordConfigChange({ fs, root, file, before, added, ctx, log }) {
+  try {
+    const dir = assertInside(root, configHistoryDir(root));
+    ensureDir(dir, { fs });
+    const at = new Date().toISOString();
+    let backup = null;
+    if (before) {
+      backup = path.join(dir, `codex-config.toml.${at.replace(/[-:]/g, '').replace(/\..*$/, '')}.bak`);
+      fs.writeFileSync(backup, before);
+    }
+    const prevProvider = before ? topModelProvider(before.toString('utf8')) : null;
+    const entry = {
+      at, installer: ctx?.lock?.package?.version ?? null, file: path.relative(root, file), added,
+      ...(added.includes('model_provider') ? { connection: { from: prevProvider ?? 'openai(코덱스 기본)', to: CODEX_PROVIDER_ID, note: '이 전에 만든 코덱스 대화는 IRIS 창이 재개할 때 연결 이름을 맞춘다(IRIS 창 2.98+)' } } : {}),
+      backup: backup ? path.relative(root, backup) : null,
+    };
+    fs.appendFileSync(path.join(dir, 'history.jsonl'), `${JSON.stringify(entry)}\n`, 'utf8');
+    return { recorded: true, backup };
+  } catch (e) {
+    log(`[adapters] 설정 변경 이력을 남기지 못했습니다(${e.message}) — 설정 쓰기는 계속합니다`);
+    return { recorded: false, reason: e.message };
+  }
 }
 
 function endWithBlankLine(text) {

@@ -17,6 +17,7 @@
 //                 ⓔ 실행 파일 문법: teamclaude-manage.ps1 (PowerShell 파서), 창·대시보드·중계기의 진입 .mjs/.js (node --check)
 //                 ⓕ 인수 문서 state 가 업데이트 전과 같다(setup-incomplete 로 굴러떨어지지 않음)
 //                 ⓖ 사용자 자료(연습용으로 심은 파일)가 그대로다
+//                 ⓚ 업데이트 전 코덱스 대화(연결 이름 openai)가 업데이트 뒤 IRIS 창의 재개 호환으로 지금 연결 이름에 맞춰진다(2.0.54)
 //
 // 안전 규칙(verify/e2e.mjs 와 같다): 저장소 밖에 쓰는 곳은 C:\IRIS-upg 하나뿐이며 finally 에서 지운다.
 // 진짜 C:\IRIS·바탕화면·HKCU\Environment·사용자 프로필은 건드리지 않는다(IRIS_INSTALLER_NO_USER_ENV=1 +
@@ -37,6 +38,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import { extractZip } from '../lib/zip.mjs';
 import { driveInstall, getJson } from './offline.mjs';
 
@@ -206,6 +208,47 @@ const receiptFile = () => path.join(SOUL_ROOT, '_agent', 'setup', 'package-recei
 const handoffFile = () => path.join(SOUL_ROOT, '_agent', 'setup', 'handoff.json');
 const MARKER = path.join(SOUL_ROOT, 'R01-연습(Practice)', '내-자료-업그레이드-표식.txt');
 
+// ③ⓚ 옛 코덱스 대화(2.0.54) -------------------------------------------------------------------
+const CODEX_HOME_UPG = path.join(SOUL_ROOT, '_agent', 'codex');
+const OLD_THREAD_ID = '01a00000-2049-7000-8000-0000000c0de0';
+function plantOldCodexThread() {
+  const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+  const day = path.join(CODEX_HOME_UPG, 'sessions', '2026', '11', '02');
+  fs.mkdirSync(day, { recursive: true });
+  const rollout = path.join(day, `rollout-2026-11-02T10-00-00-${OLD_THREAD_ID}.jsonl`);
+  const meta = { timestamp: '2026-11-02T01:00:00.000Z', type: 'session_meta', payload: { id: OLD_THREAD_ID, cwd: SOUL_ROOT, originator: 'codex_cli_rs', cli_version: '0.163.0', source: 'cli', model_provider: 'openai' } };
+  const rest = '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"업그레이드 전 대화"}]}}\n';
+  fs.writeFileSync(rollout, `${JSON.stringify(meta)}\n${rest}`, 'utf8');
+  const db = new DatabaseSync(path.join(CODEX_HOME_UPG, 'state_5.sqlite'));
+  try {
+    db.exec('CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT \'cli\', model_provider TEXT NOT NULL, cwd TEXT NOT NULL DEFAULT \'\', title TEXT NOT NULL DEFAULT \'\')');
+    db.prepare('INSERT OR REPLACE INTO threads (id, rollout_path, model_provider, cwd) VALUES (?, ?, ?, ?)').run(OLD_THREAD_ID, rollout, 'openai', SOUL_ROOT);
+  } finally { db.close(); }
+  return { rollout, rest };
+}
+function findFile(dir, name, depth = 0) {
+  let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
+  for (const e of ents) {
+    const p = path.join(dir, e.name);
+    if (e.isFile() && e.name === name && path.basename(path.dirname(p)) === 'daemon') return p;
+    if (e.isDirectory() && depth < 4 && e.name !== 'node_modules' && !e.name.endsWith('.prev')) { const r = findFile(p, name, depth + 1); if (r) return r; }
+  }
+  return null;
+}
+async function judgeOldCodexThread(planted) {
+  const mod = findFile(path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'face'), 'codexcompat.mjs');
+  check('③ⓚ 새 판의 IRIS 창에 옛 코덱스 대화 재개 호환 모듈이 있다', !!mod, mod ?? '(없음 — IRIS 창 2.98 미만)');
+  if (!mod) return;
+  const cc = await import(pathToFileURL(mod).href);
+  const cur = cc.currentProvider(CODEX_HOME_UPG);
+  check('③ⓚ 업데이트 뒤 코덱스 연결 = 이 PC 중계기', cc.isLocalRelay(cur.baseUrl), `${cur.id} ${cur.baseUrl}`);
+  const r = cc.alignThreadProvider({ codexHome: CODEX_HOME_UPG, threadId: OLD_THREAD_ID });
+  const th = cc.threadProvider(CODEX_HOME_UPG, OLD_THREAD_ID);
+  check('③ⓚ 업데이트 전 대화(openai)가 재개 직전 지금 연결 이름으로 맞춰진다', (r.action === 'aligned' || r.action === 'none') && th.provider === cur.id && th.fileProvider === cur.id, `${r.action} ${r.from ?? ''}→${r.to ?? ''} db=${th.provider} file=${th.fileProvider}`);
+  const after = fs.readFileSync(planted.rollout, 'utf8');
+  check('③ⓚ 대화 내용(둘째 줄부터)은 그대로, 원본 백업이 있다', after.slice(after.indexOf('\n') + 1) === planted.rest && (r.action === 'none' || (r.backup && fs.existsSync(r.backup))), r.backup ?? '');
+}
+
 function dirNonEmpty(p) {
   try { return fs.statSync(p).isDirectory() && fs.readdirSync(p).length > 0; } catch { return false; }
 }
@@ -328,6 +371,9 @@ async function main() {
     fs.mkdirSync(path.dirname(MARKER), { recursive: true });
     fs.writeFileSync(MARKER, `keep me ${prevVersion} -> ${nextVersion}\n`, 'utf8');
     const markerBefore = fs.readFileSync(MARKER, 'utf8');
+    // ③ⓚ 기준점(2.0.54, 2026-11-04 다른 선생님 신고 "업데이트 뒤 옛 코덱스 대화 재개 실패"): 업데이트 **전** 대화를 심는다 —
+    // 연결 이름 'openai'(설치 패키지 2.0.49 이전의 코덱스 기본)로 만든 대화 기록 + 목록 DB 한 줄. 모델 호출 0.
+    const oldThread = plantOldCodexThread();
     // ③ⓘ 기준점(2.0.35): 표식 폴더(R01-연습)를 만든 **뒤**의 역할 폴더 목록 — 업데이트가 여기에 무엇도 더하거나 빼면 안 된다.
     const rolesBefore = fs.readdirSync(SOUL_ROOT).filter((n) => /^R\d{2}-/.test(n)).sort();
 
@@ -450,6 +496,11 @@ async function main() {
 
     // ③ⓖ 사용자 자료 ----------------------------------------------------------
     check('③ⓖ 사용자 자료 표식 파일이 그대로다', fs.existsSync(MARKER) && fs.readFileSync(MARKER, 'utf8') === markerBefore);
+
+    // ③ⓚ 업데이트 전 대화가 업데이트 뒤에도 재개된다(2.0.54) ---------------------------------
+    // 새 판이 깐 IRIS 창의 재개 호환 모듈을 그대로 불러, 심은 옛 대화를 재개 직전처럼 맞춘 뒤
+    // "목록 DB·기록 파일의 연결 이름 = 지금 코덱스 설정의 연결 이름"(= 코덱스의 재개 검사 통과 조건, 2026-11-04 실측)인지 본다.
+    await judgeOldCodexThread(oldThread);
 
     // 결과 -----------------------------------------------------------------------
     const failed = results.filter((r) => !r.ok);
