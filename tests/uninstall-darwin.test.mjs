@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { uniqueName, classify, unsafeReason } from '../installer/uninstall.mjs';
+import { uniqueName, classify, unsafeReason, relayRestore } from '../installer/uninstall.mjs';
 
 // macOS 삭제기(installer/uninstall.mjs, 규칙 = docs/설계-삭제기.md). 진짜 홈·launchd 는 건드리지 않는다:
 // 가짜 홈(--home) 안에 IRIS 폴더·.zprofile·LaunchAgent·앱 바로가기·작업 폴더를 만들고 --no-launchctl 로 돌린다.
@@ -44,6 +44,24 @@ function run(home, args = [], env = {}) {
   return { code: r.status, result: line ? JSON.parse(line.slice(7)) : null, out: r.stdout + r.stderr };
 }
 const ls = (d) => { try { return fs.readdirSync(d).sort(); } catch { return null; } };
+
+test('MCP 중계기 되돌리기: 동봉 python3·relay.py 가 있을 때만 restore --all(60초), 없으면 건너뜀', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-relay-restore-'));
+  try {
+    const calls = [];
+    const run = (cmd, args, opts) => { calls.push({ cmd, args, opts }); return { status: 0 }; };
+    assert.equal(relayRestore(root, { run }), 'skipped');
+    const py = path.join(root, '_agent', 'shared', 'tools', 'python', 'bin', 'python3');
+    const relay = path.join(root, '_agent', 'shared', 'tools', 'mcp-relay', 'relay.py');
+    for (const f of [py, relay]) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, ''); }
+    assert.equal(relayRestore(root, { run }), 'exit 0');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].cmd, py);
+    assert.deepEqual(calls[0].args, ['-I', relay, '--state', path.join(root, '_agent', 'shared', 'mcp-relay'), '--root', root, 'restore', '--all']);
+    assert.equal(calls[0].opts.timeout, 60_000);
+    assert.equal(relayRestore(root, { run: () => ({ error: Object.assign(new Error('t'), { code: 'ETIMEDOUT' }) }) }), 'timeout');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test('이름 겹침: 폴더는 이름 뒤에, 파일은 확장자 앞에, 점 이름은 끝에', () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-uniq-'));

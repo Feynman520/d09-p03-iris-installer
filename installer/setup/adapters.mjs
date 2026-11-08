@@ -345,12 +345,13 @@ export const relayStateDir = (root) => path.join(root, '_agent', 'shared', 'mcp-
 export const relayRegistryId = (agent, name) => `${agent}.global.${name}`;
 const SAFE_RELAY_ID = /^[A-Za-z0-9._-]{1,120}$/;
 
-export function relayPaths(ctx) {
+// macOS(docs/설계-macOS.md D-M22): 동봉 python = <tools>/python/bin/python3, 안내원·공용 중계기는 posixproc(프로세스 그룹).
+export function relayPaths(ctx, { platform = ctx.platform ?? process.platform } = {}) {
   const dir = toolDir(ctx, 'mcp-relay');
   const py = toolDir(ctx, 'python');
   return {
     relayPy: dir ? path.join(dir, 'relay.py') : null,
-    python: py ? path.join(py, 'python.exe') : null,
+    python: py ? (isWindows(platform) ? path.join(py, 'python.exe') : path.join(py, 'bin', 'python3')) : null,
   };
 }
 

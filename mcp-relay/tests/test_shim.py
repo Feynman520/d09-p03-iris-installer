@@ -12,7 +12,7 @@ def alive(pid):
     return winproc.creation_time(pid) is not None
 
 
-@unittest.skipUnless(sys.platform == "win32", "Windows job objects")
+@unittest.skipUnless(sys.platform in ("win32", "darwin"), "Windows job objects / macOS process groups")
 class ShimTests(unittest.TestCase):
     def setUp(self):
         self.sb = Sandbox()
@@ -102,6 +102,8 @@ class ShimTests(unittest.TestCase):
         self.assertEqual(r2["result"]["content"][0]["text"], "1")  # fresh server, state reset
         self.assertEqual(len(self.sb.starts()), 2)
 
+    @unittest.skipUnless(sys.platform == "win32", "kill-on-close needs a Windows job object; on macOS the stdin close and the relay ledger sweep end the tree")
+
     def test_hard_kill_of_shim_ends_whole_tree(self):
         c = self.client()
         c.init()
@@ -125,7 +127,7 @@ class ShimTests(unittest.TestCase):
         self.assertEqual(self.sb.state.ledger(), [])
 
 
-@unittest.skipUnless(sys.platform == "win32", "Windows job objects")
+@unittest.skipUnless(sys.platform in ("win32", "darwin"), "Windows job objects / macOS process groups")
 class ShimEdgeTests(unittest.TestCase):
     def test_spawn_failure_is_reported_not_executed(self):
         sb = Sandbox(command=r"C:\nope\missing-server.exe", args=[], catalog=False)

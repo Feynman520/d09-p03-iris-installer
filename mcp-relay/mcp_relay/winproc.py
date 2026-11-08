@@ -278,3 +278,10 @@ def terminate_tree(root_pid: int, root_created: int) -> list[int]:
 
 def self_identity() -> tuple[int, int | None]:
     return os.getpid(), creation_time(os.getpid())
+
+
+# macOS / POSIX: replace the primitives above with process-group versions. is_same_alive,
+# parent_of, descendants, terminate_tree and self_identity stay as written and use these
+# (module globals are looked up at call time). docs/설계-macOS.md D-M22.
+if not IS_WINDOWS:
+    from .posixproc import Job, creation_time, snapshot, spawn_in_job, terminate_pid  # noqa: E402,F401,F811

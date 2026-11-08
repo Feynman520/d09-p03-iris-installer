@@ -8,7 +8,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { relaySpecs, writeRelayRegistry, relayStateDir, relayRegistryId, updateOwnedMcpTable, mcpTomlBlock } from '../installer/setup/adapters.mjs';
-import { faceLauncherContent, MCP_RELAY_KICK } from '../installer/lib/handoff.mjs';
+import { faceLauncherContent, MCP_RELAY_KICK, macFaceLauncherContent, MAC_MCP_RELAY_KICK } from '../installer/lib/handoff.mjs';
 import { RELAY_PARTS } from '../installer/lib/update-plan.mjs';
 import { UNPACK_ORDER, V2_LAYOUT } from '../installer/setup/unpack.mjs';
 
@@ -18,15 +18,17 @@ const LOCK = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
 const PY = process.env.IRIS_TEST_PYTHON || 'python';
 const hasPython = spawnSync(PY, ['--version'], { encoding: 'utf8' }).status === 0;
 
-function fakeSoul() {
+// 동봉 python 자리는 OS 마다 다르다(Windows python.exe · macOS bin/python3) — 기본은 Windows 꼴로 시험한다.
+function fakeSoul({ platform = 'win32' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-soul-'));
   const relayDir = path.join(root, '_agent', 'shared', 'tools', 'mcp-relay');
   const pyDir = path.join(root, '_agent', 'shared', 'tools', 'python');
+  const pyExe = platform === 'win32' ? path.join(pyDir, 'python.exe') : path.join(pyDir, 'bin', 'python3');
   fs.mkdirSync(relayDir, { recursive: true });
-  fs.mkdirSync(pyDir, { recursive: true });
+  fs.mkdirSync(path.dirname(pyExe), { recursive: true });
   fs.writeFileSync(path.join(relayDir, 'relay.py'), '# stub\n');
-  fs.writeFileSync(path.join(pyDir, 'python.exe'), '');
-  return { root, ctx: { root, lock: LOCK } };
+  fs.writeFileSync(pyExe, '');
+  return { root, ctx: { root, lock: LOCK, platform } };
 }
 
 const SPECS = (root) => [
@@ -52,6 +54,25 @@ test('실행기가 IRIS 시작 때 공용 중계기를 띄운다(창 없는 pyth
   assert.match(MCP_RELAY_KICK, /start "" ".*pythonw\.exe" -I ".*mcp-relay\\relay\.py" daemon$/);
   // 숨김 경로·콘솔 경로 모두보다 먼저
   assert.ok(text.indexOf(MCP_RELAY_KICK) < text.indexOf('wscript.exe'));
+});
+
+test('macOS: 안내원 항목은 동봉 bin/python3, 실행기는 공용 중계기를 배경(nohup)으로 띄운 뒤 IRIS 창을 연다', () => {
+  const { root, ctx } = fakeSoul({ platform: 'darwin' });
+  try {
+    const r = relaySpecs(ctx, SPECS(root), 'claude', { fs });
+    const by = Object.fromEntries(r.specs.map((s) => [s.name, s]));
+    assert.equal(by['pdf-automation'].relayed, true);
+    assert.equal(by['pdf-automation'].command, path.join(root, '_agent', 'shared', 'tools', 'python', 'bin', 'python3'));
+    assert.equal(by['self-improve'].relayed, undefined);
+    // python.exe 만 있는 Mac(옛 꼴) = 부품 없음으로 보고 직접 항목으로 후퇴
+    const win = fakeSoul({ platform: 'win32' });
+    try { assert.equal(relaySpecs({ ...win.ctx, platform: 'darwin' }, SPECS(win.root), 'claude', { fs }).relayed.length, 0); }
+    finally { fs.rmSync(win.root, { recursive: true, force: true }); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  const text = macFaceLauncherContent();
+  assert.match(MAC_MCP_RELAY_KICK, /\(nohup ".*\/python\/bin\/python3" -I ".*\/mcp-relay\/relay\.py" daemon >\/dev\/null 2>&1 &\); fi$/);
+  assert.ok(text.includes(MAC_MCP_RELAY_KICK));
+  assert.ok(text.indexOf(MAC_MCP_RELAY_KICK) < text.indexOf('exec "$IRIS_FACE_NODE"'));
 });
 
 test('relaySpecs: 로컬 MCP 는 안내원 항목, self-improve 는 직접, 등록부는 원래 명령', () => {

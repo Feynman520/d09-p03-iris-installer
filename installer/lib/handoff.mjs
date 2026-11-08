@@ -152,6 +152,9 @@ export function faceLauncherPath(root, name, { platform = process.platform } = {
 // 누르면 터미널이 잠깐 뜬다 — 사람이 보통 여는 문은 ~/Applications 의 `<이름>.app`
 // (아래 writeMacAppLauncher)이고, 이 파일은 그 앱이 부르는 실체다.
 // 전역 환경변수를 걸지 않으므로(D-M08) 여기서 IRIS 창에 필요한 값을 건다.
+// 공용 MCP 중계기(D-M22, Windows MCP_RELAY_KICK 과 같은 뜻): 실행기를 기다리지 않게 배경으로, 터미널을 닫아도 살게 nohup.
+// 이미 떠 있으면 중계기 스스로 곧바로 끝난다(포트 3461 단독 점유).
+export const MAC_MCP_RELAY_KICK = 'if [ -f "$R/_agent/shared/tools/mcp-relay/relay.py" ] && [ -x "$R/_agent/shared/tools/python/bin/python3" ]; then (nohup "$R/_agent/shared/tools/python/bin/python3" -I "$R/_agent/shared/tools/mcp-relay/relay.py" daemon >/dev/null 2>&1 &); fi';
 export const MAC_AGENT_UPDATE_KICK = 'if [ -f "$R/_agent/shared/tools/updater/agents.mjs" ]; then "$IRIS_FACE_NODE" "$R/_agent/shared/tools/updater/agents.mjs" --kick >/dev/null 2>&1; fi';
 
 export function macFaceLauncherContent() {
@@ -164,6 +167,7 @@ export function macFaceLauncherContent() {
     'export IRIS_FACE_NODE="$R/_agent/shared/tools/node/bin/node"',
     'export TEAMCLAUDE_CONFIG="${TEAMCLAUDE_CONFIG:-$R/_agent/shared/portable-state/teamclaude/teamclaude.json}"',
     'export PATH="$R/_agent/shared/shims:$R/_agent/shared/tools/node/bin:$PATH"',
+    MAC_MCP_RELAY_KICK,
     MAC_AGENT_UPDATE_KICK,
     'exec "$IRIS_FACE_NODE" "$R/_agent/shared/tools/face/launch.mjs" "$@"',
     '',

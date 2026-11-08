@@ -223,6 +223,18 @@ function rmTree(p) {
 
 // ---------------------------------------------------------------- 실행
 
+// MCP 중계기(D-M22): 끄기 전에 안내원 항목을 원래 직접 연결로 되돌린다 — 보관되는 사용자 폴더의 .mcp.json 이
+// 곧 지워질 중계기를 가리키지 않게(Windows uninstall.ps1 Invoke-RelayRestore 와 같은 약속, 최선 노력·60초).
+export function relayRestore(root, { run = spawnSync, log = () => {} } = {}) {
+  const py = path.join(root, '_agent', 'shared', 'tools', 'python', 'bin', 'python3');
+  const relay = path.join(root, '_agent', 'shared', 'tools', 'mcp-relay', 'relay.py');
+  if (!exists(py) || !exists(relay)) return 'skipped';
+  const r = run(py, ['-I', relay, '--state', path.join(root, '_agent', 'shared', 'mcp-relay'), '--root', root, 'restore', '--all'], { stdio: 'ignore', timeout: 60_000 });
+  const res = r.error ? (r.error.code === 'ETIMEDOUT' ? 'timeout' : 'failed') : `exit ${r.status}`;
+  log(`relay restore: ${res}`);
+  return res;
+}
+
 export async function uninstall(opts) {
   const home = path.resolve(opts.home || os.homedir());
   const realHome = home === path.resolve(os.homedir());
@@ -269,6 +281,7 @@ export async function uninstall(opts) {
   if (opts.dryRun) { log(`미리보기: ${JSON.stringify(plan)}`); return { code: 0, dryRun: true, plan }; }
 
   const step = (s) => { log(`— ${s}`); ui?.step?.(s); };
+  step('MCP 중계기 되돌리기'); const relay = relayRestore(root, { run: opts.relayRun, log });
   step('프로그램 끄기'); await stopProcesses(procs, log);
   step('자동 시작·명령 경로·앱 바로가기 빼기'); const traceDone = await removeTraces(traces, { home, realHome, launchctl: opts.launchctl, log });
 
@@ -319,7 +332,7 @@ export async function uninstall(opts) {
   if (!left.length && !others.length && isDir(workDir) && unsafeReason(workDir, { home }) === null) { step('설치기 작업 폴더 지우기'); workRemoved = rmTree(workDir); }
 
   const code = left.length || failed.length ? 1 : 0;
-  return { code, root, mode, archive, moved, failed, left, rootRemoved, receiptKept: exists(receipt), traces: traceDone, workRemoved, stopped: procs.length };
+  return { code, root, mode, archive, moved, failed, left, rootRemoved, receiptKept: exists(receipt), traces: traceDone, workRemoved, stopped: procs.length, relayRestore: relay };
 }
 
 async function removeTraces(t, { home, realHome, launchctl, log }) {
