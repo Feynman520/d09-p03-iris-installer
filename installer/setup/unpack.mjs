@@ -93,7 +93,7 @@ export const UNPACK_ORDER = [
   // 런타임
   'node', 'python', 'pyyaml', 'uv', 'age', 'git',
   // 에이전트·중계기·앱
-  'codex', 'teamclaude', 'manage', 'dash', 'face', 'messenger', 'updater',
+  'codex', 'teamclaude', 'manage', 'dash', 'face', 'messenger', 'updater', 'mcp-relay', 'iris-auth',
   // 도구
   'superpowers', 'self-improve', 'playwright-mcp', 'ui-ux-pro-max',
   'hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation',
@@ -137,6 +137,10 @@ export const V2_LAYOUT = {
   face: { kind: 'archive', strip: 0, mode: 'slot', carryOver: ['state', 'modules'] },
   messenger: { kind: 'module', moduleName: 'messenger' },
   updater: { kind: 'archive', strip: 0, mode: 'slot' },
+  // MCP 중계기(설계-MCP중계기.md 9절): 동봉 python 으로 도는 표준 라이브러리 파이썬 묶음.
+  'mcp-relay': { kind: 'archive', strip: 0, mode: 'slot' },
+  // 로그인 열쇠 감시(2.0.53): IRIS 창이 `_agent\shared\tools\iris-auth` 를 찾으면 계정·보안 「로그인 열쇠」 절이 켜진다.
+  'iris-auth': { kind: 'archive', strip: 0, mode: 'slot' },
   superpowers: { kind: 'archive', strip: 0, mode: 'slot' },
   'self-improve': { kind: 'archive', strip: 0, mode: 'slot' },
   'playwright-mcp': { kind: 'archive', strip: 0, mode: 'slot' },
@@ -374,6 +378,22 @@ export function v2Verifiers(ctx) {
     const text = fs.readFileSync(entry, 'utf8');
     const ok = text.includes('export async function applyPlan');
     return { ok, detail: ok ? entry : `${entry} 에 applyPlan 이 없음` };
+  };
+  V['mcp-relay'] = async () => {
+    const entry = path.join(dest('mcp-relay'), 'relay.py');
+    const shim = path.join(dest('mcp-relay'), 'mcp_relay', 'shim.py');
+    if (!fs.existsSync(entry) || !fs.existsSync(shim)) return { ok: false, detail: `${entry} 또는 mcp_relay\shim.py 없음` };
+    const ok = fs.readFileSync(entry, 'utf8').includes('def main(') && fs.readFileSync(shim, 'utf8').includes('class Shim');
+    return { ok, detail: ok ? entry : `${entry} 내용이 중계기 진입점이 아님` };
+  };
+  V['iris-auth'] = async () => {
+    const d = dest('iris-auth');
+    const need = ['status.mjs', 'longkey.mjs', 'lib.mjs'];
+    const gone = need.filter((f) => !exists(fs, d, f));
+    if (gone.length) return { ok: false, detail: `없음: ${gone.join(',')}` };
+    // IRIS 창 authDir() 가 찾는 표지 = status.mjs. 내용이 판정 도구인지까지 본다.
+    const ok = fs.readFileSync(path.join(d, 'status.mjs'), 'utf8').includes('export function gather');
+    return { ok, detail: ok ? need.join(',') : 'status.mjs 내용이 열쇠 점검 도구가 아님' };
   };
   V['document-mcp-wheelhouse'] = async () => {
     const d = dest('document-mcp-wheelhouse');

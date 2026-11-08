@@ -8,3 +8,4 @@ build/sanitize-local.json
 .env.local
 .vercel
 .wrangler/
+__pycache__/

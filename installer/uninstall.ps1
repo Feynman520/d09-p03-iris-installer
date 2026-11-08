@@ -858,6 +858,23 @@ function Get-DryRunResult($plan, [string]$mode) {
   return $res
 }
 
+function Invoke-RelayRestore([string]$root) {
+  $py = Join-Path $root '_agent\shared\tools\python\python.exe'
+  $relay = Join-Path $root '_agent\shared\tools\mcp-relay\relay.py'
+  if (-not ([IO.File]::Exists($py) -and [IO.File]::Exists($relay))) { return 'skipped' }
+  try {
+    $state = Join-Path $root '_agent\shared\mcp-relay'
+    $argv = @('-I', ('"{0}"' -f $relay), '--state', ('"{0}"' -f $state), '--root', ('"{0}"' -f $root), 'restore', '--all')
+    $p = Start-Process -FilePath $py -ArgumentList $argv -WindowStyle Hidden -PassThru
+    if (-not $p.WaitForExit(60000)) { Write-Log 'relay restore: timed out'; return 'timeout' }
+    Write-Log ('relay restore: exit {0}' -f $p.ExitCode)
+    return ('exit {0}' -f $p.ExitCode)
+  } catch {
+    Write-Log ('relay restore failed: {0}' -f $_.Exception.Message)
+    return 'failed'
+  }
+}
+
 function Invoke-Plan($plan, [string]$mode) {
   $res = New-Result $plan $mode
   $isInstall = ($plan.Kind -eq 'install')
@@ -868,6 +885,11 @@ function Invoke-Plan($plan, [string]$mode) {
     if (-not [IO.File]::Exists((Get-ReceiptPath $plan.Root))) { throw 'the receipt disappeared before the run' }
   }
   Write-Log ('run kind={0} root={1} mode={2} version={3}' -f $plan.Kind, $plan.Root, $mode, $plan.Version)
+
+  # 0 -- MCP relay: put relayed MCP entries back to direct connections first, so the
+  # settings that travel with the user's archived folders (.mcp.json) do not point at
+  # a relay that is about to be removed (mcp-relay design doc, section 12-12). Best effort.
+  if ($isInstall) { $res | Add-Member -NotePropertyName relayRestore -NotePropertyValue (Invoke-RelayRestore $plan.Root) -Force }
 
   # 1 -- programs running from the root (and from the installer work folder if it goes)
   Set-Step 1 'run' ''

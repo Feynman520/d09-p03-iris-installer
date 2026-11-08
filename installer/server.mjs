@@ -1158,6 +1158,10 @@ export function startServer({
             mode: entry.mode ?? null,
             url: st.url ?? entry.url ?? null,
             startedAt: entry.startedAt ?? null,
+            // 2.0.54: 옮겨 담기 진행 표시(시작 시각 → 화면의 "n초째")와 실패 이유(CLI 마지막 말, 토큰 가림)
+            relayStartedAt: st.relayStartedAt ?? null,
+            relayPhase: st.relayPhase ?? null,
+            detail: st.detail ?? null,
           };
         }
       } catch { /* a polling route must never throw */ }

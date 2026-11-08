@@ -345,6 +345,25 @@ test('adapters(2.0.49): 업데이트 = 옛 config.toml 에 provider iris 를 더
   assert.ok(!/^model_provider = "iris"$/m.test(t2), '사람이 고른 provider 를 바꾸지 않는다');
 });
 
+test('adapters(2.0.54): config.toml 을 바꾸면 바꾸기 전 사본 + 이력 한 줄(연결 이름 전후, 비밀값 없음), 안 바뀌면 이력도 없음', async () => {
+  const ctx = makeCtx('cfg-history');
+  fs.mkdirSync(agentFile(ctx.root, 'codex'), { recursive: true });
+  const before = 'model = "gpt-6"\n\n[features]\nmulti_agent = true\n';
+  fs.writeFileSync(agentFile(ctx.root, 'codex', 'config.toml'), before);
+  await adapters.run(ctx);
+  const dir = adapters.configHistoryDir(ctx.root);
+  const lines = fs.readFileSync(path.join(dir, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].added.includes('model_provider'));
+  assert.deepEqual({ from: lines[0].connection.from, to: lines[0].connection.to }, { from: 'openai(코덱스 기본)', to: 'iris' });
+  assert.equal(fs.readFileSync(path.join(ctx.root, lines[0].backup), 'utf8'), before, '사본 = 바꾸기 전 그대로');
+  assert.ok(!/token|apiKey|sk-/i.test(JSON.stringify(lines[0])), '이력에 비밀값 없음');
+  await adapters.run(ctx);
+  assert.equal(fs.readFileSync(path.join(dir, 'history.jsonl'), 'utf8').trim().split('\n').length, 1, '안 바뀐 두 번째 실행은 이력을 더하지 않는다');
+  assert.equal(adapters.topModelProvider('model_provider = "x"\n[t]\nmodel_provider = "y"\n'), 'x');
+  assert.equal(adapters.topModelProvider('[t]\nmodel_provider = "y"\n'), null);
+});
+
 test('adapters: 기존 설정의 다른 키·훅·MCP 를 보존한다', async () => {
   const ctx = makeCtx('existing', { apps: { office: true, hancom: true } });
   const root = ctx.root;
