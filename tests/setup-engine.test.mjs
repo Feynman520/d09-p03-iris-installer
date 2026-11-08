@@ -321,13 +321,24 @@ test('stageModule: 지도에 없으면 파일에서 찾고, export 가 없으면
 });
 
 test('ctx 채우기: PATH 앞에 심·node·git·python 이 붙고 중복은 하나만 남는다', () => {
-  const env = buildEnv('C:\\IRIS-t', { base: { PATH: 'C:\\windows;C:\\IRIS-t\\_agent\\shared\\shims' } });
+  const env = buildEnv('C:\\IRIS-t', { platform: 'win32', base: { PATH: 'C:\\windows;C:\\IRIS-t\\_agent\\shared\\shims' } });
   const parts = env.PATH.split(';');
   assert.equal(parts[0], 'C:\\IRIS-t\\_agent\\shared\\shims');
   assert.ok(parts[1].endsWith('tools\\node'));
   assert.ok(parts.some((p) => p.endsWith('tools\\git\\cmd')));
   assert.ok(parts.some((p) => p.endsWith('tools\\python')));
   assert.equal(parts.filter((p) => p.toLowerCase().endsWith('shims')).length, 1, '중복 없음');
+});
+
+test('ctx 채우기(macOS): PATH 앞에 심·node/bin·python/bin(git 은 심으로만), 구분자는 콜론, 대소문자는 가린다', () => {
+  const env = buildEnv('/Users/u/IRIS', { platform: 'darwin', base: { PATH: '/usr/bin:/Users/u/IRIS/_agent/shared/shims:/USR/BIN' } });
+  assert.deepEqual(env.PATH.split(':'), [
+    '/Users/u/IRIS/_agent/shared/shims',
+    '/Users/u/IRIS/_agent/shared/tools/node/bin',
+    '/Users/u/IRIS/_agent/shared/tools/python/bin',
+    '/usr/bin',
+    '/USR/BIN',
+  ]);
 });
 
 test('envFromRecorded 는 env·childEnv·vars 세 이름을 알아본다', () => {

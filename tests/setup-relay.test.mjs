@@ -54,6 +54,8 @@ function makeCtx(root, overrides = {}) {
     payloadDir: path.join(tmp, 'payload'),
     choice: { subscriptions: ['claude'], leadAgent: 'claude' },
     offline: true,
+    // 이 파일의 시험은 Windows 판 바로가기(.cmd·.lnk)를 잰다. macOS 판은 아래 따로.
+    platform: 'win32',
     fs,
     log: (l) => logs.push(l),
     progress: () => {},
@@ -209,7 +211,8 @@ test('relay: 영수증 env.teamclaudeConfig 가 가리키는 자리에 만든다
   ctx.receipt = { schema: 2, setup: {}, online: {}, env: { teamclaudeConfig: portableTeamclaudeConfigPath(root) } };
   const { recorded } = await relay.run(ctx);
 
-  assert.equal(recorded.config.path, path.relative(root, portableTeamclaudeConfigPath(root)));
+  // 기록 경로의 구분자는 대상 운영체제 것(이 파일은 Windows 판) — 구분자만 맞춰 비교한다.
+  assert.equal(recorded.config.path.split('\\').join('/'), path.relative(root, portableTeamclaudeConfigPath(root)).split(path.sep).join('/'));
   assert.ok(fs.existsSync(portableTeamclaudeConfigPath(root)));
 
   // 영혼 밖을 가리키는 값은 따르지 않는다(E-OUTSIDE-ROOT)
@@ -264,4 +267,28 @@ test('relay: 루트가 없으면 E-RELAY StageError', async () => {
     assert.equal(err.code, 'E-RELAY');
     return true;
   });
+});
+
+test('relay(macOS): .command 세 개는 sh·실행 권한이고, 앱 바로가기는 ~/Applications 자리(시험은 임시 폴더)에', { skip: process.platform === 'win32' && 'POSIX 실행 비트' }, async () => {
+  const root = path.join(tmp, 'mac-relay', 'IRIS');
+  const tools = path.join(root, '_agent', 'shared', 'tools');
+  fs.mkdirSync(path.join(tools, 'teamclaude-dash'), { recursive: true });
+  fs.writeFileSync(path.join(tools, 'teamclaude-dash', 'launch.mjs'), '// dash');
+  const apps = path.join(tmp, 'mac-relay', 'Applications');
+  const ctx = makeCtx(root, { platform: 'darwin', env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: apps });
+  const { recorded } = await relay.run(ctx);
+  for (const name of ['소환하기.command', '대시보드.command', 'IRIS Face.command']) {
+    const f = path.join(root, name);
+    const text = fs.readFileSync(f, 'utf8');
+    assert.ok(text.startsWith('#!/bin/sh\n'), name);
+    assert.ok(!text.includes('\r'), `${name} LF`);
+    assert.equal(fs.statSync(f).mode & 0o777, 0o755, `${name} 0755`);
+  }
+  assert.match(fs.readFileSync(path.join(root, '소환하기.command'), 'utf8'), /cd "\$R" \|\| exit 1/, '영혼 루트에서 연다');
+  assert.match(fs.readFileSync(path.join(root, 'IRIS Face.command'), 'utf8'), /export IRIS_FACE_NODE="\$R\/_agent\/shared\/tools\/node\/bin\/node"/);
+  const exe = path.join(apps, 'IRIS.app', 'Contents', 'MacOS', 'IRIS');
+  assert.ok(fs.readFileSync(exe, 'utf8').includes(path.join(root, 'IRIS Face.command')));
+  assert.equal(fs.statSync(exe).mode & 0o777, 0o755);
+  assert.equal(recorded.desktopShortcut.status, 'created');
+  assert.ok(!recorded.files.created.some((f) => f.includes('\\')), '기록 경로는 /');
 });

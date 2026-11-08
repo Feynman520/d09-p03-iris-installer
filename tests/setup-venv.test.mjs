@@ -18,7 +18,7 @@ import { run as realRun } from '../lib/run.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BUILD_PAYLOAD = path.join(REPO, '_build', 'stage', 'payload');
-const TAR = 'C:\\Windows\\System32\\tar.exe';
+import { TAR } from '../lib/zip.mjs';
 
 // 접두사를 짧게(윈도우 MAX_PATH 여유 확보 -- t17 통합 시험과 같은 이유).
 const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 't15-'));
@@ -101,7 +101,8 @@ function fakeCtx(label, { wheelCount = 3, skip = [] } = {}) {
   }
 
   return {
-    root, payloadDir, lock, paths, fs, log: () => {}, env: { FAKE_ENV: '1' },
+    // 이 파일은 Windows 판 배치(python.exe·uv.exe·Scripts\python.exe)를 잰다.
+    root, payloadDir, lock, paths, fs, log: () => {}, env: { FAKE_ENV: '1' }, platform: 'win32',
   };
 }
 
@@ -416,6 +417,14 @@ test('locateParts: venv 자리는 adapters.mjs 의 venvPythonPath 관례(_agent/
   );
 });
 
+test('locateParts(macOS): bin/python3 · bin/uv · venv/bin/python', () => {
+  const base = { ...fakeCtx('locate-mac'), platform: 'darwin' };
+  const parts = venv.locateParts(base);
+  assert.equal(parts.pythonExe, path.join(base.root, '_agent', 'shared', 'tools', 'python', 'bin', 'python3'));
+  assert.equal(parts.uvExe, path.join(base.root, '_agent', 'shared', 'tools', 'uv', '0.12.14', 'bin', 'uv'));
+  assert.equal(parts.venvPython, path.join(base.root, '_agent', 'runtime', 'venvs', 'document-mcp', 'bin', 'python'));
+});
+
 // ---------------------------------------------------------------------------
 // 9) 통합 시험 -- 실제 빌드 payload 로 진짜 오프라인 venv + MCP 서버를 돌린다.
 // ---------------------------------------------------------------------------
@@ -581,4 +590,58 @@ test('통합: 실제 payload 로 43개 바퀴 offline venv 를 만들고 pdf-aut
 
   const tRpc = Date.now();
   t.diagnostic(`추출: python ${tPython - t0}ms, uv ${tUv - tPython}ms, wheelhouse+pdf ${tSetup - tUv}ms / venv 1차 ${tVenv1 - tSetup}ms, 2차(kept) ${tVenv2 - tVenv1}ms / MCP 확인 ${tRpc - tVenv2}ms`);
+});
+
+// ---------------------------------------------------------------------------
+// macOS D-M21: 잠금표 `runtimePackages` 가 있으면 문서 스킬 라이브러리를 동봉 파이썬(런타임)에도 깐다
+// ---------------------------------------------------------------------------
+function runtimeCtx(label, { probes, install = OK } = {}) {
+  const base = fakeCtx(label, { wheelCount: 2 });
+  base.lock.parts['document-mcp-wheelhouse'].runtimePackages = ['python-docx', 'openpyxl'];
+  base.lock.parts['document-mcp-wheelhouse'].runtimeImports = ['docx', 'openpyxl'];
+  const { run, calls } = makeFakeRun(base.paths, { list: [okList(0), okList(2)] });
+  const queue = [...probes];
+  const wrapped = async (exe, args, opts) => {
+    // 런타임 문서 라이브러리 검사(buildImportCheckScript) — PyYAML 검사와 스크립트로 가른다
+    if (exe === base.paths.pythonExe && args[0] === '-c' && args[1].includes('mods = ["docx"')) {
+      calls.push({ exe, args: args.slice(), opts });
+      const ok = queue.length > 1 ? queue.shift() : queue[0];
+      const imports = { docx: ok ? { ok: true, file: 'X' } : { ok: false, error: 'No module named docx' }, openpyxl: { ok: true, file: 'X' } };
+      return { code: 0, out: `${JSON.stringify({ imports, leaks: [] })}\n`, err: '' };
+    }
+    if (exe === base.paths.uvExe && args[1] === 'install' && args.includes('python-docx')) {
+      calls.push({ exe, args: args.slice(), opts });
+      return install;
+    }
+    return run(exe, args, opts);
+  };
+  return { ctx: { ...base, run: wrapped }, calls };
+}
+
+test('venv(macOS D-M21): runtimePackages 가 있으면 바퀴집에서 동봉 파이썬에 오프라인으로 깔고 다시 확인한다', async () => {
+  const { ctx, calls } = runtimeCtx('runtime-install', { probes: [false, true] });
+  const { recorded, pending } = await venv.run(ctx);
+  const inst = calls.find((c) => c.args[1] === 'install' && c.args.includes('python-docx'));
+  assert.ok(inst, '런타임 설치 명령이 없다');
+  assert.deepEqual(inst.args.slice(0, 9), ['pip', 'install', '--python', ctx.paths.pythonExe, '--offline', '--no-index', '--find-links', ctx.paths.wheelhouseDest, 'python-docx']);
+  assert.deepEqual([recorded.runtimePackages.installed, recorded.runtimePackages.ok], [true, true]);
+  assert.deepEqual(pending, []);
+});
+
+test('venv(macOS D-M21): 이미 불러와지면 깔지 않고(kept), 깔고도 안 되면 설치를 멈추지 않고 대기로 알린다', async () => {
+  const kept = runtimeCtx('runtime-kept', { probes: [true] });
+  const r1 = await venv.run(kept.ctx);
+  assert.equal(kept.calls.some((c) => c.args.includes('python-docx')), false);
+  assert.deepEqual([r1.recorded.runtimePackages.kept, r1.pending.length], [true, 0]);
+  const bad = runtimeCtx('runtime-fail', { probes: [false], install: { code: 2, out: '', err: 'no matching distribution' } });
+  const r2 = await venv.run(bad.ctx);
+  assert.equal(r2.recorded.runtimePackages.ok, false);
+  assert.deepEqual(r2.pending.map((p) => p.capability), ['문서 스킬용 파이썬 라이브러리']);
+});
+
+test('venv: 잠금표에 runtimePackages 가 없으면(Windows) 런타임 문서 라이브러리 단계가 없다', async () => {
+  const { ctx } = withRun(fakeCtx('runtime-none', { wheelCount: 2 }), { list: [okList(0), okList(2)] });
+  const { recorded, pending } = await venv.run(ctx);
+  assert.equal(recorded.runtimePackages, undefined);
+  assert.deepEqual(pending, []);
 });

@@ -1,0 +1,29 @@
+{
+  "$comment": [
+    "macOS zip 의 정책 템플릿(payload/policy) 몇 줄을 맥에 맞게 바꾼다(docs/설계-macOS.md D-M21). build/pack.mjs 가 macOS 대상에서만 적용한다 -- Windows zip 은 한 글자도 바뀌지 않는다.",
+    "형식은 patches/teamclaude/rules.json 과 같다(build/patch-teamclaude.mjs applyPatches): find 는 정확히 count(기본 1)번 있어야 하고, 아니면 빌드가 멈춘다. 원본 줄을 고치면 여기 find 도 함께 고친다."
+  ],
+  "files": [
+    {
+      "path": "root-AGENTS.md",
+      "replace": [
+        {
+          "find": "(스크래치패드, 없으면 `%TEMP%`)",
+          "with": "(스크래치패드, 없으면 `$TMPDIR`)"
+        },
+        {
+          "find": "- **문서 분담.** 문서를 *만들고 고치는* 일은 문서 스킬(`document-skills`)로 한다. 계산·재계산·렌더·형식 변환·PDF 출력처럼 라이브러리가 못 하는 일만 문서 MCP(엑셀·워드·파워포인트·PDF·한컴 엔진)에 넘긴다. Office나 한컴이 설치돼 있지 않으면 그 기능은 `대기(pending)` 상태이며, 없는 채로 흉내 내지 말고 무엇이 없어서 못 하는지 사용자에게 알린다.",
+          "with": "- **문서 분담(macOS).** 문서를 *만들고 고치는* 일은 문서 스킬(`document-skills`)과 동봉 파이썬의 문서 라이브러리(python-docx·openpyxl·python-pptx·pypdf·pdfplumber·reportlab·pandas)로 **먼저** 한다. 라이브러리가 못 하는 일 — 옛 한글(.hwp) 새로 만들기, 문서를 쪽 그림(PNG)으로 렌더해 눈으로 확인, PDF→워드 변환 — 은 보조 엔진 이음오피스 명령어 `ieumoffice`로 한다(처음 쓸 때 `ieumoffice guide`로 사용법을 한 번 읽고, 결과는 `--json`으로 받는다). 엑셀 재계산·PDF 출력·한글(HWPX) 양식 채우기는 문서 MCP(LibreOffice·python-hwpx 엔진)에 넘긴다. 이음오피스는 **MCP로 등록하지 않고**, 앱 안 AI 창과 「자동 호출에 구독 사용」은 켜지 않는다(중계기를 거치지 않아 구독 한도를 따로 쓴다). 엑셀을 이음오피스로 렌더한 그림에서 함수 없는 산술 수식 칸(`=B2+C2`)이 빈칸으로 나올 수 있으니(0.12.7 알려진 버그) 값은 openpyxl 로 확인한다. LibreOffice·이음오피스가 없으면 그 기능은 `대기(pending)` 상태이며, 없는 채로 흉내 내지 말고 무엇이 없어서 못 하는지 사용자에게 알린다."
+        },
+        {
+          "find": "- **브라우저.** 사람처럼 클릭·입력·스크롤이 필요한 일은 Playwright MCP(Edge 사용)로 한다. Edge가 없으면 브라우저 조작은 `대기` 상태다. **결제·발송·삭제·제출의 마지막 클릭은 사용자가 한다** — 지시받지 않은 제출·결제·발송을 하지 않는다. 주소만 읽으면 되는 일은 브라우저 대신 일반 내려받기를 쓴다.",
+          "with": "- **브라우저.** 사람처럼 클릭·입력·스크롤이 필요한 일은 Playwright MCP로 한다(Chrome → Edge → 설치기가 받은 Chrome for Testing 순서로 쓴다). 셋 다 없으면 브라우저 조작은 `대기` 상태다. **결제·발송·삭제·제출의 마지막 클릭은 사용자가 한다** — 지시받지 않은 제출·결제·발송을 하지 않는다. 주소만 읽으면 되는 일은 브라우저 대신 일반 내려받기를 쓴다."
+        },
+        {
+          "find": "`python _agent\\claude\\tools\\gen-image.py ",
+          "with": "`python _agent/claude/tools/gen-image.py "
+        }
+      ]
+    }
+  ]
+}

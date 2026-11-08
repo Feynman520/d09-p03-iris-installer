@@ -21,6 +21,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { StageError } from '../lib/errors.mjs';
 import { readUserEnv } from '../lib/userpath.mjs';
 import { CODEX_STALE_PROXY_KEYS, CODEX_PROVIDER_ID, CODEX_RELAY_BASE_URL } from '../lib/shims.mjs';
+import { shimFileName } from '../lib/platform.mjs';
 import { SETUP_STAGE_IDS, receiptPath } from '../lib/receipt.mjs';
 import { writeHandoff, copyInstallerProgram } from './handoff.mjs';
 import { writeReport, writeDiagnostics, reportPath, diagnosticsPath } from './report.mjs';
@@ -82,6 +83,14 @@ export const HOOK_FILES = Object.freeze([
   { rel: ['_agent', 'claude', 'scripts', 'guard-iris-path.py'], kind: 'py' },
   { rel: ['_ontology', 'check_fresh.py'], kind: 'py' },
 ]);
+// macOS(D-M18): 일괄 킬 가드는 파이썬 판.
+export const HOOK_FILES_POSIX = Object.freeze([
+  { rel: ['_agent', 'claude', 'scripts', 'block-blanket-kill-posix.py'], kind: 'py' },
+  { rel: ['_agent', 'claude', 'scripts', 'guard-iris-path.py'], kind: 'py' },
+  { rel: ['_ontology', 'check_fresh.py'], kind: 'py' },
+]);
+const platformOf = (ctx) => ctx?.platform ?? process.platform;
+const isWin = (ctx) => platformOf(ctx) === 'win32';
 
 // ---------------------------------------------------------------------------
 // 작은 도구들
@@ -145,14 +154,19 @@ export function resolveExe(ctx, name) {
   const fs = fsOf(ctx);
   const root = ctx.root;
   const tools = toolsOf(ctx);
-  const shim = shimPath(root, `${name}.cmd`);
+  const win = isWin(ctx);
+  const shim = shimPath(root, shimFileName(name, { platform: platformOf(ctx) }));
   if (exists(fs, shim)) return { path: shim, via: 'shim' };
-  const fallbacks = {
+  // macOS(docs/설계-macOS.md 2절): git·codex 는 심으로만 온전하다(환경변수·진입 파일) — 직접 대체는 node·python 뿐.
+  const fallbacks = (win ? {
     node: [path.join(tools, 'node', 'node.exe')],
     python: [path.join(tools, 'python', 'python.exe')],
     git: [path.join(tools, 'git', 'cmd', 'git.exe'), path.join(tools, 'git', 'bin', 'git.exe')],
     codex: [path.join(tools, 'codex', 'codex.cmd'), path.join(tools, 'codex', 'codex.exe')],
-  }[name] ?? [];
+  } : {
+    node: [path.join(tools, 'node', 'bin', 'node')],
+    python: [path.join(tools, 'python', 'bin', 'python3')],
+  })[name] ?? [];
   for (const f of fallbacks) {
     if (exists(fs, f)) return { path: f, via: 'tools' };
   }
@@ -365,9 +379,13 @@ export async function checkMcp(ctx, { spawn = ctx?.spawn ?? nodeSpawn, timeoutMs
   const fail = results.filter((r) => r.status === 'fail');
   const pendingList = results.filter((r) => r.status === 'pending');
   const claudeCount = servers.filter((s) => s.source === 'claude').length;
-  const countNote = claudeCount === EXPECTED_CLAUDE_MCP_COUNT
+  // 기대값 = 그 대상 잠금표가 싣는 문서 MCP 수 + 플레이라이트(macOS 는 pdf 하나뿐 — D-M16).
+  const expected = ctx.lock?.parts
+    ? 1 + Object.keys(DOCUMENT_MCP_APPS).filter((n) => ctx.lock.parts[n]).length
+    : EXPECTED_CLAUDE_MCP_COUNT;
+  const countNote = claudeCount === expected
     ? ''
-    : ` (클로드 명시 등록 ${claudeCount}개 — 기대값 ${EXPECTED_CLAUDE_MCP_COUNT}개)`;
+    : ` (클로드 명시 등록 ${claudeCount}개 — 기대값 ${expected}개)`;
   const detail = `${results.length}개 중 통과 ${results.length - fail.length - pendingList.length}개`
     + `${pendingList.length ? ` · 대기 ${pendingList.length}개(${pendingList.map((r) => `${r.name}: ${r.detail}`).join(' / ')})` : ''}`
     + `${fail.length ? ` · 실패 ${fail.length}개(${fail.map((r) => `${r.name}: ${r.detail}`).join(' / ')})` : ''}`
@@ -444,7 +462,7 @@ export async function checkHooks(ctx) {
   const root = ctx.root;
   const python = resolveExe(ctx, 'python').path;
   const results = [];
-  for (const spec of HOOK_FILES) {
+  for (const spec of isWin(ctx) ? HOOK_FILES : HOOK_FILES_POSIX) {
     const file = path.join(root, ...spec.rel);
     const name = spec.rel[spec.rel.length - 1];
     if (!exists(fs, file)) {
@@ -537,6 +555,7 @@ export function checkConfig(ctx) {
 export async function resolveDesktopDir(ctx, { desktopDir = null } = {}) {
   if (desktopDir) return desktopDir;
   if (ctx.desktopDir) return ctx.desktopDir;
+  if (!isWin(ctx)) return null; // macOS 판은 바탕화면을 쓰지도 읽지도 않는다(checkDesktop)
   // 15초는 느린 PC 의 파워셸 기동에 모자랐다(2026-09-16 VM S01: "바탕화면 경로를 찾지 못해 목록 검사만 함").
   const res = await runExe(ctx, 'powershell', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"], { timeoutMs: SYNTAX_TIMEOUT_MS });
   const line = String(res.out ?? '').trim().split(/\r?\n/)[0] ?? '';
@@ -584,7 +603,9 @@ export async function checkDesktop(ctx, opts = {}) {
   const fs = fsOf(ctx);
   const root = ctx.root;
   const since = installStartedAt(ctx.receipt);
-  const dir = await resolveDesktopDir(ctx, opts);
+  // macOS(D-M10): 바로가기는 ~/Applications 의 앱이라 바탕화면에 아무것도 쓰지 않는다. 그리고 바탕화면
+  // 목록을 읽는 것만으로도 터미널에 「파일 접근」 허락 창이 뜰 수 있어(TCC) 목록 검사는 하지 않는다.
+  const dir = isWin(ctx) || opts.desktopDir || ctx.desktopDir ? await resolveDesktopDir(ctx, opts) : null;
   const allowed = allowedDesktopFiles(root);
   const strays = [];
   // 설치 중에 새로 생긴 폴더 — IRIS 는 바탕화면에 폴더를 만들지 않으므로(바로가기 .lnk 하나뿐,
@@ -642,11 +663,25 @@ export async function checkDesktop(ctx, opts = {}) {
     if (dirLower && lower.startsWith(dirLower)) return true;
     return Boolean(homeLower && lower.startsWith(homeLower) && /[\\/]desktop[\\/]/i.test(abs));
   };
+  // macOS 의 허용된 바깥 자리(설계-macOS D-M08~10): 셸 프로필의 PATH 덩어리, 로그온 자동 시작 plist,
+  // ~/Applications 의 IRIS 앱. Windows 의 사용자 환경변수·Run 키·바탕화면 바로가기 자리다.
+  const macHome = isWin(ctx) ? null : (ctx.env?.HOME ?? process.env.HOME ?? null);
+  const isAllowedMacOutside = (abs) => {
+    if (!macHome) return false;
+    const h = path.resolve(macHome);
+    const ok = [
+      path.join(h, '.zprofile'), path.join(h, '.bash_profile'),
+      path.join(h, 'Library', 'LaunchAgents', 'com.iris-workspace.relay.plist'),
+    ];
+    if (ok.includes(abs)) return true;
+    const apps = path.join(h, 'Applications') + path.sep;
+    return abs.startsWith(apps) && /^[^/]+\.app(\/|$)/.test(abs.slice(apps.length));
+  };
   const seenOutside = new Set();
   for (const stageId of SETUP_STAGE_IDS) {
     for (const p of recordedPaths(ctx.receipt?.setup?.[stageId]?.recorded)) {
       const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(root, p);
-      if (abs.toLowerCase().startsWith(rootLower) || fromPackage(abs) || isAllowedShortcut(abs)) continue;
+      if (abs.toLowerCase().startsWith(rootLower) || fromPackage(abs) || isAllowedShortcut(abs) || isAllowedMacOutside(abs)) continue;
       const key = `${stageId}:${abs.toLowerCase()}`;
       if (seenOutside.has(key)) continue;
       seenOutside.add(key);
@@ -662,7 +697,9 @@ export async function checkDesktop(ctx, opts = {}) {
     : '';
   const detail = problems.length
     ? problems.join(' / ')
-    : `바탕화면 새 항목 0건(허용: ${allowed[0]}) · 단계가 남긴 경로 전부 IRIS 폴더 안${dir ? '' : ' (바탕화면 경로를 찾지 못해 목록 검사만 함)'}${folderNote}`;
+    : isWin(ctx) || dir
+      ? `바탕화면 새 항목 0건(허용: ${allowed[0]}) · 단계가 남긴 경로 전부 IRIS 폴더 안${dir ? '' : ' (바탕화면 경로를 찾지 못해 목록 검사만 함)'}${folderNote}`
+      : '단계가 남긴 경로 전부 IRIS 폴더 안(허용된 바깥 자리: 셸 프로필·로그온 자동 시작·응용 프로그램의 IRIS 앱) · macOS 판은 바탕화면에 쓰지 않음';
   return item('desktop', 6, '바탕화면 쓰기 0건·폴더 밖 쓰기 없음', problems.length ? 'fail' : 'pass', detail, { strays, userFolders, outside, desktop: Boolean(dir) });
 }
 
@@ -779,6 +816,20 @@ export function checkReceiptIdempotent(ctx) {
 export function checkEdge(ctx) {
   const pre = ctx?.precheck?.recorded ?? ctx?.precheck ?? {};
   const present = pre?.edge?.present;
+  if (!isWin(ctx)) {
+    // macOS(D-M17): 브라우저 조작 채널은 Chrome → Edge. 결과 칸 이름(edge)은 그대로 쓴다.
+    const label = '브라우저 조작용 브라우저(Chrome·Edge)';
+    if (present === true) {
+      const which = pre.edge.channel === 'msedge' ? 'Edge' : 'Chrome';
+      return item('edge', 9, label, 'pass', `${which}이(가) 있어 브라우저 조작을 바로 쓸 수 있습니다.`);
+    }
+    // 없으면 ⑦ 이 Chrome for Testing 을 받는다(D-M17 개정 2026-10-28) — ⑦ 이 성공하면 인수 문서의 대기에서 빠진다.
+    return item('edge', 9, label, 'pending',
+      present === false
+        ? 'Chrome·Edge 를 찾지 못했습니다 — 다음 ⑦ 단계가 브라우저 조작용 Chrome for Testing 을 내려받아 켭니다.'
+        : '브라우저 유무를 확인하지 못했습니다 — 다음 ⑦ 단계가 브라우저 조작용 Chrome for Testing 을 내려받아 켭니다.',
+      { pendingCapability: { capability: '브라우저 조작(Playwright)', reason: 'Chrome·Edge 브라우저를 찾지 못함', howToEnable: '⑦ 단계가 Chrome for Testing 을 받으면 켜집니다 — 받지 못했으면 Chrome 을 설치하세요' } });
+  }
   if (present === true) {
     return item('edge', 9, '엣지 브라우저(브라우저 조작)', 'pass', '엣지가 있어 브라우저 조작을 바로 쓸 수 있습니다.');
   }
@@ -881,34 +932,42 @@ export async function checkRelayRoute(ctx, {
   if (receiptUrl !== baseUrl) problems.push(`영수증 env.ANTHROPIC_BASE_URL=${receiptUrl ?? '없음'}`);
 
   const readText = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
-  const setLine = `ANTHROPIC_BASE_URL=${baseUrl}`;
-  const shim = readText(shimPath(root, 'claude.cmd'));
+  // .cmd 는 `set "ANTHROPIC_BASE_URL=…"`, macOS sh 는 `export ANTHROPIC_BASE_URL="…"`.
+  const win = isWin(ctx);
+  const setLine = win ? `ANTHROPIC_BASE_URL=${baseUrl}` : `ANTHROPIC_BASE_URL="${baseUrl}"`;
+  const claudeShimName = shimFileName('claude', { platform: platformOf(ctx) });
+  const summonName = win ? '소환하기.cmd' : '소환하기.command';
+  const shim = readText(shimPath(root, claudeShimName));
   // 신규 설치의 ⑥ 시점에는 claude.cmd 심이 **아직 없는 게 정상**이다: claude CLI 는 ⑦(온라인)에서
   // 내려받고, env 단계는 그때까지 심을 미루며 receipt 에 claudeShim.written=false 로 적는다
   // (2026-09-18 다섯 번째 실제 PC: 2.0.17 신규 설치가 이 검사의 「심이 없음」으로 ⑥ 에서 막힘 —
   // 2.0.16 부터 모든 신규 설치가 그랬고, 업데이트 설치만 옛 심이 있어 지나갔다). 미룬 심은 대기.
   const claudeShimDeferred = [ctx.receipt?.setup?.env?.recorded, ctx.receipt?.setup?.unpack?.recorded]
     .some((r) => r?.claudeShim?.written === false);
-  const claudeCliPresent = (() => { try { return fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', 'claude.cmd')); } catch { return false; } })();
+  const claudeCliPresent = (() => { try { return fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', win ? 'claude.cmd' : 'claude')); } catch { return false; } })();
   if (shim == null) {
     if (claudeShimDeferred || !claudeCliPresent) {
       wiring.shim = 'deferred';
-      notes.push('claude.cmd 심은 ⑦ 계정 연결에서 claude 를 내려받은 뒤 만들어집니다 — 그때 다시 잽니다');
+      notes.push(`${claudeShimName} 심은 ⑦ 계정 연결에서 claude 를 내려받은 뒤 만들어집니다 — 그때 다시 잽니다`);
     } else {
       wiring.shim = null;
-      problems.push('claude.cmd 심이 없음');
+      problems.push(`${claudeShimName} 심이 없음`);
     }
   } else {
     wiring.shim = shim.includes(setLine);
-    if (!shim.includes(setLine)) problems.push('claude.cmd 심에 중계기 주소가 없음');
+    if (!shim.includes(setLine)) problems.push(`${claudeShimName} 심에 중계기 주소가 없음`);
   }
 
-  const summon = readText(path.join(root, '소환하기.cmd'));
+  const summon = readText(path.join(root, summonName));
   wiring.summon = summon == null ? null : summon.includes(setLine);
-  if (summon == null) problems.push('소환하기.cmd 가 없음');
-  else if (!summon.includes(setLine)) problems.push('소환하기.cmd 에 중계기 주소가 없음');
+  if (summon == null) problems.push(`${summonName} 가 없음`);
+  else if (!summon.includes(setLine)) problems.push(`${summonName} 에 중계기 주소가 없음`);
 
-  if (ctx.receipt?.env?.applied === false) {
+  if (!win) {
+    // D-M08: macOS 는 전역 변수를 걸지 않는다 — 심·소환하기·IRIS 창 실행기가 스스로 건다(위 두 곳이 그 증거).
+    wiring.userEnv = 'shims';
+    notes.push('macOS 는 사용자 전역 변수 대신 심이 중계기 주소를 건다');
+  } else if (ctx.receipt?.env?.applied === false) {
     wiring.userEnv = 'skipped';
     notes.push('사용자 환경변수는 연습(no-user-env)이라 기록만');
   } else {
@@ -1043,12 +1102,14 @@ export async function checkRelayCodex(ctx, {
 
   // ⓐ 배선
   const wiring = {};
-  const shim = readText(shimPath(root, 'codex.cmd'));
-  if (shim == null) { wiring.shim = null; problems.push('codex.cmd 심이 없음'); }
+  const codexShimName = shimFileName('codex', { platform: platformOf(ctx) });
+  const shim = readText(shimPath(root, codexShimName));
+  if (shim == null) { wiring.shim = null; problems.push(`${codexShimName} 심이 없음`); }
   else {
-    const stale = CODEX_STALE_PROXY_KEYS.filter((k) => new RegExp(`^\\s*set\\s+"?${k}=`, 'mi').test(shim));
+    const setter = isWin(ctx) ? 'set\\s+"?' : 'export\\s+';
+    const stale = CODEX_STALE_PROXY_KEYS.filter((k) => new RegExp(`^\\s*${setter}${k}=`, 'mi').test(shim));
     wiring.shim = stale.length === 0;
-    if (stale.length) problems.push(`codex.cmd 심에 옛 가로채기 줄(${stale.join(', ')})이 남아 있음 — 코덱스가 연결을 5번 다시 시도하거나 실패합니다`);
+    if (stale.length) problems.push(`${codexShimName} 심에 옛 가로채기 줄(${stale.join(', ')})이 남아 있음 — 코덱스가 연결을 5번 다시 시도하거나 실패합니다`);
   }
   const toml = readText(path.join(root, '_agent', 'codex', 'config.toml'));
   if (toml == null) { wiring.provider = null; problems.push('코덱스 config.toml 이 없음'); }

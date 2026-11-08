@@ -16,6 +16,11 @@
 // 스크립트가 띄운 로그인 PID 만 PID 로 끝낸다(이름 기반 종료 없음). 모델 호출 0.
 //
 // Usage: node verify/login-probe.mjs        인터넷이 필요하다(약 230 MB, 이 PC 실측 16초)
+//        node verify/login-probe.mjs --no-online   ③ 만(받기·로그인 없이)
+//
+// macOS(docs/설계-macOS.md M5): 잠금표는 macOS 판(lock.json + 덧씌움), node 폴더는 bin/node 의 위 폴더,
+// 자기 로그인 PID 는 프로세스 그룹째 끝낸다. ② 는 진짜 Claude Code 가 로그인을 띄우므로 **사람이 지켜보며**
+// 돌린다 — macOS 의 Claude Code 는 키체인을 쓰고, 같은 Mac 의 실제 계정 항목에 닿을 수 있다(미결 ①).
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -24,10 +29,13 @@ import { fileURLToPath } from 'node:url';
 import { installClaude, readLock, startLogin, loginStatus } from '../installer/lib/online.mjs';
 import { startPipedLogin, pipedLoginInfo } from '../installer/lib/login.mjs';
 import { writeReceipt, newReceiptV2 } from '../installer/lib/receipt.mjs';
+import { loadLockForTarget } from '../build/lock-target.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WORK = path.join(REPO, '_build', 'login-probe');
-const nodeDir = path.dirname(process.execPath);
+const MAC = process.platform === 'darwin';
+// installer 의 nodeDir 약속: Windows = node.exe 가 든 폴더, macOS = bin/node 를 가진 폴더.
+const nodeDir = MAC ? path.dirname(path.dirname(process.execPath)) : path.dirname(process.execPath);
 const t0 = Date.now();
 const log = (m) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${m}`);
 const results = [];
@@ -44,7 +52,7 @@ function freshRoot(name) {
 
 async function probeDownloadAndLogin() {
   const { root, tc } = freshRoot('online');
-  const lock = readLock({ zipRoot: REPO });
+  const lock = MAC ? loadLockForTarget('darwin-arm64').lock : readLock({ zipRoot: REPO });
   const want = lock?.parts?.claude ?? {};
   log(`lock claude version=${want.version} bytes=${want.bytes}`);
   let last = -1;
@@ -76,8 +84,11 @@ async function probeDownloadAndLogin() {
     judge('② 자동 복귀 로그인 주소', false, `startPipedLogin threw code=${e?.code} ${e?.message}`);
   } finally {
     if (pid) {
-      try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); log(`ended own login pid=${pid}`); }
-      catch { log(`own login pid=${pid} already gone`); }
+      try {
+        if (MAC) { try { process.kill(-pid, 'SIGKILL'); } catch { process.kill(pid, 'SIGKILL'); } }
+        else execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+        log(`ended own login pid=${pid}`);
+      } catch { log(`own login pid=${pid} already gone`); }
     }
   }
 }
@@ -96,7 +107,8 @@ async function probeCliMissing() {
 }
 
 try {
-  await probeDownloadAndLogin();
+  if (process.argv.includes('--no-online')) log('--no-online: ①② 건너뜀(받기·로그인 없음)');
+  else await probeDownloadAndLogin();
   await probeCliMissing();
 } finally {
   await new Promise((r) => setTimeout(r, 500));

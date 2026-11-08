@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pack, renderNotices, buildPackManifest } from '../build/pack.mjs';
 import { sha256File, verifyManifest } from '../lib/manifest.mjs';
-import { extractZip } from '../lib/zip.mjs';
+import { extractZip, TAR } from '../lib/zip.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -292,7 +292,7 @@ test('pack: zip entries have no ./ prefix and Windows Explorer can list the arch
   });
 
   const { execFileSync } = await import('node:child_process');
-  const listing = execFileSync('C:\\Windows\\System32\\tar.exe', ['-tf', zipPath], { encoding: 'latin1' })
+  const listing = execFileSync(TAR, ['-tf', zipPath], { encoding: 'latin1' })
     .split(/\r?\n/).filter(Boolean);
   assert.ok(listing.length >= 4, `unexpectedly short listing: ${listing.join(', ')}`);
   const dotted = listing.filter((n) => n === './' || n.startsWith('./') || n.startsWith('/'));
@@ -372,6 +372,9 @@ test('pack: zip tree is 설계 3-1 -- 설치가 안 되면.txt at the root (BOM 
     assert.ok(fs.existsSync(at('payload', 'policy', f)), `payload/policy/${f} missing`);
   }
   assert.ok(!fs.existsSync(at('payload', 'policy', 'README.md')), 'payload-src/policy/README.md is a note to us; it must not ship');
+  // The Windows zip's root-AGENTS.md is the source byte for byte -- the macOS policy patch must not leak in.
+  assert.ok(fs.readFileSync(at('payload', 'policy', 'root-AGENTS.md')).equals(fs.readFileSync(path.join(REPO, 'payload-src', 'policy', 'root-AGENTS.md'))),
+    'Windows payload/policy/root-AGENTS.md must be a byte copy of payload-src/policy/root-AGENTS.md');
   assert.ok(fs.existsSync(at('payload', 'policy', 'licenses', 'README.md')), 'policy/licenses/README.md explains the folder to the user and must ship');
   assert.ok(fs.existsSync(at('payload', 'policy', 'licenses', 'NOTICES.md')));
   assert.ok(fs.existsSync(at('payload', 'policy', 'licenses', 'node-LICENSE')), 'harvested licences must survive the policy copy');
@@ -609,4 +612,39 @@ test('pack: contentFingerprint CHANGES when an installer\\ file changes (manifes
 
   assert.notEqual(after.contentFingerprint, before.contentFingerprint,
     'a changed installer file must invalidate the 시험행렬 rows');
+});
+
+test('pack (macOS): zip root has IRIS-설치.command and IRIS-삭제.command, both executable after unzip', { skip: process.platform === 'win32' }, async () => {
+  const installerDir = path.join(tmp, 'fake-installer-mac');
+  fs.mkdirSync(installerDir, { recursive: true });
+  fs.writeFileSync(path.join(installerDir, 'IRIS-설치.command'), '#!/bin/sh\n', { mode: 0o644 });
+  fs.writeFileSync(path.join(installerDir, 'IRIS-삭제.command'), '#!/bin/sh\n', { mode: 0o644 });
+  const libDir = path.join(tmp, 'fake-lib-mac');
+  fs.mkdirSync(libDir, { recursive: true });
+  for (const n of ['run.mjs', 'zip.mjs', 'net.mjs']) fs.writeFileSync(path.join(libDir, n), 'export {};\n');
+  const lockFile = path.join(tmp, 'fake-lock-mac.json');
+  fs.writeFileSync(lockFile, JSON.stringify({ package: { version: '0.0.9' }, parts: {} }));
+  const stageDir = path.join(tmp, 'stage-mac');
+  fs.mkdirSync(path.join(stageDir, 'payload'), { recursive: true });
+  fs.writeFileSync(path.join(stageDir, 'payload', 'manifest.json'), '{}');
+  const { zipPath } = await pack({
+    stageDir, outDir: path.join(tmp, 'out-mac'), manifest: { package: { version: '0.0.9' } },
+    installerDir, libDir, lockFile, patchRulesFile: null, target: 'darwin-arm64',
+  });
+  assert.match(path.basename(zipPath), /^IRIS-Setup-macOS-arm64_v0\.0\.9_/);
+  const extractDir = path.join(tmp, 'extracted-mac');
+  await extractZip(zipPath, extractDir);
+  for (const n of ['IRIS-설치.command', 'IRIS-삭제.command']) {
+    const f = path.join(extractDir, n);
+    assert.ok(fs.existsSync(f), `zip root missing ${n}`);
+    assert.equal(fs.statSync(f).mode & 0o111, 0o111, `${n} must keep its exec bit through the zip`);
+  }
+  assert.equal(fs.existsSync(path.join(extractDir, 'IRIS-삭제.cmd')), false, 'no Windows launcher at the macOS zip root');
+  // D-M21: the macOS zip's root-AGENTS.md carries the Mac lines (patches/policy/rules.darwin.json).
+  const agents = fs.readFileSync(path.join(extractDir, 'payload', 'policy', 'root-AGENTS.md'), 'utf8');
+  assert.match(agents, /문서 분담\(macOS\)/);
+  assert.match(agents, /`ieumoffice`/);
+  assert.match(agents, /MCP로 등록하지 않고/);
+  assert.match(agents, /Chrome → Edge → 설치기가 받은 Chrome for Testing/);
+  assert.doesNotMatch(agents, /%TEMP%|_agent\\claude\\tools/);
 });

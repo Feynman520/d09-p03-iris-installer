@@ -22,6 +22,9 @@ r"""PreToolUse guard: IRIS 경로 실존 가드 (전역 규칙).
      허용 새 루트 파일 = ROOT_ALLOW_NEW(전역 문서류). 새 루트 문서가 정말 필요하면 여기에 추가.
 면제: `_trash\`, `_agent\` 아래 경로(격리물·세션 기록에는 유령 이름이 남아 있을 수 있음).
 
+macOS(2026-10-27, P03 docs/설계-macOS.md M5): IRIS 루트 기본값 = ~/IRIS. 드라이브 문자 경로에 더해
+루트 아래 POSIX 절대경로와 그 `~/`·`$HOME/` 표기를 같은 규칙으로 본다. Windows 에서는 이전과 글자까지 같다.
+
 출력: 차단 시 hookSpecificOutput.permissionDecision=deny JSON 한 줄. 그 외 아무것도 출력하지 않는다.
 오류가 나면 조용히 통과시킨다(가드가 정상 작업을 막아서는 안 된다).
 """
@@ -30,15 +33,30 @@ import os
 import re
 import sys
 
-# IRIS 루트. 설치 위치는 <시스템 드라이브>\IRIS로 고정이며, 시험용으로만 IRIS_ROOT로 덮어쓴다.
-IRIS_ROOT = os.environ.get("IRIS_ROOT") or os.path.join(
-    os.environ.get("SystemDrive", "C:") + os.sep, "IRIS"
+# IRIS 루트. 설치 위치는 <시스템 드라이브>\IRIS(macOS 는 ~/IRIS)로 고정이며, 시험용으로만 IRIS_ROOT로 덮어쓴다.
+WINDOWS = os.name == "nt"
+HOME = os.path.expanduser("~")
+IRIS_ROOT = os.environ.get("IRIS_ROOT") or (
+    os.path.join(os.environ.get("SystemDrive", "C:") + os.sep, "IRIS") if WINDOWS else os.path.join(HOME, "IRIS")
 )
+POSIX_ROOT = IRIS_ROOT.rstrip("/")
 EXEMPT_TOP = {"_trash", "_agent"}
 CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 CODE_DIR = re.compile(r"^(〖[^〗]*〗)?[RDPST]\d")
 PATH_IN_TEXT = re.compile(
     r"(?:[A-Za-z]:[\\/]{1,4}IRIS|/[A-Za-z]/IRIS)[\\/]{1,4}([^\"'\r\n;|&<>]*)"
+)
+
+def _home_forms(root: str):
+    """루트가 홈 아래면 ~/·$HOME/·${HOME}/ 표기(정규식 조각)도 같은 루트로 본다."""
+    if WINDOWS or not root.startswith(HOME.rstrip("/") + "/"):
+        return []
+    rel = re.escape(root[len(HOME.rstrip("/")) + 1:])
+    return [r"~/" + rel, r"\$HOME/" + rel, r"\$\{HOME\}/" + rel]
+
+
+PATH_IN_TEXT_POSIX = re.compile(
+    "(?:" + "|".join([re.escape(POSIX_ROOT)] + _home_forms(POSIX_ROOT)) + r")/([^\"'\r\n;|&<>]*)"
 )
 CREATE_VERBS = re.compile(
     r"(?i)(\bmkdir\b|\bmd\b|New-Item|\bni\b|\bmv\b|\bcp\b|Move-Item|Copy-Item|Rename-Item|"
@@ -123,9 +141,19 @@ def strip_q(t: str) -> str:
     return t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t
 
 
+def expand_home(t: str) -> str:
+    """macOS: ~/·$HOME/·${HOME}/ 로 시작하는 경로를 홈 절대경로로. Windows 는 그대로."""
+    if WINDOWS:
+        return t
+    for pre in ("~/", "$HOME/", "${HOME}/"):
+        if t.startswith(pre):
+            return os.path.join(HOME, t[len(pre):])
+    return HOME if t in ("~", "$HOME", "${HOME}") else t
+
+
 def resolve(t: str, cur):
     """저장 대상 t → IRIS 상대 조각 목록, 판정 불가·IRIS 밖이면 None."""
-    t = strip_q(t.strip()).rstrip(")")
+    t = expand_home(strip_q(t.strip()).rstrip(")"))
     if not t or t.lower() in NULL_TARGETS or t[0] in "$&~%(":
         return None
     segs = norm_rel(t)
@@ -240,7 +268,7 @@ def check_root_shell(cmd: str, cwd_raw: str):
             if not rest:
                 cur = OUT
             else:
-                tgt = strip_q(rest[0])
+                tgt = expand_home(strip_q(rest[0]))
                 segs = norm_rel(tgt)
                 if segs is not None:
                     cur = segs
@@ -285,9 +313,17 @@ def norm_rel(raw: str):
     s = re.sub(r"\\{2,}", "\\\\", s)
     m = re.match(r"(?i)^(?:[A-Za-z]:\\IRIS|\\[A-Za-z]\\IRIS)(?:\\(.*))?$", s)
     if not m:
-        return None
+        return None if WINDOWS else norm_rel_posix(raw)
     rest = m.group(1) or ""
     return [seg.strip() for seg in rest.split("\\") if seg.strip()]
+
+
+def norm_rel_posix(raw: str):
+    """macOS: `<루트>/a/b`(·`~/IRIS/a/b`) → ['a', 'b']. 루트 밖이면 None."""
+    s = re.sub(r"/{2,}", "/", expand_home(raw.strip()))
+    if s != POSIX_ROOT and not s.startswith(POSIX_ROOT + "/"):
+        return None
+    return [seg.strip() for seg in s[len(POSIX_ROOT):].split("/") if seg.strip()]
 
 
 def deny(reason: str):
@@ -382,7 +418,8 @@ def main():
             deny(r)
             return
         has_verb = bool(CREATE_VERBS.search(cmd))
-        for m in PATH_IN_TEXT.finditer(cmd):
+        matches = list(PATH_IN_TEXT.finditer(cmd)) + ([] if WINDOWS else list(PATH_IN_TEXT_POSIX.finditer(cmd)))
+        for m in matches:
             whole = m.group(0)
             segs = norm_rel(whole)
             if not segs:

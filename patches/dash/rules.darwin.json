@@ -1,0 +1,44 @@
+{
+  "$comment": [
+    "TeamClaude 대시보드(dash 부품)의 macOS 패치 (docs/설계-macOS.md D-M14). macOS 잠금표 덮어쓰기(lock.darwin-arm64.json)의 dash.patches 가 가리킨다.",
+    "형식은 patches/teamclaude/rules.json 과 같다(build/patch-teamclaude.mjs applyPatches): find 는 정확히 count(기본 1)번 있어야 하고, 아니면 빌드가 멈춘다.",
+    "바꾸는 줄은 모두 process.platform 으로 갈린다 -- Windows 에서는 원래 줄과 같은 일을 한다(원본에 그대로 합쳐도 된다)."
+  ],
+  "files": [
+    {
+      "path": "ensure-proxy.mjs",
+      "replace": [
+        {
+          "find": "const SIBLING_MANAGE = path.join(SIBLING_TC, 'teamclaude-manage.ps1');",
+          "with": "// macOS: 관리 스크립트는 node 판(teamclaude-manage.mjs) — 지금 이 node 로 돌린다.\nconst SIBLING_MANAGE = path.join(SIBLING_TC, process.platform === 'win32' ? 'teamclaude-manage.ps1' : 'teamclaude-manage.mjs');"
+        },
+        {
+          "find": "      child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', MANAGE_PS1, '-Action', action, ...MANAGE_EXTRA],\n        { cwd: os.homedir(), windowsHide: true, stdio });",
+          "with": "      child = process.platform === 'win32'\n        ? spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', MANAGE_PS1, '-Action', action, ...MANAGE_EXTRA],\n          { cwd: os.homedir(), windowsHide: true, stdio })\n        : spawn(process.execPath, [MANAGE_PS1, '-Action', action, ...MANAGE_EXTRA], { cwd: os.homedir(), stdio });"
+        }
+      ]
+    },
+    {
+      "path": "launch.mjs",
+      "replace": [
+        {
+          "find": "  spawn('cmd.exe', ['/c', 'start', '', `http://127.0.0.1:${d.port}/`], { detached: true, stdio: 'ignore', windowsHide: true }).unref();",
+          "with": "  const url = `http://127.0.0.1:${d.port}/`;\n  (process.platform === 'win32'\n    ? spawn('cmd.exe', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true })\n    : spawn('/usr/bin/open', [url], { detached: true, stdio: 'ignore' })).unref();"
+        }
+      ]
+    },
+    {
+      "path": "server.mjs",
+      "replace": [
+        {
+          "find": "const MANAGE_PS1 = path.join(os.homedir(), '.config', 'teamclaude-manage.ps1');",
+          "with": "// macOS: 형제 폴더의 node 판 관리 스크립트(설치 패키지가 늘 놓는다).\nconst MANAGE_PS1 = process.platform === 'win32'\n  ? path.join(os.homedir(), '.config', 'teamclaude-manage.ps1')\n  : path.join(HERE, '..', 'teamclaude', 'teamclaude-manage.mjs');"
+        },
+        {
+          "find": "    const r = await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', MANAGE_PS1, 'restart'], { timeoutMs: 60000 });",
+          "with": "    const r = process.platform === 'win32'\n      ? await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', MANAGE_PS1, 'restart'], { timeoutMs: 60000 })\n      : await run(process.execPath, [MANAGE_PS1, 'restart', '--node', process.execPath, '--entry', TC_INDEX], { timeoutMs: 60000, env: TC_ENV });"
+        }
+      ]
+    }
+  ]
+}

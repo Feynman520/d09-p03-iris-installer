@@ -16,8 +16,10 @@ const freshRoot = (label) => { const r = path.join(tmp, label, 'NOVA'); fs.mkdir
 test('project keys: Claude uses forward slashes as-is, Codex lower-case with backslashes', () => {
   assert.equal(claudeProjectKey('C:\\NOVA'), 'C:/NOVA');
   assert.equal(claudeProjectKey('C:\\NOVA\\'), 'C:/NOVA');
-  assert.equal(codexProjectKey('C:\\NOVA'), 'c:\\nova');
-  assert.equal(codexProjectKey('C:/NOVA/'), 'c:\\nova');
+  assert.equal(codexProjectKey('C:\\NOVA', { platform: 'win32' }), 'c:\\nova');
+  assert.equal(codexProjectKey('C:/NOVA/', { platform: 'win32' }), 'c:\\nova');
+  // macOS: 경로 그대로(대소문자·슬래시 유지), 끝 슬래시만 뗀다.
+  assert.equal(codexProjectKey('/Users/A b/IRIS/', { platform: 'darwin' }), '/Users/A b/IRIS');
 });
 
 test('claude: fresh home -> .claude.json created with onboarding done + folder trusted', () => {
@@ -78,7 +80,7 @@ test('claude: an already-completed onboarding version is never overwritten; unre
   assert.equal(fs.readFileSync(file2, 'utf8'), '{ not json', 'a broken file is never rewritten');
 });
 
-test('codex: fresh home -> config.toml created; existing file -> table appended once; existing trust -> unchanged', () => {
+test('codex: fresh home -> config.toml created; existing file -> table appended once; existing trust -> unchanged', { skip: process.platform !== 'win32' && 'C:\\ 경로 표기 — macOS 판은 아래 시험' }, () => {
   const root = freshRoot('x-fresh');
   const r = seedCodexFirstRun(root);
   assert.equal(r.written, 'created');
@@ -101,6 +103,15 @@ test('codex: fresh home -> config.toml created; existing file -> table appended 
   fs.mkdirSync(path.dirname(file3), { recursive: true });
   fs.writeFileSync(file3, `[projects."${codexProjectKey(root3).replace(/\\/g, '\\\\')}"]\ntrust_level = "trusted"\n`, 'utf8');
   assert.equal(seedCodexFirstRun(root3).written, 'unchanged');
+});
+
+test('codex(macOS): 신뢰 표는 경로 그대로 한 번만 더한다', { skip: process.platform === 'win32' && 'POSIX 경로' }, () => {
+  const root = freshRoot('mac-trust');
+  const r = seedCodexFirstRun(root, { platform: 'darwin' });
+  assert.equal(r.written, 'created');
+  const text = fs.readFileSync(codexConfigTomlPath(root), 'utf8');
+  assert.equal(text, `[projects.'${root}']\ntrust_level = "trusted"\n`);
+  assert.equal(seedCodexFirstRun(root, { platform: 'darwin' }).written, 'unchanged');
 });
 
 test('seedFirstRun: seeds only the agents asked for', () => {

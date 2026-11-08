@@ -1,3 +1,4 @@
+import './_scratch-workdir.mjs'; // macOS: keep server.log out of the real ~/Library (see that file)
 import { test, after } from 'node:test'; import assert from 'node:assert/strict';
 import fs from 'node:fs'; import path from 'node:path'; import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -123,7 +124,7 @@ test('firstRequestText is a single line (the prompt is typed into a terminal)', 
 // ---------------------------------------------------------------------------
 
 test('faceLauncherContent: ASCII-only, CRLF, chcp 65001, %~dp0-relative, no absolute soul path', () => {
-  const content = faceLauncherContent();
+  const content = faceLauncherContent({ platform: 'win32' });
 
   assert.ok(/^[\x20-\x7e\r\n\t]*$/.test(content), 'launcher content must be ASCII-only');
   // Every LF is part of a CRLF pair and there is no bare CR.
@@ -156,10 +157,10 @@ test('writeFaceLauncher writes "<name> Face.cmd" at the soul root and a desktop 
   const calls = [];
   const runPs = async (script) => { calls.push(script); return { code: 0, out: '', err: '' }; };
 
-  const res = await writeFaceLauncher(root, 'NOVA', { desktopDir, runPs });
+  const res = await writeFaceLauncher(root, 'NOVA', { desktopDir, runPs, platform: 'win32' });
 
   assert.equal(res.cmdPath, path.join(root, 'NOVA Face.cmd'));
-  assert.equal(fs.readFileSync(res.cmdPath, 'utf8'), faceLauncherContent());
+  assert.equal(fs.readFileSync(res.cmdPath, 'utf8'), faceLauncherContent({ platform: 'win32' }));
   // Desktop shortcut is just "<name>.lnk" -- "IRIS" on a real install.
   assert.equal(res.lnkPath, path.join(desktopDir, 'NOVA.lnk'));
   assert.ok(!calls[0].includes('Face.lnk'), 'the shortcut name must not carry the internal "Face" word');
@@ -178,7 +179,7 @@ test('writeFaceLauncher: a failing shortcut is reported, not fatal (the .cmd sti
   fs.mkdirSync(desktopDir, { recursive: true });
   const runPs = async () => ({ code: 1, out: '', err: 'access denied' });
 
-  const res = await writeFaceLauncher(root, 'NOVA', { desktopDir, runPs });
+  const res = await writeFaceLauncher(root, 'NOVA', { desktopDir, runPs, platform: 'win32' });
   assert.ok(fs.existsSync(res.cmdPath));
   assert.equal(res.shortcut.ok, false);
   assert.ok(String(res.shortcut.detail).includes('access denied'));
@@ -224,7 +225,7 @@ test('launchFace spawns the bundled node on <tools>\\face\\launch.mjs --first-se
     return { pid: 4242, unref() {} };
   };
 
-  const res = launchFace({ root, spec: specPath, spawnFn, port: 3458 });
+  const res = launchFace({ root, spec: specPath, spawnFn, port: 3458, platform: 'win32' });
   assert.equal(res.pid, 4242);
   assert.equal(seen.length, 1);
   assert.equal(seen[0].exe, path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe'));
@@ -423,3 +424,46 @@ test('ui/index.html :root block is byte-identical to IRIS-Face app/style.css (st
 // 그래서 그 라우트를 겨눴던 시험 넷은 여기서 지웠다 — 이 파일에 남은 것은
 // `installer/lib/handoff.mjs` 자체의 시험이고, 그 모듈은 T17(relay 단계)이
 // 계속 쓴다. v2 서버의 라우트 시험은 `tests/server.test.mjs` 에 있다.
+
+// ---------------------------------------------------------------------------
+// macOS IRIS.app icon (docs/설계-macOS.md M5)
+// ---------------------------------------------------------------------------
+
+function fakeIco(sizes) {
+  // ICO with PNG-encoded images: just enough PNG (signature + marker) for the converter.
+  const pngs = sizes.map((s) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(`png${s}`)]));
+  const head = Buffer.alloc(6 + 16 * sizes.length);
+  head.writeUInt16LE(0, 0); head.writeUInt16LE(1, 2); head.writeUInt16LE(sizes.length, 4);
+  let off = head.length;
+  sizes.forEach((s, i) => {
+    const e = 6 + 16 * i;
+    head[e] = s === 256 ? 0 : s; head[e + 1] = s === 256 ? 0 : s;
+    head.writeUInt32LE(pngs[i].length, e + 8); head.writeUInt32LE(off, e + 12);
+    off += pngs[i].length;
+  });
+  return Buffer.concat([head, ...pngs]);
+}
+
+test('icoToIcns: PNG entries become 1x and @2x ICNS slots; header length is exact', async () => {
+  const { icoToIcns } = await import('../installer/lib/handoff.mjs');
+  const icns = icoToIcns(fakeIco([16, 32, 64, 128, 256]));
+  assert.equal(icns.toString('ascii', 0, 4), 'icns');
+  assert.equal(icns.readUInt32BE(4), icns.length);
+  const types = [];
+  for (let at = 8; at < icns.length; at += icns.readUInt32BE(at + 4)) types.push(icns.toString('ascii', at, at + 4));
+  assert.deepEqual(types.sort(), ['ic07', 'ic08', 'ic11', 'ic12', 'ic13', 'icp4', 'icp5', 'icp6'].sort());
+  assert.equal(icoToIcns(Buffer.from('not an ico')), null);
+});
+
+test('writeMacAppLauncher: with iris.ico the app gets Resources/AppIcon.icns + CFBundleIconFile; without it, no icon key', { skip: process.platform === 'win32' }, async () => {
+  const { writeMacAppLauncher } = await import('../installer/lib/handoff.mjs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-app-icon-'));
+  const ico = path.join(base, 'iris.ico'); fs.writeFileSync(ico, fakeIco([32, 128, 256]));
+  const withIcon = writeMacAppLauncher(path.join(base, 'IRIS'), 'IRIS', { appsDir: path.join(base, 'A'), iconIco: ico });
+  assert.equal(withIcon.icon, true);
+  assert.ok(fs.existsSync(path.join(withIcon.appPath, 'Contents', 'Resources', 'AppIcon.icns')));
+  assert.match(fs.readFileSync(path.join(withIcon.appPath, 'Contents', 'Info.plist'), 'utf8'), /<key>CFBundleIconFile<\/key><string>AppIcon<\/string>/);
+  const without = writeMacAppLauncher(path.join(base, 'IRIS'), 'IRIS', { appsDir: path.join(base, 'B'), iconIco: path.join(base, 'missing.ico') });
+  assert.equal(without.icon, false);
+  assert.doesNotMatch(fs.readFileSync(path.join(without.appPath, 'Contents', 'Info.plist'), 'utf8'), /CFBundleIconFile/);
+});

@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  checkNet, installClaude, installDocumentSkills, startLogin, loginStatus, startRelay,
+  checkNet, installClaude, installDocumentSkills, installPlaywrightBrowser, PLAYWRIGHT_BROWSER_PART, installIeumOffice, IEUMOFFICE_PART, startLogin, loginStatus, startRelay,
   claudeForwarderText, downloadToFile, githubArchiveUrl, archiveTopFolder, unsafeArchiveEntry,
   HOSTS, CODES, RESUME_SENTENCE,
 } from '../installer/lib/online.mjs';
@@ -152,7 +152,7 @@ test('checkNet: a 403 answer is reachable, a thrown request is blocked', async (
 test('installClaude: claude not chosen -> still installed, both shims (2.0.38 두 비서 항상 설치)', async () => {
   const root = tmpRoot('skip');
   const shimCalls = [];
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['chatgpt'],
     fetchFn: async (url) => (String(url).endsWith('manifest.json') ? manifestResponse(PAYLOAD_SHA) : fileResponse(PAYLOAD)),
     runFn: async () => ({ code: 0, out: `${VERSION} (Claude Code)`, err: '' }),
@@ -170,7 +170,7 @@ test('installClaude: the locked version is already there -> source:"existing", n
   const exe = toolsPath(root, 'claude', VERSION, 'claude.exe');
   fs.mkdirSync(path.dirname(exe), { recursive: true });
   fs.writeFileSync(exe, 'already here');
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     runFn: async () => ({ code: 0, out: `${VERSION} (Claude Code)`, err: '' }),
     fetchFn: async () => { throw new Error('must not fetch'); },
@@ -184,7 +184,7 @@ test('installClaude: the locked version is already there -> source:"existing", n
 test('installClaude: 출처 1 success -> manifest match, sha256 match, rename, shim, receipt', async () => {
   const root = tmpRoot('src1');
   const shimCalls = [];
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude', 'chatgpt'],
     fetchFn: async (url) => (String(url).endsWith('manifest.json') ? manifestResponse(PAYLOAD_SHA) : fileResponse(PAYLOAD)),
     runFn: async () => ({ code: 0, out: `${VERSION} (Claude Code)`, err: '' }),
@@ -199,7 +199,7 @@ test('installClaude: 출처 1 success -> manifest match, sha256 match, rename, s
   assert.equal(fs.readFileSync(exe).toString(), PAYLOAD.toString());
 
   const cmd = fs.readFileSync(toolsPath(root, 'claude', 'claude.cmd'), 'utf8');
-  assert.equal(cmd, claudeForwarderText(VERSION));
+  assert.equal(cmd, claudeForwarderText(VERSION, 'claude.exe', { platform: 'win32' }));
   assert.ok(cmd.includes('\r\n'), 'a .cmd must be CRLF');
   // eslint-disable-next-line no-control-regex
   assert.ok(/^[\x00-\x7F]*$/.test(cmd), 'a .cmd must be pure ASCII');
@@ -216,7 +216,7 @@ test('installClaude: 출처 1 success -> manifest match, sha256 match, rename, s
 test('installClaude: progress is reported for the download', async () => {
   const root = tmpRoot('progress');
   const seen = [];
-  await installClaude({
+  await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     fetchFn: async (url) => (String(url).endsWith('manifest.json') ? manifestResponse(PAYLOAD_SHA) : fileResponse(PAYLOAD)),
     runFn: async () => ({ code: 0, out: VERSION, err: '' }),
@@ -234,7 +234,7 @@ test('installClaude: manifest disagrees with the lock -> 출처 1 abandoned, 출
   const root = tmpRoot('mismatch');
   const logged = [];
   let downloaded = false;
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     log: (l) => logged.push(l),
     fetchFn: async (url) => {
@@ -261,7 +261,7 @@ test('installClaude: manifest disagrees with the lock -> 출처 1 abandoned, 출
 
 test('installClaude: checksum mismatch -> .part deleted, claude.exe never created, falls back', async () => {
   const root = tmpRoot('badsha');
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     fetchFn: async (url) => (String(url).endsWith('manifest.json')
       ? manifestResponse(PAYLOAD_SHA)
@@ -283,7 +283,7 @@ test('installClaude: checksum mismatch -> .part deleted, claude.exe never create
 
 test('installClaude: both sources fail -> E-ONLINE-CLAUDE with both reasons', async () => {
   const root = tmpRoot('bothfail');
-  const r = await installClaude({
+  const r = await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     fetchFn: async () => { throw new Error('ENOTFOUND downloads.claude.ai'); },
     npmInstall: async () => ({ code: 1, out: '', err: 'ECONNREFUSED registry.npmjs.org' }),
@@ -885,7 +885,7 @@ test('no user-facing message names the relay product', async () => {
     root, subscriptions: ['claude', 'chatgpt'], lock: LOCK, probe: async () => ({ reachable: false }),
   })).message);
 
-  messages.push((await installClaude({
+  messages.push((await installClaude({ platform: 'win32', 
     root, lock: LOCK, subscriptions: ['claude'],
     fetchFn: async () => { throw new Error('down'); },
     npmInstall: async () => ({ code: 1, out: '', err: 'down' }),
@@ -911,4 +911,190 @@ test('no user-facing message names the relay product', async () => {
     assert.ok(!/teamclaude/i.test(m), `a screen sentence must not name the relay product: ${m}`);
   }
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+// ===========================================================================
+// ⑥-2c installPlaywrightBrowser (macOS, D-M17 개정 2026-10-28)
+// ===========================================================================
+//
+// Chrome·Edge 가 없는 Mac 에서만 Playwright 의 Chrome for Testing 을 잠금표대로 받는다.
+// 받는 것·지문 대조·최상위 폴더 확인·Playwright 가 찾는 자리(chromium-<rev>/…, INSTALLATION_COMPLETE)·
+// 실패하면 아무것도 남기지 않고 pending 인 것을 본다(인터넷도 tar 도 쓰지 않는다 — 전부 주입).
+
+const CFT_ZIP = Buffer.from('PK fake chrome-mac-arm64.zip');
+const CFT_LOCK = {
+  parts: {
+    'playwright-chromium': {
+      kind: 'url', version: '154.0.8037.0', revision: '1244',
+      url: 'https://cdn.playwright.dev/builds/cft/154.0.8037.0/mac-arm64/chrome-mac-arm64.zip',
+      sha256: crypto.createHash('sha256').update(CFT_ZIP).digest('hex'), bytes: CFT_ZIP.length,
+      top: 'chrome-mac-arm64',
+      executable: 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+      dest: '_agent/shared/tools/playwright-browsers/chromium-1244', redistribute: 'download',
+    },
+  },
+};
+const CFT_EXE = CFT_LOCK.parts['playwright-chromium'].executable;
+const noBrowser = () => ({ present: false, channel: null, path: null });
+function cftFakes({ bytes = CFT_ZIP, top = 'chrome-mac-arm64', withExe = true } = {}) {
+  const asked = [];
+  return {
+    asked,
+    downloadFn: async (url, dest) => {
+      asked.push(url);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, bytes);
+      return { sha256: crypto.createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+    },
+    listArchiveFn: async () => [`${top}/`, `${top}/ABOUT`, `${top}/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`],
+    extractZipFn: async (zip, dest, opts = {}) => {
+      assert.ok(!opts.strip, '최상위 폴더(chrome-mac-arm64)를 벗기지 않는다 — Playwright 가 그 이름으로 찾는다');
+      const f = withExe ? path.join(dest, ...CFT_EXE.split('/')) : path.join(dest, top, 'ABOUT');
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, '#!/bin/sh\n');
+    },
+  };
+}
+const cftDest = (root) => path.join(root, ...CFT_LOCK.parts['playwright-chromium'].dest.split('/'));
+
+test('installPlaywrightBrowser: Chrome·Edge 가 없는 Mac 은 Chrome for Testing 을 받아 Playwright 가 찾는 자리에 놓는다', async () => {
+  const root = tmpRoot('cft');
+  const f = cftFakes();
+  const r = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: noBrowser, env: {}, ...f });
+  assert.equal(r.ok, true);
+  assert.equal(r.state, 'done');
+  assert.deepEqual(f.asked, [CFT_LOCK.parts['playwright-chromium'].url]);
+  const dest = cftDest(root);
+  assert.ok(fs.existsSync(path.join(dest, ...CFT_EXE.split('/'))), '실행 파일이 chromium-1244/chrome-mac-arm64/… 에');
+  assert.ok(fs.existsSync(path.join(dest, 'INSTALLATION_COMPLETE')), 'Playwright 설치 완료 표식');
+  assert.ok(!fs.existsSync(`${dest}.partial`), '임시 폴더가 남지 않는다');
+  assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'setup', 'downloads')), [], '받은 zip 은 지운다');
+  const rec = readReceipt(root).installed[PLAYWRIGHT_BROWSER_PART];
+  assert.equal(rec.state, 'installed');
+  assert.equal(rec.revision, '1244');
+  assert.equal(rec.path.replace(/\\/g, '/'), '_agent/shared/tools/playwright-browsers/chromium-1244', '영수증 경로(영수증은 \\ 로 적는 관례)');
+  // 두 번째 실행 = 이미 있음(다시 받지 않는다)
+  const again = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: noBrowser, env: {}, ...cftFakes() });
+  assert.equal(again.source, 'existing');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('installPlaywrightBrowser: 시스템에 Chrome·Edge 가 있으면·Windows 면·잠금표에 없으면 받지 않는다', async () => {
+  const root = tmpRoot('cft-skip');
+  const f = cftFakes();
+  const sys = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: () => ({ present: true, channel: 'chrome', path: '/Applications/Google Chrome.app' }), env: {}, ...f });
+  assert.deepEqual([sys.state, sys.reason, sys.channel], ['skipped', 'system-browser', 'chrome']);
+  assert.equal(readReceipt(root).installed[PLAYWRIGHT_BROWSER_PART].reason, 'system-browser');
+  const win = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'win32', browserCheckFn: noBrowser, env: {}, ...f });
+  assert.deepEqual([win.state, win.reason], ['skipped', 'windows']);
+  const none = await installPlaywrightBrowser({ root, lock: { parts: {} }, platform: 'darwin', browserCheckFn: noBrowser, env: {}, ...f });
+  assert.deepEqual([none.state, none.reason], ['skipped', 'not-in-lock']);
+  assert.equal(f.asked.length, 0, '어느 경우에도 내려받지 않는다');
+  assert.ok(!fs.existsSync(cftDest(root)));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('installPlaywrightBrowser: 지문이 다르거나·최상위 폴더가 다르거나·실행 파일이 없으면 pending 이고 아무것도 남기지 않는다', async () => {
+  for (const [name, opts] of [['sha', { bytes: Buffer.from('tampered') }], ['top', { top: 'chrome-mac-x64' }], ['exe', { withExe: false }]]) {
+    const root = tmpRoot(`cft-${name}`);
+    const r = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: noBrowser, env: {}, ...cftFakes(opts) });
+    assert.equal(r.ok, false, name);
+    assert.equal(r.state, 'pending', name);
+    assert.equal(r.code, CODES.browser, name);
+    assert.match(r.message, /Chrome 을 설치하면/, name);
+    assert.ok(!fs.existsSync(cftDest(root)) && !fs.existsSync(`${cftDest(root)}.partial`), `${name}: 반쯤 놓인 브라우저가 없다`);
+    assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'setup', 'downloads')), [], `${name}: 받은 zip 도 지운다`);
+    assert.equal(readReceipt(root).installed[PLAYWRIGHT_BROWSER_PART].state, 'pending', name);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('installPlaywrightBrowser: 오프라인이면 받지 않고 pending', async () => {
+  const root = tmpRoot('cft-offline');
+  const f = cftFakes();
+  const r = await installPlaywrightBrowser({ root, lock: CFT_LOCK, platform: 'darwin', browserCheckFn: noBrowser, env: { IRIS_INSTALLER_OFFLINE: '1' }, ...f });
+  assert.equal(r.state, 'pending');
+  assert.equal(f.asked.length, 0);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// ⑥-2d installIeumOffice (macOS, D-M21 2026-10-28)
+// ---------------------------------------------------------------------------
+// 문서 보조 엔진 이음오피스를 공식 GitHub 릴리스(잠금표 주소·지문 고정)에서 받아 tools/ieumoffice 에 둔다.
+// 브라우저와 같은 내려받기 순서를 쓰고, 다 풀린 표식에 지문을 적어 잠금표의 판이 바뀌면 다시 받는다.
+
+const IO_ZIP = Buffer.from('PK fake IeumOffice-arm64-mac.zip');
+const IO_EXE = 'IeumOffice.app/Contents/Resources/cli/ieumoffice';
+const ioLock = (bytes = IO_ZIP) => ({
+  parts: {
+    ieumoffice: {
+      kind: 'url', version: '0.12.7',
+      url: 'https://github.com/pblsketch/openoffice/releases/download/v0.12.7/IeumOffice-0.12.7-arm64-mac.zip',
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length,
+      top: 'IeumOffice.app', executable: IO_EXE, dest: '_agent/shared/tools/ieumoffice', redistribute: 'download',
+    },
+  },
+});
+function ioFakes({ bytes = IO_ZIP, top = 'IeumOffice.app', withExe = true } = {}) {
+  const asked = [];
+  return {
+    asked,
+    downloadFn: async (url, dest) => {
+      asked.push(url);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, bytes);
+      return { sha256: crypto.createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+    },
+    listArchiveFn: async () => [`${top}/`, `${top}/Contents/Info.plist`, `${top}/Contents/Resources/cli/ieumoffice`],
+    extractZipFn: async (zip, dest) => {
+      const f = withExe ? path.join(dest, ...IO_EXE.split('/')) : path.join(dest, top, 'Contents', 'Info.plist');
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, '#!/bin/sh\n');
+    },
+  };
+}
+const ioDest = (root) => path.join(root, '_agent', 'shared', 'tools', 'ieumoffice');
+
+test('installIeumOffice: 공식 릴리스를 받아 tools/ieumoffice 에 두고, 같은 판이면 다시 받지 않는다', async () => {
+  const root = tmpRoot('io');
+  const lock = ioLock();
+  const f = ioFakes();
+  const r = await installIeumOffice({ root, lock, platform: 'darwin', env: {}, ...f });
+  assert.deepEqual([r.ok, r.state, r.source], [true, 'done', 'github-release']);
+  assert.deepEqual(f.asked, [lock.parts.ieumoffice.url]);
+  assert.ok(fs.existsSync(path.join(ioDest(root), ...IO_EXE.split('/'))), '앱 안 명령어가 심이 찾는 자리에');
+  assert.equal(fs.readFileSync(path.join(ioDest(root), 'INSTALLATION_COMPLETE'), 'utf8').trim(), lock.parts.ieumoffice.sha256, '완료 표식 = 받은 판의 지문');
+  assert.ok(!fs.existsSync(`${ioDest(root)}.partial`));
+  assert.deepEqual(fs.readdirSync(path.join(root, '_agent', 'setup', 'downloads')), [], '받은 zip 은 지운다');
+  const rec = readReceipt(root).installed[IEUMOFFICE_PART];
+  assert.deepEqual([rec.state, rec.version, rec.source], ['installed', '0.12.7', 'github-release']);
+  const again = await installIeumOffice({ root, lock, platform: 'darwin', env: {}, ...ioFakes() });
+  assert.equal(again.source, 'existing');
+  // 잠금표의 판(지문)이 바뀌면 다시 받는다
+  const next = Buffer.from('PK fake IeumOffice-0.12.8');
+  const f2 = ioFakes({ bytes: next });
+  const upgraded = await installIeumOffice({ root, lock: ioLock(next), platform: 'darwin', env: {}, ...f2 });
+  assert.deepEqual([upgraded.state, upgraded.source, f2.asked.length], ['done', 'github-release', 1]);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('installIeumOffice: Windows·잠금표에 없음은 건너뛰고, 실패·오프라인은 pending 이며 아무것도 남기지 않는다', async () => {
+  const root = tmpRoot('io-skip');
+  const f = ioFakes();
+  assert.deepEqual(Object.values(await installIeumOffice({ root, lock: ioLock(), platform: 'win32', env: {}, ...f })).slice(1, 3), ['skipped', 'windows']);
+  assert.equal((await installIeumOffice({ root, lock: { parts: {} }, platform: 'darwin', env: {}, ...f })).reason, 'not-in-lock');
+  const off = await installIeumOffice({ root, lock: ioLock(), platform: 'darwin', env: { IRIS_INSTALLER_OFFLINE: '1' }, ...f });
+  assert.deepEqual([off.state, off.code], ['pending', CODES.ieumoffice]);
+  assert.equal(f.asked.length, 0, '여기까지는 내려받지 않는다');
+  fs.rmSync(root, { recursive: true, force: true });
+  for (const [name, opts] of [['sha', { bytes: Buffer.from('tampered') }], ['top', { top: 'Other.app' }], ['exe', { withExe: false }]]) {
+    const r2 = tmpRoot(`io-${name}`);
+    const r = await installIeumOffice({ root: r2, lock: ioLock(), platform: 'darwin', env: {}, ...ioFakes(opts) });
+    assert.deepEqual([r.ok, r.state, r.code], [false, 'pending', CODES.ieumoffice], name);
+    assert.match(r.message, /파이썬 라이브러리와 문서 MCP/, name);
+    assert.ok(!fs.existsSync(ioDest(r2)) && !fs.existsSync(`${ioDest(r2)}.partial`), `${name}: 반쯤 놓인 앱이 없다`);
+    assert.equal(readReceipt(r2).installed[IEUMOFFICE_PART].state, 'pending', name);
+    fs.rmSync(r2, { recursive: true, force: true });
+  }
 });

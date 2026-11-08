@@ -1177,7 +1177,12 @@ async function main() {
   process.exitCode = failures === 0 ? 0 : 1;
 }
 
-const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+// Main-module check on real paths: a symlinked launch path (macOS $TMPDIR is /var -> /private/var,
+// /tmp -> /private/tmp) would otherwise never match import.meta.url and main() would silently not run.
+function isEntryFile(argv1, metaUrl) {
+  try { return fs.realpathSync(argv1) === fs.realpathSync(fileURLToPath(metaUrl)); } catch { return false; }
+}
+const isMain = process.argv[1] && isEntryFile(process.argv[1], import.meta.url);
 if (isMain) {
   // main() 안의 try 가 놓친 것(요약을 만드는 도중의 오류 등)까지 여기서 받는다.
   // 어떤 경로로 끝나도 사람이 읽을 한 줄과 0이 아닌 종료 코드를 남긴다.

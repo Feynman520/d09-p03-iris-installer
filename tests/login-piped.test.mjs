@@ -100,7 +100,7 @@ test('startPipedLogin(claude): 창 없이 exe 직접 실행, 프록시 주소 �
   process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:3456';
   let captured = null; const child = fakeChild(777); const portCalls = [];
   try {
-    const r = startPipedLogin({
+    const r = startPipedLogin({ platform: 'win32', 
       provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json',
       spawnFn: (cmd, args, opts) => { captured = { cmd, args, opts }; return child; },
       portsFn: async (pid) => { portCalls.push(pid); return portCalls.length < 2 ? [] : [65416]; },
@@ -137,7 +137,7 @@ test('startPipedLogin(claude): 포트를 끝내 못 읽으면 url 은 null 로 �
   resetPipedLogin('claude');
   const root = tmpRoot('noport');
   const child = fakeChild(11);
-  startPipedLogin({
+  startPipedLogin({ platform: 'win32', 
     provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json',
     spawnFn: () => child, portsFn: async () => [], portPollMs: 1, portTries: 3, existsFn: () => true,
   });
@@ -156,7 +156,7 @@ test('startPipedLogin(claude): exe 전달자가 아닌 claude.cmd(npm 감싸개)
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'claude.cmd'), '@ECHO off\r\nnode "%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*\r\n');
   let captured = null;
-  startPipedLogin({ provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: (cmd, args, opts) => { captured = { cmd, args, opts }; return fakeChild(1); }, portsFn: async () => [] });
+  startPipedLogin({ platform: 'win32',  provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: (cmd, args, opts) => { captured = { cmd, args, opts }; return fakeChild(1); }, portsFn: async () => [] });
   assert.match(captured.cmd, /cmd\.exe$/i);
   assert.match(captured.args.join(' '), /claude\.cmd" auth login --claudeai/);
   assert.equal(captured.opts.windowsHide, true);
@@ -169,7 +169,7 @@ test('startPipedLogin: CLI 가 아예 없으면(내려받기 실패) 띄우지 �
     const root = tmpRoot(`missing-${provider}`);
     let spawned = 0; const lines = [];
     assert.throws(
-      () => startPipedLogin({ provider, root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => { spawned++; return fakeChild(1); }, log: (l) => lines.push(l) }),
+      () => startPipedLogin({ platform: 'win32',  provider, root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => { spawned++; return fakeChild(1); }, log: (l) => lines.push(l) }),
       (e) => e.code === 'cli-missing',
     );
     assert.equal(spawned, 0, 'a missing CLI must not be launched through cmd.exe (it exits instantly and looks like "no browser")');
@@ -201,7 +201,7 @@ test('startPipedLogin: 주소 전에 꺼지면 출력 꼬리를 로그에 남긴
   resetPipedLogin('claude');
   const root = tmpRoot('tail');
   const child = fakeChild(51); const lines = [];
-  startPipedLogin({ provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => child, portsFn: async () => [], existsFn: () => true, log: (l) => lines.push(l) });
+  startPipedLogin({ platform: 'win32',  provider: 'claude', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => child, portsFn: async () => [], existsFn: () => true, log: (l) => lines.push(l) });
   child.stderr.emit('data', Buffer.from('error: unable to reach https://claude.com/x?y=1 (ECONNRESET)\n'));
   child.emit('exit', 1, null);
   const tail = lines.find((l) => /output before exit/.test(l));
@@ -217,7 +217,7 @@ test('startPipedLogin(codex): codex.cmd login 을 창 없이, CODEX_HOME, localh
   fs.mkdirSync(path.join(root, '_agent', 'shared', 'tools', 'codex'), { recursive: true });
   fs.writeFileSync(path.join(root, '_agent', 'shared', 'tools', 'codex', 'codex.cmd'), '@echo off\r\n');
   let captured = null; const child = fakeChild(22);
-  const r = startPipedLogin({ provider: 'chatgpt', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: (cmd, args, opts) => { captured = { cmd, args, opts }; return child; }, portsFn: async () => { throw new Error('must not be called for codex'); } });
+  const r = startPipedLogin({ platform: 'win32',  provider: 'chatgpt', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: (cmd, args, opts) => { captured = { cmd, args, opts }; return child; }, portsFn: async () => { throw new Error('must not be called for codex'); } });
   assert.equal(r.mode, 'piped');
   assert.match(captured.args.join(' '), /codex\.cmd" login/);
   assert.equal(captured.opts.env.CODEX_HOME, path.join(root, '_agent', 'codex'));
@@ -231,7 +231,7 @@ test('startPipedLogin(codex): codex.cmd login 을 창 없이, CODEX_HOME, localh
 test('startPipedLogin: dryRun 은 명령줄·환경만 돌려주고 아무것도 띄우지 않는다', () => {
   const root = tmpRoot('dry');
   let spawned = 0;
-  const r = startPipedLogin({ provider: 'chatgpt', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => { spawned++; }, dryRun: true });
+  const r = startPipedLogin({ platform: 'win32',  provider: 'chatgpt', root, nodeDir: 'C:\\X\\node', teamclaudeConfigPath: 'C:\\X\\tc.json', spawnFn: () => { spawned++; }, dryRun: true });
   assert.equal(r.dryRun, true); assert.equal(r.started, false); assert.equal(spawned, 0);
   assert.ok(Array.isArray(r.args));
   fs.rmSync(root, { recursive: true, force: true });
@@ -262,24 +262,70 @@ const NETSTAT = [
 
 test('listeningPorts reads run().out (not stdout) and finds the own port', async () => {
   const calls = [];
-  const ports = await listeningPorts(77, { runFn: async (cmd) => { calls.push(cmd); return { code: 0, out: NETSTAT, err: '' }; } });
+  const ports = await listeningPorts(77, { platform: 'win32', runFn: async (cmd) => { calls.push(cmd); return { code: 0, out: NETSTAT, err: '' }; } });
   assert.deepEqual(ports, [65416]);
   assert.deepEqual(calls, ['netstat']);
 });
 
 test('listeningPorts widens to descendants when the own pid has no listener (npm wrapper)', async () => {
   const tree = ['10 1', '55 10', '77 55', '900 4'].join('\r\n');
-  const ports = await listeningPorts(10, { runFn: async (cmd) => ({ code: 0, out: cmd === 'netstat' ? NETSTAT : tree, err: '' }) });
+  const ports = await listeningPorts(10, { platform: 'win32', runFn: async (cmd) => ({ code: 0, out: cmd === 'netstat' ? NETSTAT : tree, err: '' }) });
   assert.deepEqual(ports, [65416]);
 });
 
 test('listeningPorts never borrows an unrelated process port', async () => {
   const tree = ['10 1', '55 10', '900 4'].join('\r\n');
-  const ports = await listeningPorts(10, { runFn: async (cmd) => ({ code: 0, out: cmd === 'netstat' ? NETSTAT : tree, err: '' }) });
+  const ports = await listeningPorts(10, { platform: 'win32', runFn: async (cmd) => ({ code: 0, out: cmd === 'netstat' ? NETSTAT : tree, err: '' }) });
   assert.deepEqual(ports, []);
 });
 
 test('descendantPids walks children breadth-first and ignores cycles', () => {
   assert.deepEqual(descendantPids('2 1\n3 1\n4 2\n1 4', 1), ['2', '3', '4']);
   assert.deepEqual(descendantPids('', 1), []);
+});
+
+test('macOS: lsof 로 그 PID(없으면 자손)의 수신 포트를 찾는다', async () => {
+  const { parseLsofListeners } = await import('../installer/lib/login.mjs');
+  assert.deepEqual(parseLsofListeners('p77\nf20\nn*:8080\nf21\nn127.0.0.1:54545\n'), [54545, 8080], '루프백 먼저');
+  const calls = [];
+  const runFn = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (cmd.endsWith('ps')) return { code: 0, out: '10 1\n11 10\n', err: '' };
+    return { code: 0, out: args.includes('11') ? 'p11\nf3\nn127.0.0.1:40123\n' : '', err: '' };
+  };
+  assert.deepEqual(await listeningPorts(10, { runFn, platform: 'darwin' }), [40123]);
+  assert.ok(calls.every(([cmd]) => cmd === '/usr/sbin/lsof' || cmd === '/bin/ps'), JSON.stringify(calls));
+});
+
+test('macOS: 로그인 완료는 파일 또는 .claude.json 의 oauthAccount(토큰 아님)로 본다', async () => {
+  const { cliLoginStatus } = await import('../installer/lib/login.mjs');
+  const files = {};
+  const deps = { existsSync: (p) => p in files, readFileSync: (p) => { if (!(p in files)) throw new Error('ENOENT'); return files[p]; }, platform: 'darwin' };
+  const root = '/x/IRIS';
+  assert.equal(cliLoginStatus({ provider: 'claude', root, ...deps }), 'pending');
+  files[path.join(root, '_agent', 'claude', '.claude.json')] = JSON.stringify({ hasCompletedOnboarding: true });
+  assert.equal(cliLoginStatus({ provider: 'claude', root, ...deps }), 'pending', '온보딩만으로는 로그인이 아니다');
+  files[path.join(root, '_agent', 'claude', '.claude.json')] = JSON.stringify({ oauthAccount: { accountUuid: 'u-1' } });
+  assert.equal(cliLoginStatus({ provider: 'claude', root, ...deps }), 'done');
+  assert.equal(cliLoginStatus({ provider: 'chatgpt', root, ...deps }), 'pending', '코덱스는 auth.json 파일로만');
+});
+
+test('macOS: 창 없는 로그인 — claude 는 전달자가 가리키는 실행 파일, codex 는 동봉 node + codex.js', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-piped-mac-'));
+  try {
+    const tools = path.join(root, '_agent', 'shared', 'tools');
+    fs.mkdirSync(path.join(tools, 'claude', '2.1.272'), { recursive: true });
+    fs.writeFileSync(path.join(tools, 'claude', '2.1.272', 'claude'), '');
+    fs.writeFileSync(path.join(tools, 'claude', 'claude'), '#!/bin/sh\nexec "$(dirname -- "$0")/2.1.272/claude" "$@"\n');
+    const c = startPipedLogin({ provider: 'claude', root, nodeDir: '/w/node', dryRun: true, platform: 'darwin' });
+    assert.equal(c.cmd, path.join(tools, 'claude', '2.1.272', 'claude'));
+    assert.deepEqual(c.args, ['auth', 'login', '--claudeai']);
+    assert.ok(c.env.PATH.startsWith('/w/node/bin:'));
+    const x = startPipedLogin({ provider: 'chatgpt', root, nodeDir: '/w/node', dryRun: true, platform: 'darwin', existsFn: () => false });
+    assert.equal(x.cmd, '/w/node/bin/node');
+    assert.deepEqual(x.args, [path.join(tools, 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js'), 'login']);
+    assert.equal(x.env.CODEX_HOME, path.join(root, '_agent', 'codex'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

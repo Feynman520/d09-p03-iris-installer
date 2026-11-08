@@ -44,9 +44,13 @@ export function buildAuthorizeUrl({ port, challenge, state, hint, scope = 'user:
 // --private: Edge InPrivate 창으로 연다 — 평소 브라우저의 claude.ai 로그인은 그대로 두고 그 창에서만 대상 계정으로 로그인한다
 // (평소 창은 이미 승인한 계정이면 화면 없이 자동 승인돼 다른 계정을 고를 수 없다, 2026-10-15 실측).
 const EDGE = [process.env['ProgramFiles(x86)'], process.env.ProgramFiles].filter(Boolean).map(d => path.join(d, 'Microsoft', 'Edge', 'Application', 'msedge.exe')).find(f => existsSync(f));
+// macOS(설치 패키지 docs/설계-macOS.md D-M22): 기본 = `open <주소>`, --private 는 Edge InPrivate → Chrome 시크릿 창(있는 것) 순.
+const MAC_PRIVATE = [['/Applications/Microsoft Edge.app', '--inprivate'], ['/Applications/Google Chrome.app', '--incognito']].find(([app]) => process.platform === 'darwin' && existsSync(app));
 function openBrowser(url, { private: inPrivate = false } = {}) {
   try {
-    const c = inPrivate && EDGE
+    const c = process.platform === 'darwin'
+      ? spawn('/usr/bin/open', inPrivate && MAC_PRIVATE ? ['-na', MAC_PRIVATE[0], '--args', MAC_PRIVATE[1], url] : [url], { detached: true, stdio: 'ignore' })
+      : inPrivate && EDGE
       ? spawn(EDGE, ['--inprivate', url], { detached: true, stdio: 'ignore' })
       : spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore', windowsHide: true });
     c.on('error', () => {});

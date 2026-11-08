@@ -122,11 +122,12 @@ export function ensureDir(dir, { fs = nodeFs, root = null, cache = null } = {}) 
 
 // Atomic: temp file in the destination folder, then rename. A half-written
 // AGENTS.md or soul-state.json would be worse than none at all.
-function atomicWrite(dst, data, { fs, encoding }) {
+function atomicWrite(dst, data, { fs, encoding, mode = null }) {
   const tmp = `${dst}.tmp`;
   if (typeof data === 'string') fs.writeFileSync(tmp, data, encoding);
   else fs.writeFileSync(tmp, data);
   try {
+    if (mode !== null) fs.chmodSync(tmp, mode);
     fs.renameSync(tmp, dst);
   } catch (e) {
     try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
@@ -150,7 +151,14 @@ export function copyIfAbsent(src, dst, { fs = nodeFs, root = null, cache = null 
   if (fs.existsSync(dst)) return { written: false, kept: true, missingSource: false, path: dst };
   if (!src || !fs.existsSync(src)) return { written: false, kept: false, missingSource: true, path: dst };
   ensureDir(path.dirname(dst), { fs });
-  return { written: true, kept: false, missingSource: false, path: atomicWrite(dst, fs.readFileSync(src), { fs }) };
+  return { written: true, kept: false, missingSource: false, path: atomicWrite(dst, fs.readFileSync(src), { fs, mode: execMode(src, { fs }) }) };
+}
+
+// macOS/Linux: 내용만 옮기면 실행 권한이 빠져 플러그인 훅(hooks/run-hook.cmd 등)이 "Permission denied" 로
+// 못 돈다. 원본에 실행 비트가 있으면 사본도 0755(쓰기는 주인만). Windows 는 실행 비트가 없어 손대지 않는다.
+function execMode(src, { fs }) {
+  if (process.platform === 'win32') return null;
+  try { return (fs.statSync(src).mode & 0o111) ? 0o755 : null; } catch { return null; }
 }
 
 // Recursive copy with the same "never overwrite" contract: every file that is

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { soulRootFor } from './platform.mjs';
 
 // Guide 2-1 name rules + Task 2 measurement (docs/실측-2026-09-11.md #2):
 // node-pty (health check, session spawn, daemon.log) all worked without
@@ -42,7 +43,11 @@ function isReservedDeviceName(name) {
 // reason taxonomy (checked in this exact order): empty -> chars -> trailing
 // -> reserved (Windows device name) -> system (well-known folder) -> korean
 // (KOREAN_ALLOWED=false and name has non-ASCII/symbol characters).
-export function validateSoulName(name) {
+// The name rules are the Windows ones on every platform -- they are a strict
+// superset of what macOS forbids, and the product name is fixed anyway. Only
+// the resulting folder differs: C:\<name> on Windows, ~/<name> on macOS
+// (docs/설계-macOS.md D-M03).
+export function validateSoulName(name, { platform, homedir } = {}) {
   if (typeof name !== 'string' || name.length === 0) {
     return { ok: false, reason: 'empty' };
   }
@@ -61,7 +66,7 @@ export function validateSoulName(name) {
   if (!KOREAN_ALLOWED && !ASCII_SAFE_NAME.test(name)) {
     return { ok: false, reason: 'korean' };
   }
-  return { ok: true, path: `C:\\${name}` };
+  return { ok: true, path: soulRootFor(name, { platform, homedir }) };
 }
 
 // detectExisting(rootPath) -> 'none' | 'soul' | 'conflict'

@@ -2,13 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { verifyManifest } from '../lib/manifest.mjs';
 import { extractZip } from '../lib/zip.mjs';
 import { sanitize } from '../build/sanitize.mjs';
 import { loadRules, splitRepoStackPointers } from '../build/rules.mjs';
-import { agentShim } from '../installer/lib/shims.mjs';
+import { agentShim, posixAgentShim } from '../installer/lib/shims.mjs';
+import { loadLockForTarget } from '../build/lock-target.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -108,7 +109,9 @@ async function smokePackedServer(zipRootDir, scratchDir) {
     cwd: zipRootDir,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, LOCALAPPDATA: appData },
+    // macOS reads IRIS_INSTALLER_WORK_DIR instead (installer/lib/platform.mjs installerWorkDir) --
+    // without it the smoke server would write into the real ~/Library/Application Support.
+    env: { ...process.env, LOCALAPPDATA: appData, IRIS_INSTALLER_WORK_DIR: appData },
   });
   let out = '';
   let err = '';
@@ -202,6 +205,11 @@ async function main() {
     const payloadDir = path.join(tmpDir, 'payload');
     const manifestPath = path.join(payloadDir, 'manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    // Which zip is this? The macOS one has IRIS-설치.command at its root (build/pack.mjs);
+    // checks that know only the Windows layout pick their macOS twin from this (docs/설계-macOS.md M5).
+    const target = fs.existsSync(path.join(tmpDir, 'IRIS-설치.command')) && !fs.existsSync(path.join(tmpDir, 'IRIS-설치.cmd')) ? 'darwin-arm64' : 'win32-x64';
+    const mac = target === 'darwin-arm64';
+    console.log(`target: ${target}`);
 
     // ① manifest hashes match the files actually inside the zip.
     const mv = await verifyManifest(payloadDir, manifest);
@@ -220,7 +228,8 @@ async function main() {
     // the manifest. Glob parts (e.g. guides) fan out into "name:basename"
     // manifest keys, so it's enough that at least one such key exists -- and
     // (I6) if the part declares a minCount, at least that many keys exist.
-    const lock = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'lock.json'), 'utf8'));
+    // The target's lock: lock.json itself for Windows (byte for byte), lock.json + overlay for macOS.
+    const { lock } = loadLockForTarget(target);
     const manifestKeys = Object.keys(manifest.parts);
     const missing = [];
     for (const [name, p] of Object.entries(lock.parts)) {
@@ -292,7 +301,7 @@ async function main() {
       try {
         await extractZip(faceZipPath, faceTmpDir);
         const facePtyDir = path.join(faceTmpDir, 'node_modules', 'node-pty');
-        const prebuiltPath = path.join(facePtyDir, 'prebuilds', 'win32-x64', 'pty.node');
+        const prebuiltPath = path.join(facePtyDir, 'prebuilds', mac ? 'darwin-arm64' : 'win32-x64', 'pty.node');
         const builtPath = path.join(facePtyDir, 'build', 'Release', 'pty.node');
         ptyOk = fs.existsSync(prebuiltPath) || fs.existsSync(builtPath);
         ptyDetail = fs.existsSync(prebuiltPath)
@@ -300,17 +309,33 @@ async function main() {
           : fs.existsSync(builtPath)
             ? builtPath
             : `neither ${prebuiltPath} nor ${builtPath} exists (inside ${faceZipPath})`;
-        const electronExe = path.join(faceTmpDir, 'node_modules', 'electron', 'dist', 'electron.exe');
-        electronOk = fs.existsSync(electronExe) && fs.statSync(electronExe).size > 1_000_000;
-        electronDetail = electronOk
-          ? `${electronExe} (${(fs.statSync(electronExe).size / 1048576).toFixed(1)} MB)`
-          : `node_modules/electron/dist/electron.exe missing or tiny inside ${faceZipPath} -- Face would open in a browser tab`;
+        if (mac) {
+          // macOS: the bundle's launcher is small; the weight is the framework, reached through the
+          // bundle's own symlinks -- a zip that lost them (or the exec bit) gives an app that will not start.
+          const app = path.join(faceTmpDir, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents');
+          const launcher = path.join(app, 'MacOS', 'Electron');
+          const framework = path.join(app, 'Frameworks', 'Electron Framework.framework', 'Electron Framework');
+          const helperPty = path.join(facePtyDir, 'prebuilds', 'darwin-arm64', 'spawn-helper');
+          const problems = [];
+          if (!fs.existsSync(launcher) || !(fs.statSync(launcher).mode & 0o111)) problems.push('Electron.app/Contents/MacOS/Electron missing or not executable');
+          let fwSize = 0; try { fwSize = fs.statSync(framework).size; } catch { problems.push('Electron Framework not reachable through the bundle symlink'); }
+          if (fwSize && fwSize < 10_000_000) problems.push(`Electron Framework tiny (${fwSize} bytes)`);
+          if (!fs.existsSync(helperPty)) problems.push('node-pty spawn-helper missing');
+          electronOk = problems.length === 0;
+          electronDetail = electronOk ? `Electron.app ok (framework ${(fwSize / 1048576).toFixed(1)} MB, launcher executable, spawn-helper present)` : `${problems.join('; ')} (inside ${faceZipPath})`;
+        } else {
+          const electronExe = path.join(faceTmpDir, 'node_modules', 'electron', 'dist', 'electron.exe');
+          electronOk = fs.existsSync(electronExe) && fs.statSync(electronExe).size > 1_000_000;
+          electronDetail = electronOk
+            ? `${electronExe} (${(fs.statSync(electronExe).size / 1048576).toFixed(1)} MB)`
+            : `node_modules/electron/dist/electron.exe missing or tiny inside ${faceZipPath} -- Face would open in a browser tab`;
+        }
       } finally {
         fs.rmSync(faceTmpDir, { recursive: true, force: true });
       }
     }
     record('⑤ node-pty native binary in shipped zip', ptyOk, ptyDetail);
-    record('⑳ electron.exe in shipped face zip (IRIS 창 = Electron, not a browser tab)', electronOk, electronDetail);
+    record(mac ? '⑳ Electron.app in shipped face zip (IRIS 창 = Electron, not a browser tab)' : '⑳ electron.exe in shipped face zip (IRIS 창 = Electron, not a browser tab)', electronOk, electronDetail);
 
     // ⑥ shim template parity -- P02 daemon/wake.mjs re-implements P03
     // installer/lib/shims.mjs's agentShim() byte-for-byte (it cannot import
@@ -325,17 +350,19 @@ async function main() {
           `P02 not found: ${wakePath} does not exist (override with ${sourceEnvVar('face')})`,
         );
       } else {
-        const { agentShimText } = await import(pathToFileURL(wakePath).href);
+        const { agentShimText, posixAgentShimText } = await import(pathToFileURL(wakePath).href);
         const mismatches = [];
         for (const agent of ['claude', 'codex']) {
           const a = agentShim(agent);
           const b = agentShimText(agent);
           if (a !== b) mismatches.push(agent);
+          // macOS sh 심(docs/설계-macOS.md D-M07): P02 가 사본을 가진 판이면 그것도 바이트 비교한다.
+          if (posixAgentShimText && posixAgentShim(agent) !== posixAgentShimText(agent)) mismatches.push(`${agent} (posix)`);
         }
         record(
           '⑥ shim template parity (P02 wake() vs P03 shims.mjs)',
           mismatches.length === 0,
-          mismatches.length === 0 ? 'claude + codex identical' : `differ for: ${mismatches.join(', ')}`,
+          mismatches.length === 0 ? `claude + codex identical${posixAgentShimText ? ' (cmd + posix)' : ''}` : `differ for: ${mismatches.join(', ')}`,
         );
       }
     }
@@ -637,7 +664,8 @@ async function main() {
       const walkPayload = (dir, rel) => {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           const p = path.join(dir, entry.name);
-          const r = rel ? `${rel}/${entry.name}` : entry.name;
+          // bsdtar on macOS writes Korean names from a zip in NFD; the manifest keys are NFC.
+          const r = (rel ? `${rel}/${entry.name}` : entry.name).normalize('NFC');
           if (entry.isDirectory()) walkPayload(p, r);
           else if (entry.isFile()) allPayloadFiles.push(r);
         }
@@ -666,7 +694,25 @@ async function main() {
     // a BOM-less script as ANSI), and uninstall-ko.json valid JSON carrying
     // every key the script asks for. A missing key would not crash -- T() falls
     // back to the key name -- so the person would see "optKeepDesc" on screen.
-    {
+    if (mac) {
+      // macOS twin (설계-삭제기.md 7절): IRIS-삭제.command at the root and in installer/ (ASCII, LF,
+      // executable), installer/uninstall.mjs present and parseable.
+      const problems = [];
+      for (const rel of ['IRIS-삭제.command', 'installer/IRIS-삭제.command']) {
+        const p = path.join(tmpDir, rel);
+        if (!fs.existsSync(p)) { problems.push(`missing ${rel}`); continue; }
+        const buf = fs.readFileSync(p);
+        if (buf.some((b) => b > 0x7e || (b < 0x20 && b !== 0x0a))) problems.push(`${rel}: not ASCII/LF`);
+        if (rel === 'IRIS-삭제.command' && !(fs.statSync(p).mode & 0o111)) problems.push(`${rel}: not executable`);
+      }
+      const mjs = path.join(tmpDir, 'installer', 'uninstall.mjs');
+      if (!fs.existsSync(mjs)) problems.push('missing installer/uninstall.mjs');
+      else {
+        const r = spawnSync(process.execPath, ['--check', mjs], { encoding: 'utf8' });
+        if (r.status !== 0) problems.push(`uninstall.mjs does not parse: ${String(r.stderr).slice(0, 200)}`);
+      }
+      record('㉑ uninstaller ships whole (IRIS-삭제.command root+installer, ASCII/LF/exec, uninstall.mjs parses)', problems.length === 0, problems.length === 0 ? 'ok' : problems.join('; '));
+    } else {
       const UNINSTALL_CMD = 'IRIS-삭제.cmd';
       const problems = [];
       const asciiCrlf = (rel) => {
@@ -705,6 +751,35 @@ async function main() {
         problems.length === 0,
         problems.length === 0 ? `${keyCount} string key(s) present` : problems.join('; '),
       );
+    }
+    // ㉒ (2026-10-28, D-M17 개정) macOS: ⑦ 이 받는 Chrome for Testing 판 = 동봉한 playwright-mcp 의 playwright-core 가
+    // 찾는 판(browsers.json chromium revision). 어긋나면 Playwright 가 chromium-<다른 판> 을 찾다가 "브라우저 없음"으로
+    // 멈춘다 — playwright-mcp 를 올리면 lock.darwin-arm64.json 의 playwright-chromium 칸도 함께 올리라는 문.
+    const shippedLock = JSON.parse(fs.readFileSync(path.join(tmpDir, 'lock.json'), 'utf8'));
+    const cft = shippedLock.parts?.['playwright-chromium'];
+    if (cft) {
+      const pwFile = manifest.parts?.['playwright-mcp']?.file;
+      const pwZip = pwFile ? path.join(payloadDir, ...String(pwFile).split('/')) : null;
+      let ok = false;
+      let detail = `playwright-mcp payload not found (${pwFile ?? 'no manifest entry'})`;
+      if (pwZip && fs.existsSync(pwZip)) {
+        const out = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-pw-'));
+        try {
+          const r = spawnSync('tar', ['-xf', pwZip, '-C', out, 'node_modules/playwright-core/browsers.json'], { encoding: 'utf8' });
+          const bj = path.join(out, 'node_modules', 'playwright-core', 'browsers.json');
+          if (r.status !== 0 || !fs.existsSync(bj)) {
+            detail = `browsers.json not in ${pwFile}`;
+          } else {
+            const chromium = (JSON.parse(fs.readFileSync(bj, 'utf8')).browsers ?? []).find((b) => b.name === 'chromium') ?? {};
+            const destOk = String(cft.dest ?? '').endsWith(`/chromium-${chromium.revision}`);
+            ok = String(chromium.revision) === String(cft.revision) && String(chromium.browserVersion) === String(cft.version) && destOk;
+            detail = `playwright-core chromium r${chromium.revision} ${chromium.browserVersion} vs lock r${cft.revision} ${cft.version} (${cft.dest})`;
+          }
+        } finally {
+          fs.rmSync(out, { recursive: true, force: true });
+        }
+      }
+      record('㉒ playwright-chromium (macOS ⑦ download) matches bundled playwright-core browsers.json', ok, detail);
     }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });

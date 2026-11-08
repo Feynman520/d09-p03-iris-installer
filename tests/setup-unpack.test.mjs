@@ -18,7 +18,7 @@ import { isStageError } from '../installer/lib/errors.mjs';
 import { portableTeamclaudeConfigPath, resolveTeamclaudeConfigPath } from '../installer/lib/login.mjs';
 import { readReceipt } from '../installer/lib/receipt.mjs';
 
-const TAR = 'C:\\Windows\\System32\\tar.exe';
+import { TAR } from '../lib/zip.mjs';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 'iris-t13-unpack-'));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
@@ -138,6 +138,8 @@ function makeCtx(label, opts = {}) {
     run: async (exe, args) => { runCalls.push([exe, ...(args ?? [])]); return { code: 0, out: 'stub', err: '' }; },
     fs,
     env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '1' },
+    // 이 파일의 시험은 Windows 판 배치표를 잰다(어느 PC 에서나). macOS 판은 opts.platform 으로.
+    platform: opts.platform ?? 'win32',
     logs,
     progressCalls,
     runCalls,
@@ -368,7 +370,7 @@ test('unpack: 꾸러미에 부품이 없으면 E-UNPACK 으로 멈춘다', async
   });
 });
 
-test('unpack: MotW(Zone.Identifier) 를 놓은 파일마다 지운다', async () => {
+test('unpack: MotW(Zone.Identifier) 를 놓은 파일마다 지운다', { skip: process.platform !== 'win32' && 'NTFS 대체 스트림 — macOS 는 아래 quarantine 시험' }, async () => {
   const built = await makePayload('motw');
   const ctx = makeCtx('motw', { built });
   ctx.verifiers = passAll(built.lock);
@@ -559,6 +561,60 @@ test('env: IRIS_INSTALLER_NO_USER_ENV 가 없으면 주입된 userpath 로만 �
   assert.equal(calls[0][1], path.join(ctx.root, '_agent', 'shared', 'shims'));
   assert.equal(calls.at(-1)[1], portableTeamclaudeConfigPath(ctx.root));
   assert.equal(recorded.userEnv.applied, false, 'recording 주입이면 applied=false 로 남는다');
+});
+
+test('unpack(macOS): 풀어 놓은 부품의 com.apple.quarantine 표식을 지운다(D-M05)', { skip: process.platform !== 'darwin' && 'macOS xattr' }, async () => {
+  const { stripMotw } = await import('../installer/lib/install.mjs');
+  const dir = path.join(tmp, 'quarantine', 'tool');
+  put(path.join(dir, 'bin', 'tool'), '#!/bin/sh\n');
+  const { spawnSync } = await import('node:child_process');
+  const mark = spawnSync('/usr/bin/xattr', ['-w', 'com.apple.quarantine', '0081;00000000;Safari;', path.join(dir, 'bin', 'tool')]);
+  assert.equal(mark.status, 0);
+  assert.equal(stripMotw(dir), 1);
+  const left = spawnSync('/usr/bin/xattr', ['-p', 'com.apple.quarantine', path.join(dir, 'bin', 'tool')]);
+  assert.notEqual(left.status, 0, '표식이 남아 있으면 Gatekeeper 가 동봉 실행 파일을 막는다');
+});
+
+test('env(macOS): POSIX 심·uv 심·콜론 PATH·LaunchAgent 인자(설계-macOS D-M07~09)', { skip: process.platform === 'win32' && 'POSIX 경로·실행 비트를 쓰는 시험' }, async () => {
+  const built = await makePayload('env-mac');
+  const ctx = makeCtx('env-mac', { built, platform: 'darwin' });
+  ctx.verifiers = passAll(built.lock);
+  ctx.env = { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' };
+  await unpack.run(ctx);
+
+  const calls = [];
+  ctx.userpath = {
+    recording: true,
+    skippedReason: 'test',
+    addUserPath: async (d) => { calls.push(['path', d]); return { changed: true }; },
+    setUserEnv: async (k) => { calls.push([k]); return { previous: null }; },
+    setRunKey: async (name, command) => { calls.push(['run', name, command]); return { changed: true }; },
+  };
+  const { recorded, pending } = await unpack.runEnv(ctx);
+  const shims = path.join(ctx.root, '_agent', 'shared', 'shims');
+  const tools = path.join(ctx.root, '_agent', 'shared', 'tools');
+
+  assert.deepEqual(fs.readdirSync(shims).sort(),
+    ['codex', 'git', 'ieumoffice', 'node', 'python', 'python3', 'relay-ensure', 'relay-ensure.mjs', 'uv']);
+  assert.ok(pending.some((p) => /Claude Code/.test(p.capability)), 'claude 심은 온라인 단계로 미뤄진다');
+  const uv = fs.readFileSync(path.join(shims, 'uv'), 'ascii');
+  assert.match(uv, /^#!\/bin\/sh\n/);
+  assert.match(uv, /exec "\$D\/\.\.\/tools\/uv\/0\.12\.14\/bin\/uv" "\$@"/);
+  assert.equal(fs.statSync(path.join(shims, 'uv')).mode & 0o777, 0o755);
+  assert.ok(recorded.shims.includes('uv'));
+
+  assert.deepEqual(recorded.env.PATH.split(':').slice(0, 3), [
+    shims, path.join(tools, 'node', 'bin'), path.join(tools, 'python', 'bin'),
+  ]);
+  assert.deepEqual(calls.find((c) => c[0] === 'run'),
+    ['run', 'IRIS relay', [path.join(tools, 'node', 'bin', 'node'), path.join(shims, 'relay-ensure.mjs')]]);
+  assert.equal(String(recorded.codexReceipt.path ?? '').includes('\\'), false, '영수증 경로도 / 로 적는다');
+
+  // claude 바이너리가 놓이면 심이 생긴다(전달자 이름은 확장자 없는 claude)
+  put(path.join(tools, 'claude', '2.1.272', 'claude'), 'fake claude');
+  const again = await unpack.runEnv(ctx);
+  assert.equal(again.recorded.claudeShim.written, true);
+  assert.ok(fs.existsSync(path.join(shims, 'claude')));
 });
 
 test('unpack (Task 24b #3): document-mcp-wheelhouse 는 manifest 에 지문이 없어도(폴더라 하나로 못 묶는다) 잠금표 sha256 변화로 다시 놓인다', async () => {

@@ -1,3 +1,4 @@
+import './_scratch-workdir.mjs'; // macOS: keep server.log out of the real ~/Library (see that file)
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../installer/server.mjs';
+import { soulRootFor } from '../installer/lib/platform.mjs';
 import { planUpdateReset, applyUpdateReset, ALWAYS_RESET } from '../installer/lib/update-plan.mjs';
 
 // 자동 업데이트 모드(`IRIS-설치.cmd --auto`).
@@ -452,11 +454,13 @@ test('auto: 업데이트가 설치기 사본을 새 판으로 바꿔 끼운다(I
   const zipRoot = makeZipRoot('zip-auto-copy');
   fs.mkdirSync(path.join(zipRoot, 'installer'), { recursive: true });
   fs.mkdirSync(path.join(zipRoot, 'lib'), { recursive: true });
-  for (const f of ['IRIS-설치.cmd', 'IRIS-삭제.cmd', 'uninstall.ps1', 'server.mjs']) {
+  for (const f of ['IRIS-설치.cmd', 'IRIS-설치.command', 'IRIS-삭제.cmd', 'uninstall.ps1', 'server.mjs']) {
     fs.writeFileSync(path.join(zipRoot, 'installer', f), `new ${f}\n`, 'utf8');
   }
   fs.writeFileSync(path.join(zipRoot, 'lib', 'run.mjs'), 'new run\n', 'utf8');
+  // 진입점은 이 시험을 돌리는 PC 의 것을 쓴다(Windows .cmd · macOS .command) — 둘 다 둔다.
   fs.writeFileSync(path.join(zipRoot, 'IRIS-설치.cmd'), 'new entry\n', 'utf8');
+  fs.writeFileSync(path.join(zipRoot, 'IRIS-설치.command'), 'new entry\n', 'utf8');
 
   // 1.9.0 사본이 이미 있는 가짜 영혼(임시 폴더 — 진짜 C:\ 아래가 아니다).
   const soulRoot = path.join(tmp, 'soul-auto-copy');
@@ -674,7 +678,7 @@ test('auto: the soul to update comes from IRIS_INSTALLER_SOUL_NAME, not from a h
     const st = await (await fetch(`${server.url}/api/state`)).json();
     assert.equal(st.auto.eligible, true);
     assert.equal(st.auto.name, 'ALPHA-FROM-ENV');
-    assert.equal(st.auto.root, 'C:\\ALPHA-FROM-ENV');
+    assert.equal(st.auto.root, soulRootFor('ALPHA-FROM-ENV'), 'C:\\<이름> (macOS: ~/<이름>)');
   } finally {
     if (before === undefined) delete process.env.IRIS_INSTALLER_SOUL_NAME;
     else process.env.IRIS_INSTALLER_SOUL_NAME = before;
@@ -682,7 +686,7 @@ test('auto: the soul to update comes from IRIS_INSTALLER_SOUL_NAME, not from a h
   }
   // Which root was probed is the point; how many times is not (the startup
   // also asks detectSoulMode about the same folder).
-  assert.deepEqual([...new Set(seen)], ['C:\\ALPHA-FROM-ENV'], 'eligibility was checked against the soul the env var names');
+  assert.deepEqual([...new Set(seen)], [soulRootFor('ALPHA-FROM-ENV')], 'eligibility was checked against the soul the env var names');
 });
 
 // ---------------------------------------------------------------------------

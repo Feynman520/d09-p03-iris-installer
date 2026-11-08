@@ -31,6 +31,7 @@ import { assertInside, ensureDir } from '../lib/paths.mjs';
 import { manageScriptPath } from '../lib/proxy.mjs';
 import { portableTeamclaudeConfigPath, defaultRelayConfig, ensureRelayConfigDefaults } from '../lib/login.mjs';
 import { writeFaceLauncher, faceLauncherPath, faceLauncherContent } from '../lib/handoff.mjs';
+import { isWindows } from '../lib/platform.mjs';
 
 export const id = 'relay';
 
@@ -38,6 +39,9 @@ export const RELAY_PORT = 3456;
 export const RELAY_BASE_URL = 'http://127.0.0.1:3456';
 export const SUMMON_NAME = '소환하기.cmd';
 export const DASHBOARD_NAME = '대시보드.cmd';
+// macOS(D-M10): Finder 에서 두 번 누르면 터미널로 도는 `.command`.
+export const SUMMON_NAME_MAC = '소환하기.command';
+export const DASHBOARD_NAME_MAC = '대시보드.command';
 
 // `_agent/shared/tools/...`(슬래시) → `<root>\_agent\shared\tools\...`
 // (계약 v2: 단계 모듈끼리 import 하지 않는다 — unpack.mjs 에 같은 4줄이 있다.)
@@ -92,6 +96,26 @@ export function summonContent() {
   ].join('\r\n') + '\r\n';
 }
 
+// macOS 판(ASCII·LF·실행 권한). 터미널은 홈 폴더에서 시작하므로 영혼 루트로 옮겨 가서 연다 —
+// 탐색기에서 연 .cmd 가 그 폴더에서 시작하는 것과 같게. 전역 변수를 걸지 않으므로(D-M08) 여기서 건다.
+export function summonContentMac() {
+  return [
+    '#!/bin/sh',
+    "# IRIS: open Claude Code (default) or Codex with this folder's settings.",
+    '# Usage: this file [codex] [extra args...]',
+    'R=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+    'export IRIS_ROOT="$R"',
+    'export CLAUDE_CONFIG_DIR="$R/_agent/claude"',
+    'export CODEX_HOME="$R/_agent/codex"',
+    `export ANTHROPIC_BASE_URL="${RELAY_BASE_URL}"`,
+    'export PATH="$R/_agent/shared/shims:$R/_agent/shared/tools/node/bin:$PATH"',
+    'cd "$R" || exit 1',
+    'if [ "${1:-}" = "codex" ]; then shift; exec "$R/_agent/shared/shims/codex" "$@"; fi',
+    'exec "$R/_agent/shared/shims/claude" "$@"',
+    '',
+  ].join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // ② 대시보드.cmd
 // ---------------------------------------------------------------------------
@@ -108,6 +132,18 @@ export function dashboardContent(relFromRoot) {
     `"%~dp0_agent\\shared\\tools\\node\\node.exe" "%~dp0${rel}\\launch.mjs" %*`,
     'exit /b %errorlevel%',
   ].join('\r\n') + '\r\n';
+}
+
+export function dashboardContentMac(relFromRoot) {
+  const rel = String(relFromRoot).split('\\').join('/');
+  return [
+    '#!/bin/sh',
+    '# IRIS: open the usage dashboard (starts the relay and the viewer if needed).',
+    'R=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+    'export TEAMCLAUDE_CONFIG="${TEAMCLAUDE_CONFIG:-$R/_agent/shared/portable-state/teamclaude/teamclaude.json}"',
+    `exec "$R/_agent/shared/tools/node/bin/node" "$R/${rel}/launch.mjs" "$@"`,
+    '',
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +168,9 @@ export async function run(ctx) {
   const root = ctx?.root;
   if (!root) throw new StageError('E-RELAY', '설치 폴더 경로가 없어 중계기 준비를 할 수 없습니다.', { ctx: 'root' });
   const log = typeof ctx.log === 'function' ? ctx.log : () => {};
-  const rel = (p) => path.relative(root, p).split(path.sep).join('\\') || '.';
+  const platform = ctx.platform ?? process.platform;
+  const win = isWindows(platform);
+  const rel = (p) => path.relative(root, p).split(path.sep).join(win ? '\\' : '/') || '.';
   const linkCache = new Map();
   const at = (...segs) => assertInside(root, path.join(root, ...segs), { fs, cache: linkCache });
 
@@ -166,6 +204,7 @@ export async function run(ctx) {
       return { status: 'side-by-side', path: alt };
     }
     fs.writeFileSync(dst, text, 'ascii');
+    if (!win) fs.chmodSync(dst, 0o755);
     recorded.files.created.push(rel(dst));
     return { status: 'created', path: dst };
   };
@@ -199,7 +238,7 @@ export async function run(ctx) {
   }
 
   // 관리 스크립트 위치만 기록한다(⑥-4 가 이것으로 중계기를 띄운다).
-  const manage = manageScriptPath(root);
+  const manage = manageScriptPath(root, { platform });
   recorded.manageScript = { path: rel(manage), present: fs.existsSync(manage) };
   if (!recorded.manageScript.present) {
     pending.push({ capability: '사용량 중계기(여러 구독 묶어 쓰기)', reason: '중계기 관리 스크립트가 아직 없습니다' });
@@ -210,11 +249,12 @@ export async function run(ctx) {
   const dashDir = underRoot(root, dashDestRel);
   const dashLaunch = path.join(dashDir, 'launch.mjs');
   if (fs.existsSync(dashLaunch)) {
-    putCmd(DASHBOARD_NAME, dashboardContent(dashDestRel));
+    if (win) putCmd(DASHBOARD_NAME, dashboardContent(dashDestRel));
+    else putCmd(DASHBOARD_NAME_MAC, dashboardContentMac(dashDestRel));
   } else {
     recorded.dashboard = { status: 'skipped', reason: `${rel(dashLaunch)} 없음` };
     pending.push({ capability: '사용량 대시보드', reason: '대시보드 부품이 설치되지 않았습니다' });
-    log(`[relay] 대시보드 부품이 없어 ${DASHBOARD_NAME} 를 건너뜀`);
+    log(`[relay] 대시보드 부품이 없어 ${win ? DASHBOARD_NAME : DASHBOARD_NAME_MAC} 를 건너뜀`);
   }
 
   // ── ③ IRIS Face.cmd + 바탕화면 바로가기 ───────────────────────────────
@@ -222,9 +262,9 @@ export async function run(ctx) {
   // 그 이름이 곧 영혼 이름이다).
   const name = ctx.name ?? ctx?.receipt?.soul?.name ?? path.basename(root);
   const noUserEnv = (ctx.env?.IRIS_INSTALLER_NO_USER_ENV ?? process.env.IRIS_INSTALLER_NO_USER_ENV) === '1';
-  const facePath = faceLauncherPath(root, name);
+  const facePath = faceLauncherPath(root, name, { platform });
   assertInside(root, facePath, { fs, cache: linkCache });
-  const faceText = faceLauncherContent();
+  const faceText = faceLauncherContent({ platform });
   let faceCurrent = null;
   try { faceCurrent = fs.existsSync(facePath) ? fs.readFileSync(facePath, 'utf8') : null; } catch { /* 다시 쓴다 */ }
 
@@ -237,6 +277,7 @@ export async function run(ctx) {
     let r;
     try {
       r = await writeFaceLauncher(root, name, {
+        platform,
         skipShortcut: noUserEnv,
         ...(ctx.desktopDir ? { desktopDir: ctx.desktopDir } : {}),
         ...(typeof ctx.runPs === 'function' ? { runPs: ctx.runPs } : {}),
@@ -251,12 +292,12 @@ export async function run(ctx) {
       ? { status: 'skipped', reason: 'IRIS_INSTALLER_NO_USER_ENV=1' }
       : { status: r.shortcut?.ok ? 'created' : 'failed', path: r.lnkPath ?? null, detail: r.shortcut?.detail ?? null };
     if (!noUserEnv && !r.shortcut?.ok) {
-      pending.push({ capability: '바탕화면 IRIS 바로가기', reason: '바로가기를 만들지 못했습니다(영혼 폴더의 실행기는 그대로 씁니다)' });
+      pending.push({ capability: win ? '바탕화면 IRIS 바로가기' : '응용 프로그램의 IRIS 앱', reason: '바로가기를 만들지 못했습니다(영혼 폴더의 실행기는 그대로 씁니다)' });
     }
   }
 
   // ── ④ 소환하기.cmd ───────────────────────────────────────────────────
-  const summon = putCmd(SUMMON_NAME, summonContent());
+  const summon = win ? putCmd(SUMMON_NAME, summonContent()) : putCmd(SUMMON_NAME_MAC, summonContentMac());
   recorded.summon = { path: rel(summon.path), status: summon.status };
 
   log(`[relay] 설정 뼈대·바로가기 준비 완료(새로 ${recorded.files.created.length}개, 그대로 ${recorded.files.kept.length}개)`

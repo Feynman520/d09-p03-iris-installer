@@ -71,6 +71,8 @@ function ctxFor(root, extra = {}) {
     precheck: { recorded: { edge: { present: true }, os: { build: 26200 } } },
     receipt: doneReceipt(),
     offline: true,
+    // 이 파일은 Windows 판(IRIS-설치.cmd)을 잰다 — macOS 판은 맨 끝 시험.
+    platform: 'win32',
     ...extra,
   };
 }
@@ -206,6 +208,36 @@ test('refreshHandoffAfterOnline: 로그인·중계기를 반영해 ready 로 바
   assert.ok(after2.handoff.setupCompletedAt);
 });
 
+test('refreshHandoffAfterOnline: ⑦ 에서 풀린 대기 기능(macOS 브라우저 조작)은 남은 일에서 뺀다', async () => {
+  const { BROWSER_CAPABILITY } = await import('../installer/setup/handoff.mjs');
+  const root = newRoot('refresh-resolved');
+  const ctx = ctxFor(root, { choice: { subscriptions: ['claude'], leadAgent: 'claude' } });
+  const pending = [
+    { capability: BROWSER_CAPABILITY, reason: 'Chrome·Edge 가 없음' },
+    { capability: '문서 자동화(엑셀)', reason: 'LibreOffice 가 없음' },
+    { capability: BROWSER_CAPABILITY, reason: 'Chrome·Edge 브라우저를 찾지 못함', howToEnable: 'x' },
+  ];
+  writeHandoff(ctx, { assumeDone: ['checks'], pending });
+  const receipt = doneReceipt({ logins: { claude: { state: 'done' } }, relay: { state: 'done', accounts: 1 } });
+  const kept = refreshHandoffAfterOnline({ ...ctx, receipt });
+  assert.equal(kept.handoff.pendingCapabilities.length, 3, '풀린 것이 없으면 그대로');
+  const r = refreshHandoffAfterOnline({ ...ctx, receipt, resolvedCapabilities: [BROWSER_CAPABILITY] });
+  assert.deepEqual(r.handoff.pendingCapabilities.map((p) => p.capability), ['문서 자동화(엑셀)'], '같은 이름 두 줄(⑤-6·⑨)이 함께 빠진다');
+});
+
+test('refreshHandoffAfterOnline: ⑦ 에서 새로 대기가 된 기능(macOS 이음오피스)은 남은 일에 한 번만 더한다', async () => {
+  const { IEUMOFFICE_CAPABILITY } = await import('../installer/setup/handoff.mjs');
+  const root = newRoot('refresh-added');
+  const ctx = ctxFor(root, { choice: { subscriptions: ['claude'], leadAgent: 'claude' } });
+  writeHandoff(ctx, { assumeDone: ['checks'], pending: [{ capability: '문서 자동화(엑셀)', reason: 'LibreOffice 가 없음' }] });
+  const receipt = doneReceipt({ logins: { claude: { state: 'done' } }, relay: { state: 'done', accounts: 1 } });
+  const added = [{ capability: IEUMOFFICE_CAPABILITY, reason: '공식 릴리스를 내려받지 못함', howToEnable: 'x' }];
+  const r = refreshHandoffAfterOnline({ ...ctx, receipt, addedCapabilities: added });
+  assert.deepEqual(r.handoff.pendingCapabilities.map((p) => p.capability), ['문서 자동화(엑셀)', IEUMOFFICE_CAPABILITY]);
+  const again = refreshHandoffAfterOnline({ ...ctx, receipt, addedCapabilities: added });
+  assert.equal(again.handoff.pendingCapabilities.length, 2, '다시 불러도 두 번 적지 않는다');
+});
+
 test('refreshHandoffAfterOnline: 인수 문서가 아직 없으면 새로 지어내지 않는다', () => {
   const root = newRoot('refresh-none');
   const r = refreshHandoffAfterOnline(ctxFor(root));
@@ -278,6 +310,21 @@ test('설치기 사본: 계약이 정한 자리에 진입점이 생기고, 부�
   const mf = JSON.parse(fs.readFileSync(path.join(root, '_agent', 'setup', 'installer', 'payload', 'manifest.json'), 'utf8'));
   assert.deepEqual(mf.parts, {});
   assert.equal(mf.resumeOnly, true);
+});
+
+test('설치기 사본(macOS): .command 진입점과 삭제기 사본은 실행 권한 0755 로 놓인다', { skip: process.platform === 'win32' }, () => {
+  const root = newRoot('copy-mac');
+  const zip = fakeZipRoot('copy-mac');
+  // 원본이 0644 여도(복사는 내용만 옮긴다) 사본에서는 Finder 가 실행할 수 있어야 한다.
+  write(path.join(zip, 'IRIS-설치.command'), '#!/bin/sh\n');
+  write(path.join(zip, 'installer', 'IRIS-삭제.command'), '#!/bin/sh\n');
+  write(path.join(zip, 'installer', 'bootstrap.sh'), '#!/bin/sh\n');
+  const r = copyInstallerProgram(ctxFor(root, { payloadDir: path.join(zip, 'payload'), platform: 'darwin' }));
+  assert.equal(r.ok, true);
+  const copy = path.join(root, '_agent', 'setup', 'installer');
+  for (const f of [path.join(copy, 'IRIS-설치.command'), path.join(copy, 'installer', 'IRIS-삭제.command'), path.join(copy, 'installer', 'bootstrap.sh')]) {
+    assert.equal(fs.statSync(f).mode & 0o777, 0o755, f);
+  }
 });
 
 test('설치기 사본: 두 번 불러도 덮어쓰지 않는다(무삭제)', () => {
@@ -459,4 +506,21 @@ test('진단 파일: 단계별 결과와 실패 코드가 아홉 칸 전부 있�
   assert.deepEqual(Object.keys(d.stages), [...SETUP_STAGE_IDS]);
   assert.equal(d.failed, null);
   assert.equal(d.environment.offline, true);
+});
+
+test('macOS: 재개 진입점은 IRIS-설치.command(실행 권한)이고 인수 문서도 그 글자다', { skip: process.platform === 'win32' && 'POSIX 실행 비트' }, async () => {
+  const root = newRoot('mac-resume');
+  const { handoff } = writeHandoff(ctxFor(root, { platform: 'darwin' }), { assumeDone: ['checks'] });
+  assert.equal(handoff.resume.installerPath, '_agent/setup/installer/IRIS-설치.command');
+  const zipRoot = path.join(tmp, 'mac-zip');
+  fs.mkdirSync(path.join(zipRoot, 'installer'), { recursive: true });
+  fs.mkdirSync(path.join(zipRoot, 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(zipRoot, 'installer', 'server.mjs'), '//');
+  fs.writeFileSync(path.join(zipRoot, 'lib', 'run.mjs'), '//');
+  fs.writeFileSync(path.join(zipRoot, 'IRIS-설치.command'), '#!/bin/sh\n');
+  fs.writeFileSync(path.join(zipRoot, 'lock.json'), '{}');
+  const r = copyInstallerProgram(ctxFor(root, { platform: 'darwin', zipRoot }));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const entry = path.join(root, '_agent', 'setup', 'installer', 'IRIS-설치.command');
+  assert.equal(fs.statSync(entry).mode & 0o777, 0o755);
 });

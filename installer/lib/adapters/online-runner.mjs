@@ -6,6 +6,8 @@
 //   checkNet({ subscriptions })            -> { ok, blocked: [host…] }
 //   installClaude({ root, ... })           -> { ok, state, source, code }
 //   installDocumentSkills({ root, ... })   -> { ok, state, commit, code }
+//   installPlaywrightBrowser({ root, ... }) -> { ok, state, reason, code }   (macOS: Chrome·Edge 가 없을 때만)
+//   installIeumOffice({ root, ... })        -> { ok, state, reason, code }   (macOS: 문서 보조 엔진)
 //   startLogin({ provider, root, ... })    -> { ok, state, reason }
 //   loginStatus({ provider, root, ... })   -> { state, cli, relay, reason }
 //   startRelay({ root, ... })              -> { ok, state, accounts }
@@ -38,6 +40,8 @@ export function createOnlineRunner({ importer = () => import('../online.mjs') } 
     checkNet: (args) => call(importer, 'checkNet', args),
     installClaude: (args) => call(importer, 'installClaude', args),
     installDocumentSkills: (args) => call(importer, 'installDocumentSkills', args),
+    installPlaywrightBrowser: (args) => call(importer, 'installPlaywrightBrowser', args),
+    installIeumOffice: (args) => call(importer, 'installIeumOffice', args),
     startLogin: (args) => call(importer, 'startLogin', args),
     loginStatus: (args) => call(importer, 'loginStatus', args),
     startRelay: (args) => call(importer, 'startRelay', args),

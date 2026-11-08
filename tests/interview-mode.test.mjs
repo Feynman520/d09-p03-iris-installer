@@ -65,7 +65,7 @@ test('rootHasRoles: 루트 바로 아래 R##- 폴더가 있을 때만 true', () 
 
 test('shims: 에이전트 심은 중계기 확인 줄을 갖고, relay-ensure 3종이 ASCII 로 함께 놓인다', () => {
   const root = mk('shims');
-  const r = writeShims(root, ['claude', 'codex']);
+  const r = writeShims(root, ['claude', 'codex'], { platform: 'win32' });
   const dir = shimsDir(root);
   for (const f of ['relay-ensure.cmd', 'relay-ensure.mjs', 'relay-autostart.vbs', 'claude.cmd', 'codex.cmd']) {
     const buf = fs.readFileSync(path.join(dir, f));
@@ -77,13 +77,13 @@ test('shims: 에이전트 심은 중계기 확인 줄을 갖고, relay-ensure 3�
   assert.ok(claude.indexOf('relay-ensure.cmd') < claude.indexOf('claude\\claude.cmd'), '중계기 확인이 CLI 호출보다 앞');
   assert.equal(/HTTPS_PROXY|SSL_CERT_FILE/.test(agentShim('codex')), false, '2.0.49: 코덱스 심에 가로채기 줄이 없다(중계기는 config.toml provider 로)');
   // 두 번째 실행은 아무것도 바꾸지 않는다
-  assert.deepEqual(writeShims(root, ['claude', 'codex']).changed, []);
+  assert.deepEqual(writeShims(root, ['claude', 'codex'], { platform: 'win32' }).changed, []);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
 test('relay-ensure.mjs: 포트가 살아 있으면 곧장 0, 죽어 있고 관리 스크립트가 없으면 한 줄 알리고 0(막지 않음)', async () => {
   const root = mk('ensure');
-  writeShims(root, ['claude']);
+  writeShims(root, ['claude'], { platform: 'win32' });
   const script = path.join(shimsDir(root), 'relay-ensure.mjs');
   assert.equal(fs.readFileSync(script, 'utf8'), relayEnsureMjs());
   // 살아 있는 포트

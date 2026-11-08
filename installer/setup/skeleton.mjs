@@ -279,7 +279,44 @@ export function desktopIniBytes(root) {
   return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
 }
 
+// macOS(D-M11): desktop.ini·attrib 대신 Finder 의 사용자 지정 아이콘. 같은 _cosmos.ico 를
+// NSImage 로 읽어 NSWorkspace.setIcon 에 넘긴다(JXA). 폴더 안에 숨은 `Icon\r` 이 생긴다.
+export const MAC_SET_ICON_JXA = [
+  'function run(argv) {',
+  "  ObjC.import('AppKit');",
+  '  const img = $.NSImage.alloc.initWithContentsOfFile(argv[0]);',
+  "  if (!img || img.isNil()) return 'no-image';",
+  "  return $.NSWorkspace.sharedWorkspace.setIconForFileOptions(img, argv[1], 0) ? 'ok' : 'failed';",
+  '}',
+].join('\n');
+
+async function applyFolderIconMac(ctx, { fs, at, place, log, safe, root }) {
+  const out = { ico: null, desktopIni: 'not-applicable', finderIcon: 'skipped' };
+  const icoDst = safe('_cosmos.ico', () => at('_cosmos.ico'));
+  if (!icoDst) return null;
+  const hadIco = fs.existsSync(icoDst);
+  const icoSrc = partPath(ctx, 'folder-icon') ?? policyPath(ctx, '_cosmos.ico', { fs });
+  const r = place(icoSrc, ['_cosmos.ico'], '폴더 아이콘(_cosmos.ico)');
+  out.ico = hadIco ? 'kept' : (r.written ? 'created' : 'missing');
+  // 새로 놓았을 때만 건다 — 두 번째 실행에서 다시 걸지 않아야 "변경 0"이다.
+  if (hadIco || !r.written) { out.finderIcon = 'already'; return out; }
+  if (typeof ctx.run !== 'function') { out.finderIcon = 'skipped-no-run'; return out; }
+  try {
+    const res = await ctx.run('/usr/bin/osascript', ['-l', 'JavaScript', '-e', MAC_SET_ICON_JXA, icoDst, root], { cwd: root, env: ctx.env });
+    out.finderIcon = res?.code === 0 && String(res.out ?? '').trim() === 'ok' ? 'set' : 'failed';
+    if (out.finderIcon === 'failed') {
+      out.finderIconError = String(res?.err || res?.out || `exit ${res?.code}`).slice(0, 200);
+      log('[skeleton] Finder 폴더 아이콘을 걸지 못했습니다(아이콘만 안 보일 뿐 설치는 계속)');
+    }
+  } catch (e) {
+    out.finderIcon = 'failed';
+    out.finderIconError = String(e?.message ?? e).slice(0, 200);
+  }
+  return out;
+}
+
 async function applyFolderIcon(ctx, { fs, root, at, place, log, safe }) {
+  if ((ctx.platform ?? process.platform) !== 'win32') return applyFolderIconMac(ctx, { fs, root, at, place, log, safe });
   const out = { ico: null, desktopIni: null, attributes: 'skipped' };
 
   const icoDst = safe('_cosmos.ico', () => at('_cosmos.ico'));

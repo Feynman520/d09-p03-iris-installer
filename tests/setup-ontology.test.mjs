@@ -40,6 +40,8 @@ function fakeCtx(label, { responses = {}, env } = {}) {
   const logs = [];
   return {
     root, calls, logs,
+    // 이 파일은 Windows 판(python.cmd 심)을 잰다 — macOS 판은 resolvePython 시험 끝에.
+    platform: 'win32',
     log: (line) => logs.push(line),
     run,
     fs,
@@ -336,13 +338,17 @@ test('ontology: 실행 전후 카드 id 가 같으면 preservedIds 에 보존으
 test('resolvePython: IRIS_PYTHON 지정 > 동봉 shim > PATH 의 python', () => {
   const root = path.join(tmp, 'resolve-py');
   fs.mkdirSync(root, { recursive: true });
+  const WIN = 'win32';
   assert.equal(ontology.resolvePython({ root, env: { IRIS_PYTHON: 'X:\\my\\python.exe' } }), 'X:\\my\\python.exe');
-  assert.equal(ontology.resolvePython({ root, env: {}, fs }), 'python', '동봉 shim 이 없으면 PATH');
+  assert.equal(ontology.resolvePython({ root, env: {}, fs, platform: WIN }), 'python', '동봉 shim 이 없으면 PATH');
+  assert.equal(ontology.resolvePython({ root, env: {}, fs, platform: 'darwin' }), 'python3', 'macOS 의 PATH 이름');
 
   const shimDir = path.join(root, '_agent', 'shared', 'shims');
   fs.mkdirSync(shimDir, { recursive: true });
   fs.writeFileSync(path.join(shimDir, 'python.cmd'), '@echo off\n', 'utf8');
-  assert.equal(ontology.resolvePython({ root, env: {}, fs }), path.join(root, '_agent', 'shared', 'shims', 'python.cmd'));
+  assert.equal(ontology.resolvePython({ root, env: {}, fs, platform: WIN }), path.join(root, '_agent', 'shared', 'shims', 'python.cmd'));
+  fs.writeFileSync(path.join(shimDir, 'python'), '#!/bin/sh\n', 'utf8');
+  assert.equal(ontology.resolvePython({ root, env: {}, fs, platform: 'darwin' }), path.join(root, '_agent', 'shared', 'shims', 'python'));
 });
 
 // ---------------------------------------------------------------------------

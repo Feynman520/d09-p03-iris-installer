@@ -176,7 +176,7 @@ class SurveyBackoffTests(unittest.TestCase):
             self.assertEqual(survey.needs_survey(st, reg), "missing")  # status still honest
 
 
-@unittest.skipUnless(sys.platform == "win32", "Windows processes")
+@unittest.skipUnless(sys.platform in ("win32", "darwin"), "Windows / macOS processes")
 class SweepTests(unittest.TestCase):
     def test_sweep_ends_orphans_only_with_matching_identity(self):
         with tempfile.TemporaryDirectory(prefix="relay-w-") as d:

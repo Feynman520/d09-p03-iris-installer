@@ -12,6 +12,8 @@ import { loadRules } from './rules.mjs';
 // still used by verify/static.mjs, the installer and the updater.
 import { pack } from './pack.mjs';
 import { isOffline } from '../lib/net.mjs';
+import { loadLockForTarget, DEFAULT_TARGET } from './lock-target.mjs';
+import { hostTarget } from '../installer/lib/platform.mjs';
 
 // Project root (one level up from build/), independent of process.cwd() --
 // same convention as collect.mjs/pack.mjs's ROOT_DIR. All default
@@ -33,6 +35,9 @@ function parseArgs(argv) {
     // generic base rules only. Env form exists so a CI/release script can
     // enforce it without editing every call site.
     requireLocal: process.env.IRIS_BUILD_REQUIRE_LOCAL === '1',
+    // docs/설계-macOS.md D-M12: which zip to build. Default = this machine's own
+    // OS (a Windows PC keeps building exactly the zip it always built).
+    target: process.platform === 'win32' ? DEFAULT_TARGET : hostTarget(),
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -45,6 +50,7 @@ function parseArgs(argv) {
     // upstream re-tag leaves a slot that validates but is wrong.
     else if (a === '--no-cache') opts.noCache = true;
     else if (a === '--require-local') opts.requireLocal = true;
+    else if (a === '--target') opts.target = argv[++i];
     else throw new Error(`unknown arg: ${a}`);
   }
   return opts;
@@ -79,11 +85,16 @@ async function main() {
     fs.appendFileSync(logPath, `${line}\n`);
   };
 
-  log(`build start out=${outDir} cache=${cacheDir} stage=${stageDir} skipDownload=${opts.skipDownload} noCache=${opts.noCache} offline=${isOffline()} requireLocal=${opts.requireLocal}`);
+  log(`build start target=${opts.target} out=${outDir} cache=${cacheDir} stage=${stageDir} skipDownload=${opts.skipDownload} noCache=${opts.noCache} offline=${isOffline()} requireLocal=${opts.requireLocal}`);
   const startedAt = Date.now();
 
   try {
-    const lock = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'lock.json'), 'utf8'));
+    // Parts run on this machine while they are collected (npm under the bundled
+    // node, `npm ci` of Face's native modules), so a zip is built on its own OS.
+    if (opts.target.split('-')[0] !== process.platform) {
+      throw new Error(`build: the ${opts.target} zip must be built on ${opts.target.split('-')[0]} (this machine is ${process.platform})`);
+    }
+    const { lock, text: lockText } = loadLockForTarget(opts.target);
 
     log('collect: start');
     const { payloadDir, faceVersion, skipped, partsMeta } = await collect({
@@ -142,6 +153,7 @@ async function main() {
     log('pack: start');
     const { zipPath, sha256Path, manifest, contentFingerprint } = await pack({
       stageDir, outDir, version: lock.package.version, log,
+      ...(opts.target === DEFAULT_TARGET ? {} : { target: opts.target, lockText }),
     });
     log(`manifest: schema ${manifest.schema}, ${Object.keys(manifest.parts).length} part(s), ${Object.keys(manifest.files).length} payload file(s)`);
     for (const [name, p] of Object.entries(manifest.parts)) {

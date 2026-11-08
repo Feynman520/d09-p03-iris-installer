@@ -18,6 +18,7 @@ import nodeFs from 'node:fs';
 import path from 'node:path';
 import { StageError } from '../lib/errors.mjs';
 import { assertInside, ensureDir } from '../lib/paths.mjs';
+import { shimFileName } from '../lib/platform.mjs';
 
 export const id = 'ontology';
 
@@ -40,14 +41,16 @@ const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/;
 const ID_LINE_RE = /\bid:\s*['"]?([^'",}\s]+)['"]?/;
 
 // python 실행 파일: IRIS_PYTHON 지정 → 동봉 shim → PATH 의 python.
+// 심 이름은 운영체제마다 다르다(Windows python.cmd, macOS python — docs/설계-macOS.md D-M07).
 export function resolvePython(ctx) {
   const fs = ctx?.fs ?? nodeFs;
   if (ctx?.env?.IRIS_PYTHON) return ctx.env.IRIS_PYTHON;
-  const shim = path.join(ctx.root, '_agent', 'shared', 'shims', 'python.cmd');
+  const platform = ctx?.platform ?? process.platform;
+  const shim = path.join(ctx.root, '_agent', 'shared', 'shims', shimFileName('python', { platform }));
   try {
     if (fs.existsSync(shim)) return shim;
   } catch { /* 접근 불가 — PATH 로 폴백 */ }
-  return 'python';
+  return platform === 'win32' ? 'python' : 'python3';
 }
 
 // AGENTS.md 머리말(카드)의 id 값(없으면 null).

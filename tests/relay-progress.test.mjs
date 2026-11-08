@@ -101,7 +101,7 @@ test('다시 로그인하면 앞 시도의 이유·시작 시각을 지운다', 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-const RI = { provider: 'claude', root: 'C:\\NOVA', nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node', teamclaudeConfigPath: 'C:\\FAKE\\teamclaude.json' };
+const RI = { platform: 'win32', provider: 'claude', root: 'C:\\NOVA', nodeDir: 'C:\\NOVA\\_agent\\shared\\tools\\node', teamclaudeConfigPath: 'C:\\FAKE\\teamclaude.json' };
 
 test('③ relayImport: import 에 60초 한도를 건다', async () => {
   let opts;

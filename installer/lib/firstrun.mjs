@@ -40,8 +40,11 @@ export function claudeProjectKey(root) {
 }
 
 // Codex writes the project table name lower-cased, backslashes kept, in
-// single quotes (TOML literal string -- no escaping needed).
-export function codexProjectKey(root) {
+// single quotes (TOML literal string -- no escaping needed). That folding is
+// Windows' case-insensitive path rule; on macOS the key is the path as it is
+// (docs/설계-macOS.md D-M01).
+export function codexProjectKey(root, { platform = process.platform } = {}) {
+  if (platform !== 'win32') return String(root).replace(/\/+$/, '');
   return String(root).replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
 }
 
@@ -103,9 +106,9 @@ export function seedClaudeFirstRun(root, { claudeVersion = null } = {}) {
  * seedCodexFirstRun(root)
  *   -> {path, written: 'created'|'appended'|'unchanged'}
  */
-export function seedCodexFirstRun(root) {
+export function seedCodexFirstRun(root, { platform = process.platform } = {}) {
   const file = codexConfigTomlPath(root);
-  const key = codexProjectKey(root);
+  const key = codexProjectKey(root, { platform });
   const block = `[projects.'${key}']\ntrust_level = "trusted"\n`;
   if (!fs.existsSync(file)) {
     writeAtomic(file, block);
