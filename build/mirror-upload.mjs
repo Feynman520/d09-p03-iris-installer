@@ -23,6 +23,10 @@ import { Upload } from '@aws-sdk/lib-storage';
 
 export const BUCKET = 'iris-downloads';
 export const PUBLIC_BASE = 'https://pub-6bb549660d7d4bd79ed07a7b6523f5c5.r2.dev';
+// 빠른 창구(2026-11-09): 같은 버킷을 Pages(서울 경유)로 내주는 주소 — 홈페이지 단추·IRIS 창 미러 1순위.
+// r2.dev(PUBLIC_BASE)는 학교망에서 초당 수십 KB 라 단추에는 쓰지 않지만, 옛 IRIS 창이 허용 주소로 쓰므로
+// latest.json 의 url 칸과 끄지 않은 공개 주소로 남는다. 창구 코드 = mirror-worker/worker.js.
+export const FAST_BASE = 'https://iris-workspace-dl.pages.dev';
 
 function parseArgs(argv) {
   const o = { files: [], contentType: null, key: null, out: null, check: null };
@@ -100,8 +104,8 @@ export async function uploadFile({ file, key = path.basename(file), contentType 
   return { key, size, url: `${PUBLIC_BASE}/${key}` };
 }
 
-export async function checkPublic(key) {
-  const r = await fetch(`${PUBLIC_BASE}/${key}`, { method: 'HEAD' });
+export async function checkPublic(key, base = PUBLIC_BASE) {
+  const r = await fetch(`${base}/${key}`, { method: 'HEAD' });
   return { ok: r.status === 200, status: r.status, length: Number(r.headers.get('content-length') ?? 0) };
 }
 
@@ -145,8 +149,9 @@ async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.check) {
     const c = await checkPublic(o.check);
-    console.log(`mirror check ${o.check}: ${c.ok ? 'OK' : 'FAIL'} (HTTP ${c.status}, ${c.length.toLocaleString('en-US')} bytes)`);
-    process.exit(c.ok ? 0 : 1);
+    const f = await checkPublic(o.check, FAST_BASE);
+    console.log(`mirror check ${o.check}: r2.dev ${c.ok ? 'OK' : 'FAIL'} (HTTP ${c.status}, ${c.length.toLocaleString('en-US')} bytes) · fast ${f.ok ? 'OK' : 'FAIL'} (HTTP ${f.status}, ${f.length.toLocaleString('en-US')} bytes)`);
+    process.exit(c.ok && f.ok && c.length === f.length ? 0 : 1);
   }
   const files = [...o.files];
   if (o.out) {
@@ -159,6 +164,9 @@ async function main() {
     const r = await uploadFile({ file: f, key: files.length === 1 && o.key ? o.key : path.basename(f), contentType: o.contentType ?? contentTypeFor(f) });
     const c = await checkPublic(r.key);
     if (!c.ok || c.length !== r.size) throw new Error(`public check failed for ${r.key}: HTTP ${c.status}, ${c.length} bytes (expected ${r.size})`);
+    // 홈페이지 단추가 실제로 가리키는 빠른 창구에서도 같은 크기로 보여야 한다(창구의 이름 허용 목록에 안 맞는 이름이면 여기서 걸린다).
+    const f = await checkPublic(r.key, FAST_BASE);
+    if (!f.ok || f.length !== r.size) throw new Error(`fast mirror check failed for ${r.key}: HTTP ${f.status}, ${f.length} bytes (expected ${r.size}) — ${FAST_BASE}`);
     results.push(r);
   }
   console.log('mirror: OK');
