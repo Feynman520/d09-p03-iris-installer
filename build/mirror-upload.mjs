@@ -105,7 +105,9 @@ export async function uploadFile({ file, key = path.basename(file), contentType 
 }
 
 export async function checkPublic(key, base = PUBLIC_BASE) {
-  const r = await fetch(`${base}/${key}`, { method: 'HEAD' });
+  // identity(2.0.55): Node fetch 는 압축을 허락해 보내는데, 빠른 창구(Pages)는 작은 글 파일(.sha256)을 압축해 주며
+  // Content-Length 를 빼 버려 "200, 0 bytes" 로 읽혔다(curl 은 100 bytes). 크기 대조용이므로 압축 없이 묻는다.
+  const r = await fetch(`${base}/${key}`, { method: 'HEAD', headers: { 'accept-encoding': 'identity' } });
   return { ok: r.status === 200, status: r.status, length: Number(r.headers.get('content-length') ?? 0) };
 }
 
@@ -165,8 +167,9 @@ async function main() {
     const c = await checkPublic(r.key);
     if (!c.ok || c.length !== r.size) throw new Error(`public check failed for ${r.key}: HTTP ${c.status}, ${c.length} bytes (expected ${r.size})`);
     // 홈페이지 단추가 실제로 가리키는 빠른 창구에서도 같은 크기로 보여야 한다(창구의 이름 허용 목록에 안 맞는 이름이면 여기서 걸린다).
-    const f = await checkPublic(r.key, FAST_BASE);
-    if (!f.ok || f.length !== r.size) throw new Error(`fast mirror check failed for ${r.key}: HTTP ${f.status}, ${f.length} bytes (expected ${r.size}) — ${FAST_BASE}`);
+    // (2.0.55) 이름을 `fast` 로 — 반복 변수 `f` 를 가리면 이 블록 첫 줄의 `file: f` 가 TDZ 오류로 죽는다.
+    const fast = await checkPublic(r.key, FAST_BASE);
+    if (!fast.ok || fast.length !== r.size) throw new Error(`fast mirror check failed for ${r.key}: HTTP ${fast.status}, ${fast.length} bytes (expected ${r.size}) — ${FAST_BASE}`);
     results.push(r);
   }
   console.log('mirror: OK');
