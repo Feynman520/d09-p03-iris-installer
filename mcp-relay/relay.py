@@ -107,6 +107,7 @@ def main(argv=None) -> int:
             _out(json.dumps(rows, ensure_ascii=False, indent=2) if a.json else
                  "\n".join(f"[{r['do']}] {r['id']} — {r['why']}" for r in rows) + "\n(미리보기입니다. 바꾸려면 --apply)")
             return 0
+        actions = sync.confirm_removals(st, actions, lambda: configs.discover(root, claude, codex))
         result = sync.apply(st, actions)
         if not a.no_survey:
             sources = configs.discover(root, claude, codex)

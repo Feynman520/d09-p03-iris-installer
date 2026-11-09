@@ -7,6 +7,14 @@ restore() puts the original command/args back (direct connection) and marks rele
 One rule decides what a non-shim command under a registered name means (12-6):
   equal to the registry's original  -> a running Claude wrote back its stale copy -> convert again
   anything else                     -> the user changed it on purpose             -> released
+
+Removal is never trusted on one look (2026-11-01 incident: a half-written .claude.json
+read as "every Claude entry gone" deleted 11 entries and their original commands):
+  - a config file that exists but does not parse holds back removals from that file ("hold")
+  - confirm_removals() reads everything again after a pause and keeps only removals seen twice
+  - a removal leaves a tombstone (status "removed", original kept), never deletes the entry
+  - a shim whose entry is a tombstone is revived; a shim with no entry at all is recovered
+    from the newest backup copy that still holds the real command ("recover"), else "problem"
 """
 from __future__ import annotations
 
@@ -20,6 +28,9 @@ from . import configs, store
 
 RELAY_PY = Path(__file__).resolve().parents[1] / "relay.py"
 KEEP_BACKUP_RUNS = 5
+PINNED_BACKUP_SUFFIX = "-before-first-apply"   # hand-made first snapshot: never rotated
+REMOVAL_RECHECK_SEC = 3.0
+ACTIONABLE = ("convert", "restore", "release", "remove", "revive", "recover")
 
 
 def python_for_shims(settings: dict) -> str:
@@ -59,6 +70,7 @@ def plan(st: store.State, sources: list) -> list[dict]:
     exclude = set(settings.get("exclude") or [])
     actions: list[dict] = []
     seen_ids: set[str] = set()
+    unreadable = {_norm(src.path) for src in sources if not src.readable}
     for src in sources:
         for e in src.entries:
             sid = shim_id(e.spec)
@@ -68,7 +80,14 @@ def plan(st: store.State, sources: list) -> list[dict]:
                 if e.name in exclude and reg:
                     actions.append({"do": "restore", "entry": e, "reg": reg, "why": "제외 목록"})
                 elif not reg:
-                    actions.append({"do": "problem", "entry": e, "why": "안내원 항목인데 등록부가 없음"})
+                    found = find_original(st, e)
+                    if found:
+                        actions.append({"do": "recover", "entry": e, "id": sid, "original": found[0],
+                                        "from": found[1], "why": "등록부가 없어 백업의 원래 명령으로 되살림"})
+                    else:
+                        actions.append({"do": "problem", "entry": e, "why": "안내원 항목인데 등록부가 없음(백업에도 원래 명령 없음)"})
+                elif reg.get("status") == "removed":
+                    actions.append({"do": "revive", "entry": e, "reg": reg, "why": "삭제 표시였지만 설정에 안내원이 남아 있음"})
                 else:
                     actions.append({"do": "ok", "entry": e, "why": "중계 중"})
                 continue
@@ -99,8 +118,63 @@ def plan(st: store.State, sources: list) -> list[dict]:
             actions.append({"do": "convert", "entry": e, "why": why})
     for reg in st.entries():
         if reg["id"] not in seen_ids and reg.get("status") != "removed":
-            actions.append({"do": "remove", "reg": reg, "why": "설정에서 사라짐"})
+            if _norm(reg.get("configPath") or "") in unreadable:
+                actions.append({"do": "hold", "reg": reg, "why": "설정 파일을 읽지 못함(삭제 보류)"})
+            else:
+                actions.append({"do": "remove", "reg": reg, "why": "설정에서 사라짐"})
     return actions
+
+
+def _norm(p) -> str:
+    return str(p).replace("/", "\\").lower()
+
+
+def confirm_removals(st: store.State, actions: list[dict], rediscover, *, wait: float = REMOVAL_RECHECK_SEC) -> list[dict]:
+    """Keep a removal only if a second look, `wait` seconds later, still sees it gone."""
+    removes = [a for a in actions if a["do"] == "remove"]
+    if not removes:
+        return actions
+    if wait:
+        time.sleep(wait)
+    still = {a["reg"]["id"] for a in plan(st, rediscover()) if a["do"] == "remove"}
+    out = []
+    for a in actions:
+        if a["do"] == "remove" and a["reg"]["id"] not in still:
+            st.log("remove-deferred", id=a["reg"]["id"])
+            out.append(dict(a, do="hold", why="두 번째 확인에서 다시 보임(삭제 보류)"))
+        else:
+            out.append(a)
+    return out
+
+
+def _backup_runs(st: store.State) -> list[Path]:
+    """Backup folders written by _backup (they carry index.json), oldest first."""
+    if not st.backups_dir.is_dir():
+        return []
+    return sorted([x for x in st.backups_dir.iterdir() if x.is_dir() and (x / "index.json").is_file()],
+                  key=lambda x: x.name)
+
+
+def find_original(st: store.State, e: configs.Entry) -> tuple[dict, str] | None:
+    """Newest backup copy of e's config file whose same entry still has a real (non-shim)
+    command -> ({command, args[, startup_timeout_sec]}, backup run name)."""
+    want = _norm(e.source.path)
+    for run in reversed(_backup_runs(st)):
+        index = store.read_json(run / "index.json") or []
+        for item in index if isinstance(index, list) else []:
+            if not isinstance(item, dict) or _norm(item.get("original") or "") != want:
+                continue
+            src = configs.read_file_as(e.source.kind, run / str(item.get("file")))
+            for cand in (src.entries if src else []):
+                if cand.name != e.name or cand.project_key != e.project_key:
+                    continue
+                if shim_id(cand.spec) or not cand.spec.get("command"):
+                    continue
+                found = {"command": cand.spec.get("command"), "args": list(cand.spec.get("args") or [])}
+                if cand.spec.get("startup_timeout_sec"):
+                    found["startup_timeout_sec"] = cand.spec.get("startup_timeout_sec")
+                return found, run.name
+    return None
 
 
 def _backup(st: store.State, paths: list[Path], stamp: str) -> Path | None:
@@ -114,7 +188,9 @@ def _backup(st: store.State, paths: list[Path], stamp: str) -> Path | None:
         shutil.copy2(p, dst)
         index.append({"file": dst.name, "original": str(p)})
     store.atomic_write_json(d / "index.json", index)
-    runs = sorted([x for x in st.backups_dir.iterdir() if x.is_dir()], key=lambda x: x.name)
+    # Rotate only our own runs. The pinned first snapshot and hand-made copies (no
+    # index.json) stay: they may be the last place an original command survives.
+    runs = [x for x in _backup_runs(st) if not x.name.endswith(PINNED_BACKUP_SUFFIX)]
     for old in runs[:-KEEP_BACKUP_RUNS]:
         shutil.rmtree(old, ignore_errors=True)
     return d
@@ -140,6 +216,25 @@ def convert(st: store.State, e: configs.Entry, python: str, *, owner: str = "syn
     return {"id": e.id, "ok": True}
 
 
+def recover(st: store.State, e: configs.Entry, found: dict, backup_run: str) -> dict:
+    """Write back a lost registry entry for a shim that is still in the config.
+    The config is not touched: it already points at the shim."""
+    original = {"command": found["command"], "args": list(found.get("args") or [])}
+    reg = {
+        "id": shim_id(e.spec) or e.id,
+        "agent": e.agent, "scope": e.scope, "name": e.name,
+        "configPath": str(e.source.path), "configKind": e.source.kind, "projectKey": e.project_key,
+        "real": dict(original), "original": dict(original),
+        "expandVars": e.agent == "claude", "status": "relayed", "owner": "sync",
+        "recoveredAt": store.now_iso(), "recoveredFrom": backup_run,
+    }
+    if found.get("startup_timeout_sec"):
+        reg["startTimeoutSec"] = found["startup_timeout_sec"]
+    st.put_entry(reg)
+    st.log("recover", id=reg["id"], backup=backup_run)
+    return {"id": reg["id"], "ok": True}
+
+
 def restore_entry(st: store.State, e: configs.Entry | None, reg: dict, *, why: str) -> dict:
     if e is not None and shim_id(e.spec) == reg["id"]:
         try:
@@ -159,7 +254,8 @@ def apply(st: store.State, actions: list[dict], *, python: str | None = None) ->
     touched = [a["entry"].source.path for a in actions if a["do"] in ("convert", "restore")]
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backup = _backup(st, touched, stamp)
-    result = {"converted": [], "restored": [], "released": [], "removed": [], "failed": [], "backup": str(backup) if backup else None}
+    result = {"converted": [], "restored": [], "released": [], "removed": [], "revived": [], "recovered": [],
+              "held": [], "failed": [], "backup": str(backup) if backup else None}
     for a in actions:
         if a["do"] == "convert":
             r = convert(st, a["entry"], python)
@@ -171,8 +267,19 @@ def apply(st: store.State, actions: list[dict], *, python: str | None = None) ->
             st.put_entry(dict(a["reg"], status="released", releasedAt=store.now_iso(), releasedWhy=a["why"]))
             result["released"].append({"id": a["reg"]["id"]})
         elif a["do"] == "remove":
-            st.remove_entry(a["reg"]["id"])
+            st.put_entry(dict(a["reg"], status="removed", removedAt=store.now_iso(), removedWhy=a["why"]))
+            st.remove_catalog(a["reg"]["id"])
+            st.log("tombstone", id=a["reg"]["id"])
             result["removed"].append({"id": a["reg"]["id"]})
+        elif a["do"] == "revive":
+            st.put_entry(dict(a["reg"], status="relayed", revivedAt=store.now_iso()))
+            st.log("revive", id=a["reg"]["id"])
+            result["revived"].append({"id": a["reg"]["id"]})
+        elif a["do"] == "recover":
+            r = recover(st, a["entry"], a["original"], a["from"])
+            (result["recovered"] if r["ok"] else result["failed"]).append(r)
+        elif a["do"] == "hold":
+            result["held"].append({"id": a["reg"]["id"], "why": a["why"]})
     # A running Claude may write its stale copy of .claude.json back over our edit
     # (design 12-8). Check once; the daemon re-checks later with the same rule.
     if result["converted"]:

@@ -124,15 +124,118 @@ class SyncTests(unittest.TestCase):
         local_a = [a for k, a in p.items() if k.startswith("claude.l") and a["entry"].project_key == "C:/W/A"][0]
         self.assertEqual(local_a["do"], "release")
 
-    def test_entry_removed_from_config_cleans_registry(self):
+    def test_entry_removed_from_config_leaves_a_tombstone(self):
         sync.apply(self.s.state, sync.plan(self.s.state, self.s.sources()), python=PY)
+        phys_id = [r["id"] for r in self.s.state.entries() if r["name"] == "phys"][0]
+        self.s.state.put_catalog(phys_id, {"tools": []})
         role = self.s.root / "R01-교사(Teacher)" / ".mcp.json"
         role.write_text('{"mcpServers": {}}', encoding="utf-8")
         p = sync.plan(self.s.state, self.s.sources())
         rm = [a for a in p if a["do"] == "remove"]
         self.assertEqual(len(rm), 1)
         sync.apply(self.s.state, p, python=PY)
-        self.assertFalse(any(r["name"] == "phys" for r in self.s.state.entries()))
+        reg = self.s.state.get_entry(phys_id)
+        self.assertEqual(reg["status"], "removed")                    # kept as a tombstone, not deleted
+        self.assertEqual(reg["original"], {"command": "uvx", "args": ["phys"]})
+        self.assertFalse(self.s.state.catalog_path(phys_id).exists())  # menu dropped
+        again = [a for a in sync.plan(self.s.state, self.s.sources()) if a["do"] == "remove"]
+        self.assertEqual(again, [])                                   # a tombstone is not removed twice
+
+    # --- 2026-11-01 incident: an unreadable .claude.json was read as "every entry gone" ---
+    def test_unreadable_config_holds_removals(self):
+        sync.apply(self.s.state, sync.plan(self.s.state, self.s.sources()), python=PY)
+        path = self.s.claude / ".claude.json"
+        good = path.read_text(encoding="utf-8")
+        path.write_text(good[: len(good) // 2], encoding="utf-8")    # half-written by a running Claude
+        p = sync.plan(self.s.state, self.s.sources())
+        self.assertEqual([a for a in p if a["do"] == "remove"], [])
+        held = [a for a in p if a["do"] == "hold"]
+        self.assertTrue(held and all(a["reg"]["agent"] == "claude" for a in held))
+        sync.apply(self.s.state, p, python=PY)
+        self.assertEqual(self.s.state.get_entry("claude.global.hwp")["status"], "relayed")
+
+    def test_unreadable_codex_toml_holds_removals(self):
+        sync.apply(self.s.state, sync.plan(self.s.state, self.s.sources()), python=PY)
+        (self.s.codex / "config.toml").write_bytes(b"[mcp_servers.pdf\r\ncommand = ")
+        p = sync.plan(self.s.state, self.s.sources())
+        self.assertNotIn("codex.global.pdf", [a["reg"]["id"] for a in p if a["do"] == "remove"])
+
+    def test_confirm_removals_drops_a_transient_disappearance(self):
+        sync.apply(self.s.state, sync.plan(self.s.state, self.s.sources()), python=PY)
+        role = self.s.root / "R01-교사(Teacher)" / ".mcp.json"
+        good = role.read_text(encoding="utf-8")
+        role.write_text('{"mcpServers": {}}', encoding="utf-8")
+        p = sync.plan(self.s.state, self.s.sources())
+        self.assertEqual(len([a for a in p if a["do"] == "remove"]), 1)
+
+        def rediscover_after_fix():
+            role.write_text(good, encoding="utf-8")                   # the writer finished
+            return self.s.sources()
+        kept = sync.confirm_removals(self.s.state, p, rediscover_after_fix, wait=0)
+        self.assertEqual([a for a in kept if a["do"] == "remove"], [])
+        role.write_text('{"mcpServers": {}}', encoding="utf-8")
+        p = sync.plan(self.s.state, self.s.sources())
+        kept = sync.confirm_removals(self.s.state, p, self.s.sources, wait=0)
+        self.assertEqual(len([a for a in kept if a["do"] == "remove"]), 1)  # really gone: still removed
+
+    def test_shim_with_tombstone_is_revived(self):
+        sync.apply(self.s.state, sync.plan(self.s.state, self.s.sources()), python=PY)
+        reg = self.s.state.get_entry("claude.global.hwp")
+        self.s.state.put_entry(dict(reg, status="removed"))
+        p = self.plan_by_id()
+        self.assertEqual(p["claude.global.hwp"]["do"], "revive")
+        res = sync.apply(self.s.state, list(p.values()), python=PY)
+        self.assertEqual(len(res["revived"]), 1)
+        back = self.s.state.get_entry("claude.global.hwp")
+        self.assertEqual(back["status"], "relayed")
+        self.assertEqual(back["real"], {"command": "C:\\venv\\python.exe", "args": ["C:\\srv\\hwp.py"]})
+
+    def test_shim_without_registry_is_recovered_from_backup(self):
+        sync.apply(self.s.state, sync.plan(self.s.state, self.s.sources()), python=PY)
+        for eid in ("claude.global.hwp", "codex.global.pdf"):
+            self.s.state.registry_path(eid).unlink()                 # what the old auto-sync did
+        p = self.plan_by_id()
+        self.assertEqual(p["claude.global.hwp"]["do"], "recover")
+        self.assertEqual(p["codex.global.pdf"]["do"], "recover")
+        res = sync.apply(self.s.state, list(p.values()), python=PY)
+        self.assertEqual(len(res["recovered"]), 2)
+        hwp = self.s.state.get_entry("claude.global.hwp")
+        self.assertEqual(hwp["status"], "relayed")
+        self.assertEqual(hwp["real"], {"command": "C:\\venv\\python.exe", "args": ["C:\\srv\\hwp.py"]})
+        self.assertTrue(hwp["expandVars"])
+        self.assertTrue(hwp.get("recoveredFrom"))
+        pdf = self.s.state.get_entry("codex.global.pdf")
+        self.assertEqual(pdf["real"], {"command": "C:\\py\\python.exe", "args": ["C:\\srv\\pdf.py"]})
+        self.assertEqual(pdf.get("startTimeoutSec"), 30)
+        self.assertEqual(self.plan_by_id()["claude.global.hwp"]["do"], "ok")
+
+    def test_shim_without_registry_or_backup_stays_a_problem(self):
+        import shutil
+        sync.apply(self.s.state, sync.plan(self.s.state, self.s.sources()), python=PY)
+        self.s.state.registry_path("claude.global.hwp").unlink()
+        shutil.rmtree(self.s.state.backups_dir)
+        p = self.plan_by_id()
+        self.assertEqual(p["claude.global.hwp"]["do"], "problem")
+
+    def test_backup_rotation_keeps_the_first_apply_snapshot(self):
+        bdir = self.s.state.backups_dir
+        first = bdir / "20200101-000000-before-first-apply"
+        first.mkdir(parents=True)
+        (first / "index.json").write_text("[]", encoding="utf-8")
+        loose = bdir / "20200101-000001-registry-before-restore"     # hand-made copy, no index.json
+        loose.mkdir()
+        src = self.s.claude / ".claude.json"
+        for i in range(sync.KEEP_BACKUP_RUNS + 2):
+            sync._backup(self.s.state, [src], f"2021010{i}-000000")
+        runs = sorted(x.name for x in bdir.iterdir())
+        self.assertIn(first.name, runs)
+        self.assertIn(loose.name, runs)
+        self.assertEqual(len([r for r in runs if r.startswith("2021")]), sync.KEEP_BACKUP_RUNS)
+
+    def test_drop_ledger_tolerates_os_errors(self):
+        self.s.state.ledger_dir.mkdir(parents=True, exist_ok=True)
+        self.s.state.ledger_path(4242).mkdir()                       # unlink() on a folder raises OSError
+        self.s.state.drop_ledger(4242)
 
 
 class ScopeGuardTests(unittest.TestCase):

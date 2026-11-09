@@ -51,6 +51,9 @@ def render(data: dict) -> str:
     cat_ko = {"ok": "메뉴판 최신", "stale": "메뉴판 낡음(쓸 때 갱신)", "missing": "메뉴판 없음(첫 세션이 바로 켬)"}
     st_ko = {"relayed": "중계", "released": "직접 연결로 되돌림", "removed": "삭제됨"}
     for e in data["entries"]:
+        if e["status"] == "removed":
+            lines.append(f"  - {e['id']}: 삭제됨(설정에서 빠짐 · 원래 명령은 보관 · 안내원이 다시 보이면 되살림)")
+            continue
         lines.append(f"  - {e['id']}: {st_ko.get(e['status'], e['status'])} · {cat_ko.get(e['catalog'], e['catalog'])} · 도구 {e['tools']}개")
     lines.append("")
     alive = [r for r in data["running"] if r["alive"]]

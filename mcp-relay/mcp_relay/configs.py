@@ -60,6 +60,9 @@ class Source:
     entries: list = field(default_factory=list)
     in_git_repo: bool = False
     newline: str = "\n"
+    # False = the file exists but could not be read/parsed this time (e.g. a running
+    # Claude was rewriting .claude.json). Its entries are unknown, not gone (2026-11-01).
+    readable: bool = True
 
 
 def _project_scope(path: Path) -> str:
@@ -91,10 +94,17 @@ def _walk(root: Path):
 
 # ---------------------------------------------------------------- reading --
 def read_claude_user(claude_home: Path) -> Source | None:
-    path = Path(claude_home) / ".claude.json"
+    return read_claude_user_file(Path(claude_home) / ".claude.json")
+
+
+def read_claude_user_file(path: Path) -> Source | None:
+    """None = no such file. A file that exists but does not parse -> readable=False."""
+    path = Path(path)
+    if not path.is_file():
+        return None
     data = store.read_json(path)
     if not isinstance(data, dict):
-        return None
+        return Source("claude", "claude-user", path, readable=False)
     src = Source("claude", "claude-user", path)
     for name, spec in (data.get("mcpServers") or {}).items():
         if isinstance(spec, dict):
@@ -108,29 +118,32 @@ def read_claude_user(claude_home: Path) -> Source | None:
     return src
 
 
-def read_mcp_json(path: Path, soul_root: Path) -> Source | None:
+def read_mcp_json(path: Path, soul_root: Path | None) -> Source | None:
+    if not Path(path).is_file():
+        return None
     data = store.read_json(path)
     if not isinstance(data, dict):
-        return None
+        return Source("claude", "claude-project", Path(path), readable=False)
     src = Source("claude", "claude-project", Path(path))
-    src.in_git_repo = _git_root(Path(path).parent, soul_root) is not None
+    if soul_root is not None:
+        src.in_git_repo = _git_root(Path(path).parent, soul_root) is not None
     for name, spec in (data.get("mcpServers") or {}).items():
         if isinstance(spec, dict):
             src.entries.append(Entry("claude", _project_scope(Path(path)), name, spec, src))
     return src
 
 
-def read_codex(path: Path, scope: str, soul_root: Path) -> Source | None:
+def read_codex(path: Path, scope: str, soul_root: Path | None) -> Source | None:
     if tomllib is None or not Path(path).is_file():
         return None
-    raw = Path(path).read_bytes()
     try:
+        raw = Path(path).read_bytes()
         data = tomllib.loads(raw.decode("utf-8-sig"))
-    except (ValueError, UnicodeDecodeError):
-        return None
+    except (OSError, ValueError, UnicodeDecodeError):
+        return Source("codex", "codex", Path(path), readable=False)
     src = Source("codex", "codex", Path(path))
     src.newline = "\r\n" if b"\r\n" in raw else "\n"
-    if scope != "global":
+    if scope != "global" and soul_root is not None:
         src.in_git_repo = _git_root(Path(path).parent.parent, soul_root) is not None
     for name, spec in (data.get("mcp_servers") or {}).items():
         if isinstance(spec, dict):
@@ -170,6 +183,18 @@ def discover(soul_root: Path, claude_home: Path | None, codex_home: Path | None)
             if s:
                 out.append(s)
     return out
+
+
+def read_file_as(kind: str, path: Path) -> Source | None:
+    """Read any file (e.g. a backup copy) as a source of the given kind. Entry ids of the
+    result depend on the path, so callers match by name + project_key, not by id."""
+    if kind == "claude-user":
+        return read_claude_user_file(path)
+    if kind == "claude-project":
+        return read_mcp_json(path, None)
+    if kind == "codex":
+        return read_codex(path, "global", None)
+    return None
 
 
 def find_entry(sources: list[Source], entry_id: str) -> Entry | None:

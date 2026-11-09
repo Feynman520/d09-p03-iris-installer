@@ -72,11 +72,15 @@ def run_sync(st: store.State, root: Path) -> dict | None:
     claude, codex = homes(root)
     sources = configs.discover(root, claude, codex)
     actions = sync.plan(st, sources)
-    if not any(a["do"] in ("convert", "restore", "release", "remove") for a in actions):
+    if not any(a["do"] in sync.ACTIONABLE for a in actions):
+        return None
+    actions = sync.confirm_removals(st, actions, lambda: configs.discover(root, *homes(root)))
+    if not any(a["do"] in sync.ACTIONABLE for a in actions):
         return None
     result = sync.apply(st, actions)
     st.log("auto-sync", converted=len(result["converted"]), restored=len(result["restored"]),
-           released=len(result["released"]), removed=len(result["removed"]), failed=len(result["failed"]))
+           released=len(result["released"]), removed=len(result["removed"]), revived=len(result["revived"]),
+           recovered=len(result["recovered"]), held=len(result["held"]), failed=len(result["failed"]))
     return result
 
 

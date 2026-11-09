@@ -141,6 +141,12 @@ class State:
         entry["updatedAt"] = now_iso()
         atomic_write_json(self.registry_path(entry["id"]), entry)
 
+    def remove_catalog(self, entry_id: str) -> None:
+        try:
+            self.catalog_path(entry_id).unlink()
+        except FileNotFoundError:
+            pass
+
     def remove_entry(self, entry_id: str) -> None:
         for p in (self.registry_path(entry_id), self.catalog_path(entry_id)):
             try:
@@ -184,7 +190,7 @@ class State:
     def drop_ledger(self, shim_pid: int) -> None:
         try:
             self.ledger_path(shim_pid).unlink()
-        except FileNotFoundError:
+        except OSError:  # gone already, or held/locked at exit -- the daemon sweep tidies up
             pass
 
     def ledger(self) -> list[tuple[Path, dict]]:
