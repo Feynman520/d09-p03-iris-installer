@@ -52,6 +52,8 @@ function writeAtomic(file, text) {
   fs.renameSync(tmp, file);
 }
 
+export const CLAUDE_START_NUDGES = Object.freeze({ hasCompletedClaudeInChromeOnboarding: true, fullscreenUpsellSeenCount: 3, hasSeenAutoDefaultNudge: true });
+
 /**
  * seedClaudeFirstRun(root, {claudeVersion})
  *   -> {path, written: 'created'|'merged'|'unchanged', added: string[], reason?}
@@ -81,6 +83,15 @@ export function seedClaudeFirstRun(root, { claudeVersion = null } = {}) {
   if (claudeVersion && !data.lastOnboardingVersion) {
     data.lastOnboardingVersion = String(claudeVersion);
     added.push('lastOnboardingVersion');
+  }
+  // 시작 안내창 3종 "이미 봤음"(2.0.55, 2026-11-09 학교 컴퓨터실): 크롬 연동 안내 · 전체화면 렌더러 권유(수락하면 새 대화 번호로
+  // 재시작해 IRIS 창 대화가 빔) · 자동 모드 기본값 권유(수락하면 기본 권한이 auto 로 저장). IRIS 창 2.99 daemon/trust.mjs 와 같은 값.
+  for (const [k, v] of Object.entries(CLAUDE_START_NUDGES)) {
+    if (data[k] === undefined) { data[k] = v; added.push(k); }
+  }
+  if (typeof data.fullscreenUpsellSeenCount === 'number' && data.fullscreenUpsellSeenCount < CLAUDE_START_NUDGES.fullscreenUpsellSeenCount) {
+    data.fullscreenUpsellSeenCount = CLAUDE_START_NUDGES.fullscreenUpsellSeenCount;
+    added.push('fullscreenUpsellSeenCount');
   }
   if (data.projects === null || typeof data.projects !== 'object' || Array.isArray(data.projects)) {
     data.projects = {};

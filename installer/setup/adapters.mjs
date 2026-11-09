@@ -428,6 +428,12 @@ async function runRelaySurvey(ctx, { fs, root, log }) {
 
 // 새 PC에는 시스템 파이썬이 없다. 그래서 훅의 파이썬은 동봉 shim 의 **절대경로**다
 // (`python` 만 적으면 PATH 반영 전 첫 세션에서 훅이 통째로 실패한다).
+// 훅은 전부 `shell: 'powershell'` 이다(2.0.55, 2026-11-09 학교 컴퓨터실 실측): 클로드코드는 훅을 Git Bash 로 돌리는데
+// 동봉 MinGit 에는 bash.exe 가 없어, Git 을 따로 깐 적 없는 PC 에서는 훅이 파워셸로 떨어져 `"a" "b"` 꼴이 문법 오류가 났다.
+// 파워셸 고정이면 Git Bash 가 있든 없든 같다. `-Command` 는 끝난 명령의 종료 코드를 1/0 으로 뭉개므로
+// 차단(2)이 살아 있게 `; exit $LASTEXITCODE` 를 붙인다(실측: 없으면 1, 있으면 2).
+export const CLAUDE_HOOK_SHELL = 'powershell';
+const psRun = (exe, ...args) => `& ${[exe, ...args].map((a) => (/[\\/:\s]/.test(a) ? `"${a}"` : a)).join(' ')}; exit $LASTEXITCODE`;
 export function claudeHookGroups(root) {
   const scripts = claudeScriptsDir(root);
   const py = pythonShimPath(root);
@@ -437,7 +443,8 @@ export function claudeHookGroups(root) {
         matcher: 'Bash|PowerShell',
         hooks: [{
           type: 'command',
-          command: `powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(scripts, 'block-blanket-kill.ps1')}"`,
+          command: `powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(scripts, 'block-blanket-kill.ps1')}"; exit $LASTEXITCODE`,
+          shell: CLAUDE_HOOK_SHELL,
           timeout: 15,
           statusMessage: '일괄 킬 가드 검사 중',
         }],
@@ -446,7 +453,8 @@ export function claudeHookGroups(root) {
         matcher: 'Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell',
         hooks: [{
           type: 'command',
-          command: `"${py}" "${path.join(scripts, 'guard-iris-path.py')}"`,
+          command: psRun(py, path.join(scripts, 'guard-iris-path.py')),
+          shell: CLAUDE_HOOK_SHELL,
           timeout: 10,
           statusMessage: 'IRIS 경로 실존 가드 검사 중',
         }],
@@ -457,7 +465,8 @@ export function claudeHookGroups(root) {
         matcher: 'startup|resume|clear|compact',
         hooks: [{
           type: 'command',
-          command: `"${py}" "${checkFreshPath(root)}" --hook session`,
+          command: psRun(py, checkFreshPath(root), '--hook', 'session'),
+          shell: CLAUDE_HOOK_SHELL,
           timeout: 30,
           statusMessage: '온톨로지 신선도 점검',
         }],
@@ -469,7 +478,8 @@ export function claudeHookGroups(root) {
       {
         hooks: [{
           type: 'command',
-          command: `"${py}" "${path.join(scripts, 'bg-leftover-guard.py')}"`,
+          command: psRun(py, path.join(scripts, 'bg-leftover-guard.py')),
+          shell: CLAUDE_HOOK_SHELL,
           timeout: 15,
         }],
       },
@@ -523,7 +533,8 @@ export function codexHookConfig(root) {
 // 훅 항목이 어느 스크립트를 부르는지(파일 이름만).
 function hookScriptNames(entry) {
   return (entry?.hooks ?? [])
-    .map((h) => path.basename(String(h?.command ?? '').replace(/"/g, '').split(/\s+/).find((t) => /\.(ps1|py|cjs|js)$/i.test(t)) ?? ''))
+    // 파워셸 꼴(2.0.55)은 `…script.py"; exit $LASTEXITCODE` 처럼 경로 뒤에 `;` 가 붙는다 — 떼고 본다.
+    .map((h) => path.basename(String(h?.command ?? '').replace(/"/g, '').split(/\s+/).map((t) => t.replace(/;+$/, '')).find((t) => /\.(ps1|py|cjs|js)$/i.test(t)) ?? ''))
     .filter(Boolean);
 }
 
@@ -554,8 +565,10 @@ function updateOwnedHook(root, existing, wanted) {
       const cmd = String(h?.command ?? '');
       if (!marks.some((m) => cmd.toLowerCase().includes(m.toLowerCase()))) continue;
       if (!isInstallerOwnedPath(root, cmd)) continue; // 그 사람 사본 — 그대로
-      if (cmd === w.command) continue;
+      // 2.0.55: 명령과 함께 실행 껍데기(shell)도 우리 값으로 — 옛 판 훅은 shell 이 없어 Git Bash 없는 PC 에서 깨졌다.
+      if (cmd === w.command && (w.shell === undefined || h.shell === w.shell)) continue;
       h.command = w.command;
+      if (w.shell !== undefined) h.shell = w.shell;
       changed = true;
     }
   }

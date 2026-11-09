@@ -32,6 +32,21 @@ test('claude: fresh home -> .claude.json created with onboarding done + folder t
   assert.ok(!fs.existsSync(`${r.path}.tmp`), 'atomic write leaves no tmp file');
 });
 
+test('claude: start-up nudges marked as seen (2.0.55) — only missing keys, seen-count only raised', () => {
+  const root = freshRoot('c-nudges');
+  const r = seedClaudeFirstRun(root);
+  const data = JSON.parse(fs.readFileSync(r.path, 'utf8'));
+  assert.equal(data.hasCompletedClaudeInChromeOnboarding, true);
+  assert.equal(data.fullscreenUpsellSeenCount, 3);
+  assert.equal(data.hasSeenAutoDefaultNudge, true);
+  fs.writeFileSync(r.path, JSON.stringify({ hasCompletedOnboarding: true, projects: { [claudeProjectKey(root)]: { hasTrustDialogAccepted: true } }, hasCompletedClaudeInChromeOnboarding: false, fullscreenUpsellSeenCount: 2, hasSeenAutoDefaultNudge: true }));
+  const r2 = seedClaudeFirstRun(root);
+  assert.deepEqual(r2.added, ['fullscreenUpsellSeenCount']);
+  const d2 = JSON.parse(fs.readFileSync(r.path, 'utf8'));
+  assert.equal(d2.fullscreenUpsellSeenCount, 3);
+  assert.equal(d2.hasCompletedClaudeInChromeOnboarding, false, 'an existing value is never flipped');
+});
+
 test('claude: existing file (login already wrote oauthAccount) -> only missing keys added, nothing else touched', () => {
   const root = freshRoot('c-merge');
   const file = claudeConfigJsonPath(root);

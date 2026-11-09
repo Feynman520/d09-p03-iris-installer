@@ -168,6 +168,14 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   for (const group of [...pre, ...start, ...stop]) {
     for (const h of group.hooks) assert.ok(!/^python\b/.test(h.command), `shim 절대경로가 아님: ${h.command}`);
   }
+  // 2.0.55: Git Bash 없는 PC(동봉 MinGit 엔 bash.exe 없음)에서도 돌게 파워셸 고정 + 차단(2)이 1로 뭉개지지 않게 종료 코드 전달
+  for (const group of [...pre, ...start, ...stop]) {
+    for (const h of group.hooks) {
+      assert.equal(h.shell, 'powershell', `훅 실행 껍데기: ${h.command}`);
+      assert.ok(h.command.endsWith('; exit $LASTEXITCODE'), `종료 코드 전달: ${h.command}`);
+      assert.ok(!/^"/.test(h.command), `파워셸에서 "a" "b" 꼴은 문법 오류: ${h.command}`);
+    }
+  }
 
   // 플러그인 4종이 켜져 있고 document-skills 는 없다
   assert.deepEqual(Object.keys(settings.enabledPlugins).sort(), [
@@ -569,6 +577,7 @@ test('adapters(업데이트): 우리 훅의 경로는 고치고, 그 사람 사�
   const s = readJson(sPath);
   const after = s.hooks.PreToolUse.find((e) => JSON.stringify(e).includes('guard-iris-path.py'));
   assert.equal(after.hooks[0].command, wanted, '우리 폴더를 가리키던 우리 훅은 새 명령으로 갱신');
+  assert.equal(after.hooks[0].shell, 'powershell', '옛 판 훅(shell 없음)도 파워셸로 갈아 끼운다(2.0.55)');
   assert.equal(s.hooks.PreToolUse.length, 2, '훅을 하나 더 만들지 않는다');
   assert.equal(s.hooks.SessionStart.length, 1, '그 사람 훅 옆에 우리 것을 끼워 넣지 않는다');
   assert.equal(s.hooks.SessionStart[0].hooks[0].command, '"C:\\mine\\python.exe" "C:\\mine\\check_fresh.py" --hook session');
