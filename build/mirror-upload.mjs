@@ -28,11 +28,12 @@ export const PUBLIC_BASE = 'https://pub-6bb549660d7d4bd79ed07a7b6523f5c5.r2.dev'
 // latest.json 의 url 칸과 끄지 않은 공개 주소로 남는다. 창구 코드 = mirror-worker/worker.js.
 export const FAST_BASE = 'https://iris-workspace-dl.pages.dev';
 
-function parseArgs(argv) {
-  const o = { files: [], contentType: null, key: null, out: null, check: null };
+export function parseArgs(argv) {
+  const o = { files: [], contentType: null, key: null, out: null, check: null, stable: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--out') o.out = argv[++i];
+    if (a === '--stable') o.stable = true; // latest.json(안정판 표)까지 갱신 — 없으면 미러에 파일만 올린다(최신판 기본)
+    else if (a === '--out') o.out = argv[++i];
     else if (a === '--file') o.files.push(argv[++i]);
     else if (a === '--key') o.key = argv[++i];
     else if (a === '--content-type') o.contentType = argv[++i];
@@ -114,13 +115,16 @@ export async function checkPublic(key, base = PUBLIC_BASE) {
 // latest.json (2026-09-19): IRIS 창의 업데이트기가 GitHub API 를 못 읽을 때(403 rate limit·차단 — 데스크탑 실측
 // "update check: … HTTP 403" 으로 새 판을 끝내 못 봄) 대신 읽는 최신 판 표. 부품별 항목 { version, tag, asset, url,
 // size, sha256Url, sigUrl, publishedAt } — Face `update.mjs fetchLatest()` 가 GitHub 응답과 같은 모양으로 쓴다.
-export async function readLatest() {
-  try {
-    const r = await fetch(`${PUBLIC_BASE}/latest.json`, { cache: 'no-store' });
-    if (!r.ok) return {};
-    const j = await r.json();
-    return j && typeof j === 'object' ? j : {};
-  } catch { return {}; }
+// 2026-11-09 두 갈래 배포(docs\설계-배포채널-2026-11-09.md): latest.json 은 **안정판 전용**이다(IRIS 창 업데이트기의 폴백).
+// 읽기에 실패하면 빈 표로 시작하지 않고 멈춘다 — 빈 표에 한 부품만 적어 올리면 나머지 부품 항목이 사라진다(코덱스 검토 5).
+// 404(아직 한 번도 안 만든 표)만 빈 표로 본다.
+export async function readLatest({ fetchImpl = fetch } = {}) {
+  const r = await fetchImpl(`${PUBLIC_BASE}/latest.json`, { cache: 'no-store' });
+  if (r.status === 404) return {};
+  if (!r.ok) throw new Error(`latest.json read failed: HTTP ${r.status} — 표를 덮어쓰지 않고 멈춤`);
+  const j = await r.json();
+  if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('latest.json is not an object — 표를 덮어쓰지 않고 멈춤');
+  return j;
 }
 export function latestEntryFor({ part, version, asset, size, publishedAt = new Date().toISOString() }) {
   const tagPrefix = { package: 'iris-installer--v', face: 'iris-face--v', messenger: 'iris-messenger--v' }[part] ?? `${part}--v`;
@@ -174,9 +178,11 @@ async function main() {
   }
   console.log('mirror: OK');
   console.log(`homepage: add to CONFIG.mirror.assets -> ${results.filter((r) => r.key.endsWith('.zip')).map((r) => `'${r.key}'`).join(', ')}`);
-  // 설치 패키지 zip 을 올렸으면 latest.json 의 package 항목도 갱신한다(창 업데이트기의 GitHub 불통 폴백).
+  // 설치 패키지 zip 을 올렸고 **--stable 일 때만** latest.json 의 package 항목도 갱신한다(창 업데이트기의 GitHub 불통 폴백 = 안정판 전용).
+  // 기본(최신판)은 파일만 올린다 — 최신판이 안정판 PC 의 업데이트로 새지 않게(2026-11-09 두 갈래 배포).
   const zip = results.find((r) => /^IRIS-Setup_v\d+\.\d+\.\d+_.*\.zip$/.test(r.key));
-  if (zip) {
+  if (zip && !o.stable) console.log('latest.json: 건드리지 않음(최신판). 안정판으로 올릴 때는 iris-release.mjs promote 가 갱신합니다.');
+  if (zip && o.stable) {
     const version = /^IRIS-Setup_v(\d+\.\d+\.\d+)_/.exec(zip.key)[1];
     await updateLatest({ part: 'package', entry: latestEntryFor({ part: 'package', version, asset: zip.key, size: zip.size }) });
   }

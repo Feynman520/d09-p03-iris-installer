@@ -448,6 +448,31 @@ test('a locked file: partial (exit 1), nothing of the user deleted, a rerun fini
   assert.deepEqual(fs.readdirSync(sc.parent), [path.basename(arch)]);
 });
 
+// 2026-11-09 (school PC: "deleting with the Codex app open leaves files"): before deleting, programs
+// outside IRIS that hold the agents' home files (_agent\codex, _agent\claude) are named up front.
+// Headless never waits for a person, so it only records them (preHolders); the UI shows a
+// "close these first" screen. A clean folder records none.
+test('outside holders of the agent folders are named before deleting (preHolders)', { skip }, async () => {
+  const sc = scene('preholders');
+  const root = makeInstall(sc);
+  write(root, '_agent/codex/state_5.sqlite', 'db');
+  const holder = await startHolder(
+    "$a = [IO.File]::Open($env:HOLD1, 'Open', 'Read', 'None'); 'held'; Start-Sleep 600",
+    { HOLD1: path.join(root, '_agent', 'codex', 'state_5.sqlite') });
+  let r;
+  try {
+    r = runUninstall(sc, ['-Root', root]);
+  } finally {
+    await stopHolder(holder);
+  }
+  assert.ok(arr(r.json.preHolders).some((h) => h.includes(`(pid ${holder.pid})`)), `named before deleting\n${why(r)}`);
+  assert.equal(r.json.status, 'partial', 'the held file stays (the holder was not stopped by the uninstaller)');
+  const r2 = runUninstall(sc, ['-Root', root]);
+  assert.equal(r2.code, 0, why(r2));
+  assert.deepEqual(arr(r2.json.preHolders), [], 'nothing holds the files any more');
+  assert.equal(r2.json.status, 'done');
+});
+
 // A second uninstall on the same day (a reinstall, then another uninstall) moves into the archive
 // the first one left. A folder keeps its whole name (".agents (2)", "D02.01-... (2)" -- the 2.0.39
 // rehearsal on C:\IRIS-upg got " (2).agents"), a file keeps its extension, and root rules that

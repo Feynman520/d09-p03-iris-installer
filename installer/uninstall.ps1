@@ -677,7 +677,7 @@ function Stop-IrisProcesses($roots, [string]$workDir) {
 }
 
 # Programs that still hold files under $path (Restart Manager; helper is optional).
-function Get-Holders([string]$path) {
+function Get-HolderRows([string]$path) {
   $helper = $null
   foreach ($c in @((Join-Path $script:Here 'file-holders.ps1'), (Join-Path $script:Here 'lib\file-holders.ps1'))) {
     if (Test-Path -LiteralPath $c) { $helper = $c; break }
@@ -685,16 +685,46 @@ function Get-Holders([string]$path) {
   if (-not $helper -or -not (Test-Path -LiteralPath $path)) { return @() }
   try {
     $txt = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -Path $path 2>$null | Out-String
-    $arr = @($txt | ConvertFrom-Json)
-    $names = @()
-    foreach ($h in $arr) {
-      if ($null -eq $h) { continue }
+    $rows = @()
+    # PowerShell 5.1 ConvertFrom-Json writes a JSON array as ONE pipeline object (so '[]' came out as one
+    # empty item -> " (pid )", 2026-11-09). ForEach-Object { $_ } unrolls it: '[]' -> nothing, '[a,b]' -> a, b.
+    foreach ($h in @($txt | ConvertFrom-Json | ForEach-Object { $_ })) {
+      if ($null -eq $h -or $null -eq $h.PSObject.Properties['pid'] -or -not ([string]$h.pid -match '^\d+$')) { continue }
       $label = if ($h.app) { [string]$h.app } else { [string]$h.name }
-      $s = '{0} (pid {1})' -f $label, $h.pid
-      if ($names -notcontains $s) { $names += $s }
+      $rows += [pscustomobject]@{ Pid = [int]$h.pid; Text = ('{0} (pid {1})' -f $label, $h.pid) }
     }
-    return $names
+    return $rows
   } catch { return @() }
+}
+
+function Get-Holders([string]$path) {
+  $names = @()
+  foreach ($r in @(Get-HolderRows $path)) { if ($names -notcontains $r.Text) { $names += $r.Text } }
+  return $names
+}
+
+# 2026-11-09 (school PC report: "deleting with the Codex app open does not remove everything"):
+# programs OUTSIDE the IRIS folder that hold files in the agents' home folders (_agent\codex =
+# CODEX_HOME, _agent\claude = CLAUDE_CONFIG_DIR) -- a Codex or Claude desktop app, an editor
+# extension -- are not stopped by step 1 (only programs running from the root are), so their
+# files stay behind. Ask BEFORE deleting so the user can close them first. Programs that step 1
+# will stop anyway are left out. Never stops anything itself.
+function Get-OutsideHolders($plan) {
+  $stopping = @{}
+  foreach ($t in @(Get-KillTargets $plan.Roots $plan.WorkDir)) { $stopping[[int]$t.Pid] = $true }
+  $names = @()
+  foreach ($r in @($plan.Roots)) {
+    foreach ($sub in @('_agent\codex', '_agent\claude')) {
+      $d = Join-Path $r $sub
+      if (-not (Test-Path -LiteralPath $d)) { continue }
+      foreach ($h in @(Get-HolderRows $d)) {
+        if ($stopping.ContainsKey($h.Pid) -or $h.Pid -eq $PID) { continue }
+        if ($names -notcontains $h.Text) { $names += $h.Text }
+      }
+    }
+  }
+  if ($names.Count -gt 0) { Write-Log ('outside holders before delete: ' + ($names -join ', ')) }
+  return $names
 }
 
 # ---------------------------------------------------------------- files
@@ -1118,7 +1148,10 @@ function Invoke-Headless {
         $res = New-StatusResult 'confirm-required' $t.Root 'mode all needs -Yes'
       } else {
         $plan = New-Plan $t.Install $null
+        # headless: never waits for a person -- the outside holders are only recorded (preHolders)
+        $pre = @(Get-OutsideHolders $plan)
         if ($DryRun) { $res = @(Get-DryRunResult $plan $Mode)[-1] } else { $res = @(Invoke-Plan $plan $Mode)[-1] }
+        if ($res -is [System.Collections.IDictionary]) { $res['preHolders'] = $pre } else { $res | Add-Member -NotePropertyName preHolders -NotePropertyValue $pre -Force }
       }
     }
     'traces' {
@@ -1596,7 +1629,27 @@ function Start-FromIntro {
   $u.Mode = if ($u.RbAll.Checked) { 'all' } else { 'keep' }
   # plan again right before running: the folder may have changed while the window was open
   $u.Plan = New-Plan $u.Plan.Install $null
-  if ($u.Mode -eq 'all') { Show-Confirm } else { Start-Run $u.Plan 'keep' }
+  if ($u.Mode -eq 'all') { Show-Confirm } else { Start-Checked 'keep' }
+}
+
+# Before deleting: programs outside IRIS that hold its agent files (see Get-OutsideHolders).
+# None -> run right away. Some -> a screen that names them: check again / continue anyway / back.
+function Start-Checked([string]$mode) {
+  $u = $script:Ui
+  $u.PendingMode = $mode
+  $h = @(Get-OutsideHolders $u.Plan)
+  if ($h.Count -eq 0) { Start-Run $u.Plan $mode; return }
+  Show-Holders $h
+}
+
+function Show-Holders($names) {
+  Clear-Screen (T 'holdersHeading') $script:Amber
+  Add-Text (T 'holdersBody') -Gap 12
+  Add-Lines $names 6
+  Add-Button (T 'btnCancel') { Show-Intro } -Cancel
+  Add-Button (T 'holdersContinue') { $v = $script:Ui; Start-Run $v.Plan $v.PendingMode }
+  Add-Button (T 'holdersRecheck') { Start-Checked $script:Ui.PendingMode } -Primary
+  Complete-Screen
 }
 
 function Show-Confirm {
@@ -1606,7 +1659,7 @@ function Show-Confirm {
   $names = @($u.Plan.UserItems | ForEach-Object { if ($_.IsDir) { $_.Name + '\' } else { $_.Name } })
   if ($names.Count -gt 0) { Add-Lines $names 12 } else { Add-Text (T 'confirmNone') $script:Gray }
   Add-Button (T 'confirmNo') { Show-Intro } -Cancel
-  Add-Button (T 'confirmYes') { Start-Run $script:Ui.Plan 'all' } -Danger
+  Add-Button (T 'confirmYes') { Start-Checked 'all' } -Danger
   Complete-Screen
 }
 
