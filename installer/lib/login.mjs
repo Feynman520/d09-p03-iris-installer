@@ -486,6 +486,14 @@ export function refreshCodexDisplayName({ root, teamclaudeConfigPath, fs: fsImpl
   return { ok: true, changed, email };
 }
 
+/** 아직 아무 줄도 쓰지 않은 가장 작은 `codex-N`(중계기 identity.js nextCodexName 과 같은 규칙). */
+export function nextCodexName(accounts) {
+  const taken = new Set((Array.isArray(accounts) ? accounts : []).map((a) => a?.name));
+  let n = 1;
+  while (taken.has(`codex-${n}`)) n += 1;
+  return `codex-${n}`;
+}
+
 function writeCodexImportEntry({ root, teamclaudeConfigPath, name = null }) {
   let config;
   try {
@@ -501,7 +509,9 @@ function writeCodexImportEntry({ root, teamclaudeConfigPath, name = null }) {
   const importFrom = credentialPath('chatgpt', root);
   const idx = config.accounts.findIndex((a) => a.provider === 'codex' && a.importFrom === importFrom);
   const identity = codexIdentityFromAuth(root);
-  const entry = { name: name ?? identity.email ?? 'codex', type: 'oauth', provider: 'codex', importFrom, ...(identity.email ? { displayName: identity.email } : {}) };
+  // 2026-11-10 컴퓨터실 신고: 이름을 이메일로 지으면 같은 사람의 클로드 계정(중계기가 이메일로 이름 지음)과 이름이 같아져
+  // 나중의 클로드 추가가 이 코덱스 줄을 "이미 있는 계정"으로 보고 덮어썼다. 그래서 이름은 codex-N, 이메일은 displayName.
+  const entry = { name: name ?? nextCodexName(config.accounts), type: 'oauth', provider: 'codex', importFrom, ...(identity.email ? { displayName: identity.email } : {}) };
   if (idx >= 0) {
     // 있는 항목은 이름을 지키고(실행 중 중계기의 계정 정체성) 표시 이름만 갱신한다.
     config.accounts[idx] = { ...config.accounts[idx], ...entry, name: config.accounts[idx].name };

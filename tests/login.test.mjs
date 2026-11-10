@@ -7,7 +7,7 @@ import { ensureProxy } from '../installer/lib/proxy.mjs';
 import {
   startCliLogin, cliLoginStatus, relayImport, relayStatus,
   resolveTeamclaudeConfigPath, countProviderAccounts,
-  portableTeamclaudeConfigDir, portableTeamclaudeConfigPath,
+  portableTeamclaudeConfigDir, portableTeamclaudeConfigPath, nextCodexName,
 } from '../installer/lib/login.mjs';
 
 function tmpRoot(name) {
@@ -462,6 +462,37 @@ test('relayImport: codex writes an importFrom config entry and triggers reload (
     assert.equal('refreshToken' in written.accounts[0], false);
   } finally {
     fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+  }
+});
+
+// 2026-11-10 컴퓨터실 신고(영구 시험): 코덱스 줄 이름이 이메일이면 같은 이메일의 클로드 추가가 그 줄을 덮어썼다.
+test('relayImport: codex row is named codex-N (never the email) and keeps the email as displayName', async () => {
+  const root = tmpRoot('relay-codex-name');
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const idToken = `${b64({ alg: 'none' })}.${b64({ email: 'teacher@localhost', 'https://api.openai.com/auth': { chatgpt_account_id: 'acct_9' } })}.sig`;
+  fs.mkdirSync(path.join(root, '_agent', 'codex'), { recursive: true });
+  fs.writeFileSync(path.join(root, '_agent', 'codex', 'auth.json'), JSON.stringify({ tokens: { id_token: idToken } }), 'utf8');
+  const configPath = path.join(root, 'teamclaude.json');
+  // 이미 같은 이메일의 클로드 줄과 codex-1 이 있는 PC.
+  fs.writeFileSync(configPath, JSON.stringify({ accounts: [
+    { name: 'teacher@localhost', type: 'oauth', accountUuid: 'u1' },
+    { name: 'codex-1', type: 'oauth', provider: 'codex', importFrom: 'C:\\OTHER\\auth.json' },
+  ] }), 'utf8');
+  try {
+    const result = await relayImport({
+      provider: 'chatgpt', root, nodeDir: path.join(root, 'node'), teamclaudeConfigPath: configPath,
+      reloadFn: async () => ({ ok: true }),
+    });
+    assert.deepEqual(result, { ok: true, method: 'import' });
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    assert.equal(cfg.accounts.length, 3);
+    assert.equal(cfg.accounts[0].name, 'teacher@localhost', 'Claude row untouched');
+    assert.equal(cfg.accounts[2].name, 'codex-2');
+    assert.equal(cfg.accounts[2].displayName, 'teacher@localhost');
+    assert.equal(nextCodexName([]), 'codex-1');
+    assert.equal(nextCodexName([{ name: 'codex-2' }]), 'codex-1');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
