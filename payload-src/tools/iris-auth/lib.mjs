@@ -25,6 +25,26 @@ const RANK = { expired: 3, soon: 2, unknown: 1, ok: 0 };
 export function short(name) { return String(name || '').split('@')[0]; }
 
 /**
+ * 중계기 상태 파일의 그 계정 판정이 설정 파일보다 옛것인가(2026-11-10 사고: 1년 열쇠로 갱신해도 중계기 '다시 읽기'가
+ * 메모리의 옛 만료일·옛 갱신 열쇠를 남겨, 중계기가 다시 켜질 때까지 'expiring'·'needs-login' 이 그대로였다).
+ * ① 1년 열쇠를 받은 시각(설정 irisLongKeyAt)이 그 판정이 내려진 시각(since)보다 늦거나
+ * ② 상태 파일이 기억하는 만료일이 설정 파일의 만료일보다 하루 넘게 이르면 → 낡은 판정(무시하고 설정 파일 만료일로 판정).
+ */
+export function staleHealth(acct, rec) {
+  if (!rec) return false;
+  const since = Date.parse(rec.since || ''), renewed = Number(acct.longKeyAt);
+  // 코덱스 검토 4번: 갱신 뒤에 실패 기록이 있으면 그 판정은 새 열쇠에 대한 것 — 낡은 것으로 보지 않는다(진짜 끊김을 숨기지 않음)
+  // (네트워크·서버 오류는 일시적이라 열쇠 판정의 근거가 아니다)
+  const failAt = Date.parse(rec.lastFail?.at || ''), transient = ['network', 'server'].includes(rec.lastFail?.kind);
+  if (Number.isFinite(failAt) && !transient && (!Number.isFinite(renewed) || failAt > renewed)) return false;
+  if (Number.isFinite(renewed) && Number.isFinite(since) && renewed > since) return true;
+  if (rec.state !== 'expiring') return false; // 만료일 차이만으로는 '곧 만료'만 바로잡는다('재로그인 필요'는 갱신 시각 근거가 있을 때만)
+  const hExp = Date.parse(rec.refreshTokenExpiresAt || '');
+  const exp = (acct.longKey || !acct.hasRefresh) ? acct.expiresAt : acct.refreshTokenExpiresAt;
+  return Number.isFinite(hExp) && Number.isFinite(exp) && exp - hExp > DAY;
+}
+
+/**
  * 판정 목록을 만든다.
  * tcAccounts: [{name, provider, hasRefresh, refreshTokenExpiresAt, expiresAt, longKey}]
  * health:     {accounts:[{name, provider, state}]} | null  (중계기 auth-health 상태 파일)
@@ -33,11 +53,12 @@ export function short(name) { return String(name || '').split('@')[0]; }
  */
 export function collect({ tcAccounts = [], health = null, cli = null, longKey = null, now = Date.now(), warnDays = WARN_DAYS }) {
   const items = [];
-  const healthState = new Map((health?.accounts || []).map(a => [`${a.provider || 'anthropic'}:${a.name}`, a.state]));
+  const healthRec = new Map((health?.accounts || []).map(a => [`${a.provider || 'anthropic'}:${a.name}`, a]));
 
   for (const a of tcAccounts) {
     const provider = a.provider || 'anthropic';
-    const hs = healthState.get(`${provider}:${a.name}`);
+    const hr = healthRec.get(`${provider}:${a.name}`);
+    const hs = hr && !staleHealth(a, hr) ? hr.state : undefined;
     let expiresAt = null;
     let renew = 'teamclaude-login';
     // 클로드 계정은 30일 열쇠든 1년 열쇠든 갱신 = 1년 열쇠 발급(2026-10-15 실측 통과). 코덱스는 대시보드 로그인.

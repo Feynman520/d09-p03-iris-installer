@@ -35,6 +35,7 @@ export function sanitizeTeamclaude(cfg) {
   return (cfg?.accounts || []).filter(a => a && a.name && a.type === 'oauth').map(a => ({
     name: a.name, provider: a.provider || 'anthropic', hasRefresh: Boolean(a.refreshToken), longKey: a.irisLongKey === true,
     refreshTokenExpiresAt: num(a.refreshTokenExpiresAt), expiresAt: num(a.expiresAt),
+    longKeyAt: a.irisLongKeyAt ? (Date.parse(a.irisLongKeyAt) || null) : null, // 1년 열쇠를 받은 시각 — 낡은 중계기 판정 가르기(lib.mjs staleHealth)
   }));
 }
 export function sanitizeCli(cred, claudeJson) {

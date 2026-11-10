@@ -494,6 +494,16 @@
           "find": "      if (diskAcct[field] != null) mgr[field] = diskAcct[field];\n    }\n    if (diskAcct.name && mgr.name !== diskAcct.name) mgr.name = diskAcct.name;\n    if (diskAcct.priority != null && mgr.priority !== diskAcct.priority) mgr.priority = diskAcct.priority;\n    // A cap edit applies live for the same reason priority does: it is an\n    // operator decision about a running fleet, and waiting for a restart to",
           "with": "      if (diskAcct[field] != null) mgr[field] = diskAcct[field];\n    }\n    if (diskAcct.name && mgr.name !== diskAcct.name) mgr.name = diskAcct.name;\n    // Display labels never take part in identity or routing. Mirror removals\n    // too so a later TUI save cannot resurrect an outdated email label.\n    mgr.displayName = typeof diskAcct.displayName === 'string' ? diskAcct.displayName : null;\n    if (cfgAcct) {\n      if (mgr.displayName) cfgAcct.displayName = mgr.displayName;\n      else delete cfgAcct.displayName;\n    }\n    if (diskAcct.priority != null && mgr.priority !== diskAcct.priority) mgr.priority = diskAcct.priority;\n    // A cap edit applies live for the same reason priority does: it is an\n    // operator decision about a running fleet, and waiting for a restart to",
           "count": 1
+        },
+        {
+          "find": "    if (!freshCred) continue;\n\n    if (freshCred.accessToken) {",
+          "with": "    if (!freshCred) continue;\n\n    // (local patch 2026-11-10 IRIS) long-key renewal (iris-auth longkey.mjs) rewrites an entry on disk with a\n    // one-year access token, its expiry as refreshTokenExpiresAt, and NO refresh token, then asks for a reload.\n    // Before this patch the reload swapped only the access token: the running account kept the old 30-day\n    // refresh token and its old refreshTokenExpiresAt, so (1) auth-health kept reporting 'expiring' (dashboard\n    // banner, IRIS dot) until the next restart, and (2) updateAccountTokens' save callback wrote that old refresh\n    // token straight back to disk. Drop it here (before updateAccountTokens) and adopt the disk expiry.\n    let healthDirty = false;\n    if (diskAcct.type === 'oauth' && !diskAcct.importFrom) {\n      if (diskAcct.irisLongKey && !diskAcct.refreshToken && mgr.refreshToken) { mgr.refreshToken = null; healthDirty = true; }\n      const rte = Number(diskAcct.refreshTokenExpiresAt) || null;\n      if (rte && rte > (Number(mgr.refreshTokenExpiresAt) || 0)) { mgr.refreshTokenExpiresAt = rte; healthDirty = true; } // only ever later — never let a stale disk copy shorten it\n    }\n\n    if (freshCred.accessToken) {",
+          "count": 1
+        },
+        {
+          "find": "      console.log(`[TeamClaude] Updated API key for \"${mgr.name}\"`);\n    }\n",
+          "with": "      console.log(`[TeamClaude] Updated API key for \"${mgr.name}\"`);\n    }\n    // (local patch 2026-11-10 IRIS) re-judge auth health now, not on the next 60 s tick / restart.\n    if (healthDirty) { try { accountManager._authHealth?.check(); } catch { /* observation must not break reload */ } }\n",
+          "count": 1
         }
       ]
     },
