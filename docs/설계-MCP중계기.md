@@ -105,9 +105,9 @@
 | 로컬 실행형(stdio) | 문서 MCP 5종·플레이라이트·Aside·colab·framegrab | **중계** | 세션마다 뜨는 프로세스가 절감 대상 |
 | 로그인 필요형(자체 저장 토큰) | google-workspace·notebooklm | **중계** | 토큰 파일·환경변수를 그대로 물려받는다. 로그인 안내는 도구 결과로 그대로 넘어간다 |
 | 문서 상태 유지형 | 한/글·엑셀 COM 세션 | **중계(세션 전용)** | 세션끼리 공유하지 않는다 |
-| 로컬 다리(mcp-remote 등 stdio 브리지) | 코덱스의 shinjang-hub | **중계** | 로컬 node 프로세스가 생기므로 절감 대상 |
+| 로컬 다리(mcp-remote 등 stdio 브리지) | 코덱스의 학교 허브 MCP | **중계** | 로컬 node 프로세스가 생기므로 절감 대상 |
 | 래퍼 명령(`cmd /c …`·`.cmd`·`npx`·`uvx`) | kci·supabase·meta | **중계** | 원래 명령을 그대로 실행한다(`${VAR}`는 클로드 항목일 때 클로드와 같은 규칙으로 펼친다) |
-| 원격 HTTP/SSE | canva·vercel·클로드 shinjang-hub·claude.ai 커넥터 | **직접 유지** | 로컬 프로세스가 없어 절감이 0이다. OAuth는 클라이언트 몫이다 |
+| 원격 HTTP/SSE | canva·vercel·클로드 학교 허브 MCP·claude.ai 커넥터 | **직접 유지** | 로컬 프로세스가 없어 절감이 0이다. OAuth는 클라이언트 몫이다 |
 | 플러그인이 띄우는 MCP | self-improve 플러그인 | **직접 유지** | 플러그인 파일은 플러그인 체계 소유다 |
 | 매 세션 시작 때 쓰는 MCP | self-improve(코덱스 stdio 포함) | **직접 유지**(제외 목록 기본값) | 늦게 켜도 이득이 없다 |
 | 꺼진 항목 | 코덱스 `enabled = false`, 클로드 `disabledMcpServers` | **손대지 않음** | 임의로 켜지 않는다 |
