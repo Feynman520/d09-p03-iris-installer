@@ -322,6 +322,29 @@ test('dry run reports the plan and changes nothing', { skip }, () => {
   assert.deepEqual(regDump(sc.runSub), run);
 });
 
+// 2.0.60 (IRIS window 2.103): the window keeps Start menu "IRIS.lnk" (taskbar icon) and older
+// windows left Electron's icon-less "Electron.lnk"; both point at electron.exe inside the root.
+test('Start menu shortcuts into the root go too; other Start menu shortcuts stay', { skip }, () => {
+  const sc = scene('startmenu');
+  const root = makeInstall(sc);
+  const menu = path.join(sc.base, 'menu');
+  fs.mkdirSync(menu, { recursive: true });
+  const electron = `${root}\\_agent\\shared\\tools\\face\\node_modules\\electron\\dist\\electron.exe`;
+  write(path.dirname(electron), 'electron.exe', 'x');
+  makeLnk(path.join(menu, 'IRIS.lnk'), electron);
+  makeLnk(path.join(menu, 'Electron.lnk'), electron);
+  makeLnk(path.join(menu, 'Other.lnk'), path.join(sc.outside, 'sentinel.txt'));
+
+  const dry = runUninstall(sc, ['-Root', root, '-DryRun', '-StartMenuDir', menu]);
+  assert.equal(dry.code, 0, why(dry));
+  assert.deepEqual(arr(dry.json.lnks).sort(), [path.join(menu, 'Electron.lnk'), path.join(menu, 'IRIS.lnk')].sort());
+  assert.deepEqual(fs.readdirSync(menu).sort(), ['Electron.lnk', 'IRIS.lnk', 'Other.lnk']);
+
+  const r = runUninstall(sc, ['-Root', root, '-StartMenuDir', menu]);
+  assert.equal(r.code, 0, why(r));
+  assert.deepEqual(fs.readdirSync(menu), ['Other.lnk']);
+});
+
 test('refuses without a receipt, with a broken receipt, on protected places and on a linked root', { skip }, () => {
   const sc = scene('refuse');
   const plain = path.join(sc.parent, 'NotIris');

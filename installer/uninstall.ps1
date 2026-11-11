@@ -25,6 +25,8 @@
 #   -NoUi -Root <dir> [-Mode keep|all] [-Yes] [-DryRun] [-Json <file>] [-LogFile <file>]
 #   -EnvSubKey/-RunSubKey  HKCU subkeys used instead of Environment / ...\Run (tests)
 #   -DesktopDir <dir>      desktop folder to look for shortcuts in (tests)
+#   -StartMenuDir <dir>    Start menu Programs folder to look in (tests; with -DesktopDir and
+#                          no -StartMenuDir the real Start menu is not looked at)
 #   -WorkDir <dir>         instead of %LOCALAPPDATA%\IRIS-Installer (tests)
 #   -ScanRoots "a;b"       parent folders to look for installs in instead of every fixed drive
 #   -Scan                  print what was found as JSON and exit
@@ -39,6 +41,7 @@ param(
   [string]$EnvSubKey = 'Environment',
   [string]$RunSubKey = 'Software\Microsoft\Windows\CurrentVersion\Run',
   [string]$DesktopDir,
+  [string]$StartMenuDir,
   [string]$WorkDir,
   [string]$ScanRoots,
   [switch]$DryRun,
@@ -475,12 +478,24 @@ function Get-DesktopDirs {
   return $out
 }
 
-# Desktop shortcuts whose target is inside the root (the installer makes "<name>.lnk").
+# Start menu Programs folder. The IRIS window (2.103+) keeps "IRIS.lnk" there -- it gives the
+# taskbar button its icon -- and older windows left an icon-less "Electron.lnk" made by Electron
+# for notifications. Both point at electron.exe inside the root, so the target rule below picks them.
+function Get-StartMenuDirs {
+  if ($StartMenuDir) { return @($StartMenuDir) }
+  if ($DesktopDir) { return @() }
+  $d = $null
+  try { $d = [Environment]::GetFolderPath('Programs') } catch { }
+  if ($d -and (Test-Path -LiteralPath $d)) { return @($d) }
+  return @()
+}
+
+# Desktop and Start menu shortcuts whose target is inside the root (the installer makes "<name>.lnk").
 function Get-LnkPlan($roots) {
   $out = New-Object System.Collections.ArrayList
   $sh = $null
   try { $sh = New-Object -ComObject WScript.Shell } catch { return $out }
-  foreach ($d in Get-DesktopDirs) {
+  foreach ($d in @(Get-DesktopDirs) + @(Get-StartMenuDirs)) {
     $files = @()
     try { $files = [IO.Directory]::GetFiles($d, '*.lnk') } catch { }
     foreach ($f in $files) {
