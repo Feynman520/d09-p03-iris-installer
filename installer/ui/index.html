@@ -1338,7 +1338,13 @@ function renderOnlineRows(on) {
     '<div class="stage-row"><span>' + stageMark(status) + '</span><span>' + esc(label) + '</span><span class="dt">' + esc(detail) +
     (status === 'running' ? esc((since ? ' · ' + fmtElapsed(now - since) + '째' : '') + ' ' + SPIN[spinTick++ % SPIN.length]) : '') + '</span></div>').join('');
 
-  if (!net.ok && blocked.length) {
+  // 2.0.62: 인증서가 중간에서 바뀐 주소(보안장비 검사) — 다른 망으로 옮기기 전에 전산 담당자 요청 길을 먼저 알린다.
+  const intercepted = Array.isArray(net.intercepted) ? net.intercepted : [];
+  if (!net.ok && intercepted.length) {
+    note('online-note', '<b>' + esc(intercepted.map((h) => HOST_NAME[h] || h).join(' · ')) + '</b> 주소는 중간에서 보안 인증서가 바뀌어 있고, 이 PC의 윈도우도 그 인증서를 믿지 않습니다(학교·회사 보안장비가 접속을 검사하는 경우).<br>' +
+      '전산 담당자에게 「이 주소의 보안 검사 예외」 또는 「기관 보안 인증서 설치」를 요청하거나, 집·휴대폰 테더링처럼 다른 망에서 설치기를 다시 열어 주세요. 지금까지 설치한 것은 그대로 남아 있습니다.', 'bad');
+    $('btn-online-retry').hidden = false;
+  } else if (!net.ok && blocked.length) {
     note('online-note', '인터넷이 되는 곳에서 설치기를 다시 열면 여기서부터 이어집니다. 지금까지 설치한 것은 그대로 남아 있습니다.', 'bad');
     $('btn-online-retry').hidden = false;
   } else if (!o.error) {

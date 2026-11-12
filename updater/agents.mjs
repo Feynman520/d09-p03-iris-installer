@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import nodeTls from 'node:tls';
 import { spawn, spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -434,6 +435,27 @@ async function main(argv) {
   return 2;
 }
 
+// 2.0.62 (2026-11-12, school network report): trust the Windows certificate store IN ADDITION to
+// Node's bundled roots -- security gear that re-signs downloads.claude.ai with an agency certificate
+// Windows trusts would otherwise make every update check fail. Same rule as the installer's
+// lib/systemca.mjs (this file ships as its own part, so it is a copy, not an import): nothing is
+// removed, NODE_USE_SYSTEM_CA is only filled when empty (the detached --run child inherits it),
+// and it never throws.
+export function trustSystemRoots({ tls = nodeTls, env = process.env } = {}) {
+  try { if (env && !env.NODE_USE_SYSTEM_CA) env.NODE_USE_SYSTEM_CA = '1'; } catch { /* read-only env */ }
+  try {
+    if (typeof tls.getCACertificates !== 'function' || typeof tls.setDefaultCACertificates !== 'function') return { ok: false, added: 0 };
+    const current = Array.from(tls.getCACertificates('default') ?? [], String);
+    const seen = new Set(current.map((c) => c.trim()));
+    const extra = Array.from(tls.getCACertificates('system') ?? [], String).filter((c) => { const k = c.trim(); if (seen.has(k)) return false; seen.add(k); return true; });
+    if (extra.length > 0) tls.setDefaultCACertificates([...current, ...extra]);
+    return { ok: true, added: extra.length };
+  } catch {
+    return { ok: false, added: 0 };
+  }
+}
+
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  trustSystemRoots();
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, () => { process.exitCode = 1; });
 }

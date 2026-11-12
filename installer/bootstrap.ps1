@@ -246,6 +246,11 @@ $serverErr = Join-Path $work 'server.err.log'
 $serverArgs = @("`"$server`"", '--zip-root', "`"$ZipRoot`"", '--port', $Port, '--node-dir', "`"$nodeDir`"")
 if ($Auto) { $serverArgs += '--auto' }
 if ($Resume) { $serverArgs += '--resume' }
+# 2.0.62 (2026-11-12, school network report): trust the Windows certificate store in addition to
+# Node's bundled roots, so security gear that re-signs claude.ai with an agency certificate Windows
+# already trusts does not look "blocked". server.mjs also does this in-process (lib/systemca.mjs);
+# this env copy reaches the server even if that code path fails. Only filled when empty.
+if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }
 $proc = Start-Process -FilePath $nodeExe `
   -ArgumentList $serverArgs `
   -WindowStyle Hidden -PassThru `

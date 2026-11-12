@@ -51,11 +51,18 @@ if (Get-OwnedListener) { throw 'The old listener is still running.' }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $logBase = Join-Path $env:USERPROFILE ".config\teamclaude-runtime-$stamp"
 $priorConfig = $env:TEAMCLAUDE_CONFIG
+# IRIS 2.0.62 (2026-11-12, school network report): some school/office security gear opens HTTPS to
+# claude.ai and friends and re-signs it with an agency certificate that Windows trusts but Node's
+# bundled list does not. NODE_USE_SYSTEM_CA=1 makes the relay's Node trust the Windows store IN
+# ADDITION to its bundled roots (nothing is removed). Only filled when empty; older Node ignores it.
+$priorSystemCa = $env:NODE_USE_SYSTEM_CA
 try {
     $env:TEAMCLAUDE_CONFIG = $configPath
+    if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }
     $started = Start-Process -FilePath $nodePath -ArgumentList @("`"$entryPath`"",'server','--headless') -WindowStyle Hidden -WorkingDirectory (Split-Path $configPath) -RedirectStandardOutput "$logBase.stdout.log" -RedirectStandardError "$logBase.stderr.log" -PassThru
 } finally {
     $env:TEAMCLAUDE_CONFIG = $priorConfig
+    $env:NODE_USE_SYSTEM_CA = $priorSystemCa
 }
 @{pid=$started.Id;port=$port;startedAt=[DateTime]::UtcNow.ToString('o');managedBy='teamclaude-manage.ps1';stdout="$logBase.stdout.log";stderr="$logBase.stderr.log"} |
     ConvertTo-Json | Set-Content -LiteralPath $runtimePath -Encoding UTF8

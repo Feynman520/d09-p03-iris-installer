@@ -48,6 +48,7 @@ import { planUpdateReset, applyUpdateReset } from './lib/update-plan.mjs';
 import { relaunchFace as defaultRelaunchFace, finish as defaultFinish } from './lib/handoff.mjs';
 import { run as defaultRun } from '../lib/run.mjs';
 import { listHolders, stopHolders } from './lib/holders.mjs';
+import { trustSystemRoots } from './lib/systemca.mjs';
 import { buildReportPayload, sendReport, saveReportCopy } from './lib/report-send.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1798,6 +1799,9 @@ function parseArgs(argv) {
 
 const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 if (isMain) {
+  // 2.0.62: 윈도우가 믿는 인증서(보안장비가 바꿔 끼운 기관 인증서 포함)를 이 프로세스와 자식 Node 가 함께 믿게 한다.
+  const ca = trustSystemRoots();
+  console.log(`[ca] system roots: ${ca.ok ? `+${ca.added} (bundled ${ca.bundled}, windows ${ca.system})` : `skipped (${ca.reason})`}${ca.envSet ? ', NODE_USE_SYSTEM_CA=1 for children' : ''}`);
   const args = parseArgs(process.argv.slice(2));
   const work = process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'IRIS-Installer')

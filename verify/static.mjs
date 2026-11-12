@@ -706,6 +706,51 @@ async function main() {
         problems.length === 0 ? `${keyCount} string key(s) present` : problems.join('; '),
       );
     }
+
+    // ㉒ (2.0.62, 2026-11-12 school network report) every Node that IRIS itself
+    // starts trusts the Windows certificate store in addition to its bundled
+    // roots -- security gear re-signing claude.ai with an agency certificate
+    // that Windows trusts made the installer report "blocked". Four launch
+    // points, checked in the zip that was packed (not the source tree):
+    // bootstrap.ps1 env line, server.mjs calling trustSystemRoots, the relay
+    // manage script, and the agent updater inside its own nested zip.
+    {
+      const problems = [];
+      const read = (rel) => {
+        const p = path.join(tmpDir, rel);
+        if (!fs.existsSync(p)) { problems.push(`missing ${rel}`); return ''; }
+        return fs.readFileSync(p, 'utf8');
+      };
+      if (!/\$env:NODE_USE_SYSTEM_CA = '1'/.test(read('installer/bootstrap.ps1'))) problems.push('bootstrap.ps1 does not set NODE_USE_SYSTEM_CA');
+      const server = read('installer/server.mjs');
+      if (!/import \{ trustSystemRoots \} from '\.\/lib\/systemca\.mjs'/.test(server) || !/const ca = trustSystemRoots\(\)/.test(server)) problems.push('server.mjs does not call trustSystemRoots()');
+      if (!/setDefaultCACertificates/.test(read('installer/lib/systemca.mjs'))) problems.push('lib/systemca.mjs lacks setDefaultCACertificates');
+      if (!/\$env:NODE_USE_SYSTEM_CA = '1'/.test(read('payload/relay/teamclaude-manage.ps1'))) problems.push('relay/teamclaude-manage.ps1 does not set NODE_USE_SYSTEM_CA');
+      const updZip = path.join(payloadDir, 'updater', 'iris-updater.zip');
+      if (!fs.existsSync(updZip)) problems.push('missing payload/updater/iris-updater.zip');
+      else {
+        const updTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-upd-'));
+        try {
+          await extractZip(updZip, updTmp);
+          const hit = (function find(dir) {
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              const p = path.join(dir, e.name);
+              if (e.isDirectory()) { const r = find(p); if (r) return r; } else if (e.name === 'agents.mjs') return p;
+            }
+            return null;
+          })(updTmp);
+          const text = hit ? fs.readFileSync(hit, 'utf8') : '';
+          if (!/\n  trustSystemRoots\(\);\n  main\(process\.argv\.slice\(2\)\)/.test(text.replace(/\r\n/g, '\n'))) problems.push('updater agents.mjs does not call trustSystemRoots() before main');
+        } finally {
+          fs.rmSync(updTmp, { recursive: true, force: true });
+        }
+      }
+      record(
+        '㉒ IRIS-started Node trusts the Windows certificate store too (installer, relay, updater)',
+        problems.length === 0,
+        problems.length === 0 ? '4 launch point(s) wired' : problems.join('; '),
+      );
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

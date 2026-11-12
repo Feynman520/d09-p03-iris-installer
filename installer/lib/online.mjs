@@ -43,6 +43,7 @@ import {
   countProviderAccounts, resolveTeamclaudeConfigPath, ensureRelayConfigDefaults,
 } from './login.mjs';
 import { ensureProxy } from './proxy.mjs';
+import { tlsTrustCode } from './systemca.mjs';
 import { readReceipt, writeReceipt, setInstalled } from './receipt.mjs';
 import { writeShims } from './shims.mjs';
 
@@ -184,7 +185,9 @@ export async function probeHost(url, { fetchFn = fetch, timeoutMs = NET_TIMEOUT_
       try { await res?.body?.cancel?.(); } catch { /* nothing to drain */ }
       return { reachable: true, status: res?.status ?? null, method };
     } catch (err) {
-      return { reachable: false, status: null, method, error: String(err?.message ?? err) };
+      // 2.0.62: 인증서를 믿지 못해 끊긴 경우(보안장비가 인증서를 바꿔 끼움)는 "막힘"과 구별해 남긴다.
+      const tlsCode = tlsTrustCode(err);
+      return { reachable: false, status: null, method, error: String(err?.message ?? err), ...(tlsCode ? { tlsCode } : {}) };
     } finally {
       clearTimeout(timer);
     }
@@ -242,12 +245,16 @@ export async function checkNet({
   const results = [];
   for (const t of targets) {
     const r = await probe(t.url, { fetchFn, timeoutMs });
-    results.push({ host: hostOf(t.url), url: t.url, role: t.role, reachable: r.reachable === true, status: r.status ?? null });
-    log(`net ${hostOf(t.url)} ${r.reachable ? `ok(${r.status ?? '-'})` : 'blocked'}`);
+    const tlsCode = r.reachable === true ? null : (r.tlsCode ?? null);
+    results.push({ host: hostOf(t.url), url: t.url, role: t.role, reachable: r.reachable === true, status: r.status ?? null, ...(tlsCode ? { tlsCode } : {}) });
+    log(`net ${hostOf(t.url)} ${r.reachable ? `ok(${r.status ?? '-'})` : (tlsCode ? `cert-replaced(${tlsCode})` : 'blocked')}`);
   }
 
   const checked = results.map((r) => r.host);
   const blocked = results.filter((r) => !r.reachable).map((r) => r.host);
+  // 2.0.62: 인증서가 중간에서 바뀌어 끊긴 주소(윈도우도 그 인증서를 믿지 않는 경우에만 여기까지 온다 —
+  // 윈도우가 믿는 기관 인증서는 systemca.mjs 가 이미 통과시킨다).
+  const intercepted = results.filter((r) => !r.reachable && r.tlsCode).map((r) => r.host);
   const reachable = (host) => results.some((r) => r.host === host && r.reachable);
 
   const notes = [];
@@ -263,16 +270,24 @@ export async function checkNet({
     else if (!reachable(hostOf(HOSTS.claudeDownloads))) notes.push('공식 내려받기 주소가 막혀 있지만 Claude Code는 npm 저장소로 받을 수 있습니다.');
   }
 
-  if (ok) return { ok: true, blocked, checked, results, notes, message: null };
+  if (ok) return { ok: true, blocked, checked, results, notes, intercepted, message: null };
 
+  const plain = blocked.filter((h) => !intercepted.includes(h));
+  const parts = [];
+  if (plain.length) parts.push(`${plain.join(', ')} 주소에 연결하지 못했습니다.`);
+  if (intercepted.length) {
+    parts.push(`${intercepted.join(', ')} 주소는 중간에서 보안 인증서가 바뀌어 있고, 이 PC의 윈도우도 그 인증서를 믿지 않습니다`
+      + '(학교·회사 보안장비가 접속을 검사하는 경우). 전산 담당자에게 "이 주소의 보안 검사 예외 처리" 또는 "기관 보안 인증서 설치"를 요청해 주세요.');
+  }
   return {
     ok: false,
     blocked,
     checked,
     results,
     notes,
+    intercepted,
     code: CODES.net,
-    message: `${blocked.join(', ')} 주소에 연결하지 못했습니다. ${RESUME_SENTENCE}`,
+    message: `${parts.join(' ')} ${RESUME_SENTENCE}`,
   };
 }
 
