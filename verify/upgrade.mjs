@@ -285,12 +285,15 @@ async function expectedPresence(zipDir) {
     if (part.redistribute === 'download') continue; // claude·document-skills: 온라인 단계 몫
     const lay = layout[id] ?? {};
     const dest = path.join(SOUL_ROOT, ...String(part.dest).split('/').filter(Boolean));
-    let where; let kind;
-    if (lay.kind === 'file' || part.kind === 'file') { where = path.join(dest, path.basename(String(part.file))); kind = 'file'; }
+    let where; let kind; let source = null;
+    if (lay.kind === 'file' || part.kind === 'file') {
+      where = path.join(dest, path.basename(String(part.file))); kind = 'file';
+      source = path.join(zipDir, 'payload', ...String(part.file).split('/').filter(Boolean));
+    }
     else if (lay.kind === 'module') { where = dest; kind = 'dir'; }
     else { where = lay.slot ? path.join(dest, lay.slot) : dest; kind = 'dir'; }
     const m = manifest.parts?.[id] ?? {};
-    out.push({ id, kind, where, identity: { version: m.version ?? part.version ?? null, sha256: m.sha256 ?? part.sha256 ?? null } });
+    out.push({ id, kind, where, source, identity: { version: m.version ?? part.version ?? null, sha256: m.sha256 ?? part.sha256 ?? null } });
   }
   return { lock, manifest, list: out };
 }
@@ -417,7 +420,16 @@ async function main() {
     for (const p of list) {
       const present = p.kind === 'file' ? fs.existsSync(p.where) : dirNonEmpty(p.where);
       if (!present) { missing.push(`${p.id} (${path.relative(SOUL_ROOT, p.where)})`); continue; }
-      if (identityChanged(prevManifest, prevLock, p.id, p.identity) && newestMtime(p.where) < tUpdate - 1000) stale.push(p.id);
+      if (!identityChanged(prevManifest, prevLock, p.id, p.identity)) continue;
+      // 2.0.62: a single-file part is judged by CONTENT, not time. The build pins every zip entry to
+      // 2026-01-01 (reproducible zips) and Windows CopyFile keeps that time, so a correctly replaced
+      // file still looked "old" -- first hit when teamclaude-manage.ps1 changed for the first time
+      // since this gate existed. Bytes equal to the new zip's file = placed by this update (stricter).
+      if (p.kind === 'file' && p.source) {
+        let same = false;
+        try { same = fs.readFileSync(p.where).equals(fs.readFileSync(p.source)); } catch { same = false; }
+        if (!same) stale.push(`${p.id}(내용이 새 판 파일과 다름)`);
+      } else if (newestMtime(p.where) < tUpdate - 1000) stale.push(p.id);
     }
     check(`③ⓒ 새 판 잠금표 부품 ${list.length}개 전부 제자리에 있다`, missing.length === 0, missing.length ? `빠짐: ${missing.join(', ')}` : '');
     const changedIds = list.filter((p) => identityChanged(prevManifest, prevLock, p.id, p.identity)).map((p) => p.id);
