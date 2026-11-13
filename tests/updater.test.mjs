@@ -52,7 +52,7 @@ function makeSoul(name, { faceVersion = '2.57.1', lock = '{"lockfileVersion":3,"
 }
 
 // The downloaded + verified new Face, already unpacked by the daemon into
-// <downloads>\update-<stamp>\face (P02 설계 3절 5).
+// <downloads>\update-<stamp>\face (P01 설계 3절 5).
 function makeNewFace(root, { version = '2.58.0', lock = '{"lockfileVersion":3,"old":true}' } = {}) {
   const dir = path.join(root, '_agent', 'shared', 'downloads', 'update-20260914-000000', 'face');
   fs.mkdirSync(path.join(dir, 'daemon'), { recursive: true });

@@ -17,7 +17,7 @@
 //   <tools>\codex-versions\<version>\          npm prefixes of new Codex builds (npm integrity)
 //   <tools>\codex\codex.cmd                    becomes a forwarder into codex-versions
 //   <root>\_agent\setup\agent-update.{json,log,lock}, agent-update-tmp\
-// The PATH shims (byte-pinned against P02 daemon/wake.mjs) are not touched.
+// The PATH shims (byte-pinned against P01 daemon/wake.mjs) are not touched.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';

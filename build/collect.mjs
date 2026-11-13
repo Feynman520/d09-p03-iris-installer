@@ -302,7 +302,7 @@ async function resolveNode({ lock, cacheDir, stageDir, nodeDir, log, skipDownloa
 }
 
 // Applies a single redaction to one already-copied staged file (never to the
-// source outside P03). `label` is only used for the log line / error
+// source outside P02). `label` is only used for the log line / error
 // message. entry is either {find, replace} (plain-text substring, for
 // non-personal text) or {findRegex, replace, count?:1} (regex-based, used
 // whenever the matched text contains personal data -- so the tracked
@@ -332,7 +332,7 @@ function redactFile(absPath, entry, log, label) {
 }
 
 // Applies lock.json-declared redactions to files already copied into a
-// staged `dir`-kind work copy (never to the source outside P03). Used to
+// staged `dir`-kind work copy (never to the source outside P02). Used to
 // strip dev-machine-only content (hardcoded org accounts/paths) from parts
 // collected from outside this project (e.g. dash) that sanitize() correctly
 // flags and that we are not allowed to edit at the source. Each entry names
@@ -429,7 +429,7 @@ function assertAsciiPs1(dir, name) {
 //
 // Relative values resolve against the project root, not process.cwd() (2026-
 // 09-14): the `updater` part's source is `./updater`, a folder *inside* this
-// repo, and `face`'s is a sibling `../P02-...`. Both used to work only
+// repo, and `face`'s is a sibling checkout (`../<IRIS-Face folder>`, see lock.json). Both used to work only
 // because every build happened to be started from the repo root. verify/
 // static.mjs's own partSource() has always resolved against ROOT_DIR; this
 // makes the two agree. Absolute values are unaffected.
@@ -914,7 +914,7 @@ export async function collect({
       // its entries may omit `file` (there is only one). Used by
       // `ontology-spec`, whose source is this PC's live IRIS-온톨로지.md and
       // therefore carries real example IDs and an account handle (T08 ruling
-      // 5). The source outside P03 is never touched.
+      // 5). The source outside P02 is never touched.
       if (p.redact) {
         for (const entry of p.redact) {
           redactFile(entry.file ? path.join(path.dirname(dest), entry.file) : dest, entry, log, entry.file ?? p.file);

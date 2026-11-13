@@ -235,7 +235,7 @@ test('launchFace spawns the bundled node on <tools>\\face\\launch.mjs --first-se
   ]);
   assert.equal(seen[0].opts.detached, true);
 
-  // faceDir/extraArgs/nodeExe are injectable (the rehearsal points at the P02
+  // faceDir/extraArgs/nodeExe are injectable (the rehearsal points at the P01
   // source tree on a spare port with --no-open).
   const seen2 = [];
   launchFace({
@@ -304,7 +304,7 @@ test('waitFaceReady: 200 + a session whose cwd IS the soul root -> ready', async
     health: () => (++call === 1 ? null : { ok: true, sessions: 2, version: '2.45.0' }),
     // First look: only a foreign session. Then ours appears -- note the
     // forward slashes, trailing slash and different case: normCwd must see
-    // through all three, exactly like P02 launch.mjs does.
+    // through all three, exactly like P01 launch.mjs does.
     sessions: (() => { let n = 0; return () => (++n <= 1 ? [{ id: 's1', cwd: 'C:\\OTHER-SOUL' }] : [{ id: 's1', cwd: 'C:\\OTHER-SOUL' }, { id: 's2', cwd: 'c:/Nova/' }]); })(),
   });
   const ready = await waitFaceReady({ root: 'C:\\NOVA', port: 3466, timeoutMs: 5000, intervalMs: 1, fetchFn });
@@ -377,7 +377,7 @@ test('finish: steps.handoff=done, node cache removed, quit called', () => {
 // Check ④ of verify/static.mjs compares the `:root { ... }` custom-property
 // block of Face's app/style.css with the one in installer/ui/index.html. Do
 // the same here so the repo's own test suite catches a drift without needing
-// a built zip. P02 is a sibling checkout, so skip loudly when it is absent.
+// a built zip. P01 is a sibling checkout, so skip loudly when it is absent.
 function faceStyleCss() {
   const lock = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
   const css = path.resolve(REPO, lock.parts.face.source, 'app', 'style.css');
@@ -385,7 +385,7 @@ function faceStyleCss() {
 }
 
 function extractRootBlock(raw) {
-  // Line endings are a checkout artefact (P02 is checked out with
+  // Line endings are a checkout artefact (P01 is checked out with
   // core.autocrlf=true, so its working copy is CRLF while the index is LF);
   // the comparison is about the tokens, so normalise before comparing.
   const css = raw.replace(/\r\n/g, '\n');
@@ -407,7 +407,7 @@ function extractRootBlock(raw) {
 
 test('ui/index.html :root block is byte-identical to IRIS-Face app/style.css (static check ④)', (t) => {
   const css = faceStyleCss();
-  if (!css) { t.skip('IRIS-Face (P02) sibling checkout not present -- cannot compare the :root block'); return; }
+  if (!css) { t.skip('IRIS-Face (P01) sibling checkout not present -- cannot compare the :root block'); return; }
   const faceRoot = extractRootBlock(fs.readFileSync(css, 'utf8'));
   const uiRoot = extractRootBlock(fs.readFileSync(path.join(REPO, 'installer', 'ui', 'index.html'), 'utf8'));
   assert.ok(faceRoot, 'no :root block found in Face style.css');

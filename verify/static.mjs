@@ -41,7 +41,7 @@ function findNewestZip(outDir) {
 // but this stays correct if one is ever added) is still captured whole.
 // Returns null if no ":root" selector is found.
 function extractRootBlock(raw) {
-  // Line endings are a checkout artefact (P02 is checked out with
+  // Line endings are a checkout artefact (P01 is checked out with
   // core.autocrlf=true, so its working copy is CRLF while the index is LF);
   // the comparison is about the tokens, so normalise before comparing.
   const css = raw.replace(/\r\n/g, '\n');
@@ -259,7 +259,7 @@ async function main() {
     } else if (!fs.existsSync(faceCssPath)) {
       record(
         '④ style.css :root == installer/ui/index.html :root', false,
-        `P02 source not found: ${faceCssPath} does not exist `
+        `P01 source not found: ${faceCssPath} does not exist `
         + `(lock.parts.face.source=${lock.parts.face.source}; override with ${sourceEnvVar('face')})`,
       );
     } else {
@@ -312,17 +312,17 @@ async function main() {
     record('⑤ node-pty native binary in shipped zip', ptyOk, ptyDetail);
     record('⑳ electron.exe in shipped face zip (IRIS 창 = Electron, not a browser tab)', electronOk, electronDetail);
 
-    // ⑥ shim template parity -- P02 daemon/wake.mjs re-implements P03
+    // ⑥ shim template parity -- P01 daemon/wake.mjs re-implements P02
     // installer/lib/shims.mjs's agentShim() byte-for-byte (it cannot import
-    // it: P02/P03 are separate deployed units -- see wake.mjs's header
-    // comment). Resolve P02's location the same way check ④ and collect.mjs
+    // it: P01/P02 are separate deployed units -- see wake.mjs's header
+    // comment). Resolve P01's location the same way check ④ and collect.mjs
     // do: lock.parts.face.source, resolved against ROOT_DIR.
     {
       const wakePath = path.join(faceSource, 'daemon', 'wake.mjs');
       if (!fs.existsSync(wakePath)) {
         record(
-          '⑥ shim template parity (P02 wake() vs P03 shims.mjs)', false,
-          `P02 not found: ${wakePath} does not exist (override with ${sourceEnvVar('face')})`,
+          '⑥ shim template parity (P01 wake() vs P02 shims.mjs)', false,
+          `P01 not found: ${wakePath} does not exist (override with ${sourceEnvVar('face')})`,
         );
       } else {
         const { agentShimText } = await import(pathToFileURL(wakePath).href);
@@ -333,7 +333,7 @@ async function main() {
           if (a !== b) mismatches.push(agent);
         }
         record(
-          '⑥ shim template parity (P02 wake() vs P03 shims.mjs)',
+          '⑥ shim template parity (P01 wake() vs P02 shims.mjs)',
           mismatches.length === 0,
           mismatches.length === 0 ? 'claude + codex identical' : `differ for: ${mismatches.join(', ')}`,
         );
@@ -607,10 +607,10 @@ async function main() {
     // ⑲ no zero-byte FILE anywhere in the zip (2026-09-18, home-desktop
     // update failure "inflate exceeded declared size: installer/ui/.gitkeep").
     // bsdtar deflates even an empty file (csize 2, usize 0) and the IRIS 창
-    // updater (P02 daemon/zip.mjs) inflates with `maxOutputLength: usize`;
+    // updater (P01 daemon/zip.mjs) inflates with `maxOutputLength: usize`;
     // Node rejects maxOutputLength 0 with a RangeError, which the updater
     // reports as "exceeded declared size". One empty placeholder therefore
-    // makes EVERY update of every installed PC fail. Until the P02 reader is
+    // makes EVERY update of every installed PC fail. Until the P01 reader is
     // fixed (Math.max(1, usize)) the package must ship no empty file at all.
     {
       const empty = [];

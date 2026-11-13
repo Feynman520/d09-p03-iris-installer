@@ -898,7 +898,7 @@ export async function runEnv(ctx) {
   // `TEAMCLAUDE_CONFIG` = 이 영혼 안의 중계기 설정 파일(⑤-7 relay 가 만드는 바로
   // 그 파일). 계약 v2 표에는 앞의 세 개만 적혀 있지만 **네 번째가 반드시 있어야
   // 한다**(2026-09-15 검토 지적): `lib\login.mjs` 의 resolveTeamclaudeConfigPath
-  // 는 영수증 `env.teamclaudeConfig` 를 1순위로 읽고, P02 Face 의
+  // 는 영수증 `env.teamclaudeConfig` 를 1순위로 읽고, P01 Face 의
   // `daemon\wake.mjs` 는 폴백 없이 그 값만 본다. 없으면 로그인·중계기가
   // `%USERPROFILE%\.config\teamclaude.json`(= 이 개발 PC의 진짜 계정 파일)을
   // 건드리게 된다. v1 `install.mjs` 가 같은 값을 같은 자리에 적었다.
@@ -969,7 +969,7 @@ export async function runEnv(ctx) {
   // 설치기가 "어디에 무엇을 걸어 두었는가"를 적어 온 자리다. 여기에 값이 없으면
   //   · `lib\login.mjs resolveTeamclaudeConfigPath` 가 사용자 홈의 진짜 계정
   //     파일로 떨어지고(⑥-3 로그인·⑥-4 중계기가 남의 설정을 건드린다)
-  //   · P02 Face 의 `daemon\wake.mjs` 는 폴백이 없어 세션에 값을 못 넘긴다.
+  //   · P01 Face 의 `daemon\wake.mjs` 는 폴백이 없어 세션에 값을 못 넘긴다.
   recorded.receiptEnv = writeReceiptEnv(ctx, {
     root,
     claudeCfg,
@@ -981,7 +981,7 @@ export async function runEnv(ctx) {
 
   // ── 영수증 `installed.codex` (2.0.38) ─────────────────────────────────
   // 코덱스는 꾸러미에 동봉돼 이 단계에서 이미 쓸 수 있는데, 영수증에 한 번도 적히지
-  // 않았다. IRIS 창(P02 daemon\wake.mjs)은 영수증에 적힌 비서만 "아는 비서"로 보므로
+  // 않았다. IRIS 창(P01 daemon\wake.mjs)은 영수증에 적힌 비서만 "아는 비서"로 보므로
   // `installed.claude` 만 있는 PC 에서는 코덱스 단추가 끝내 나타나지 않았다
   // (2026-09-23 다른 선생님 PC 실사고). 구독 선택과 상관없이 늘 켠 상태로 적는다.
   recorded.codexReceipt = writeCodexInstalled(ctx, root, {

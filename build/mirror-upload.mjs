@@ -2,7 +2,7 @@
 //
 // 왜 있나(2026-09-17, 실제 사용자 4회 실측): 학교·회사 망이 GitHub 릴리스 **첨부 서버**
 // (release-assets.githubusercontent.com)만 끊는다 — github.com 은 열리고 첨부만 ERR_TIMED_OUT.
-// 홈페이지(P05 site.js `CONFIG.mirror.assets`)는 미러에 있는 판이면 내려받기 단추를 미러로
+// 홈페이지(P07 site.js `CONFIG.mirror.assets`)는 미러에 있는 판이면 내려받기 단추를 미러로
 // 돌리므로, **새 판은 반드시 여기까지 올린 뒤** 홈페이지 값을 갱신한다(AGENTS.md 새 판 순서).
 //
 // wrangler 는 300 MiB 까지만 올린다("Wrangler only supports uploading files up to 300 MiB").

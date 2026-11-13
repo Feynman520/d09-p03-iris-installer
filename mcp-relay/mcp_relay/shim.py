@@ -4,7 +4,7 @@ A client (Claude Code / Codex) starts one shim per configured MCP server instead
 server itself. Until real work arrives the shim answers from the catalog; on the first
 real request it starts the real server inside a kill-on-close Job Object, replays the
 client's own initialize, then passes every line through byte for byte until the client
-closes stdin. Design: P03 docs/설계-MCP중계기.md (sections 1, 3, 4, 12).
+closes stdin. Design: P02 docs/설계-MCP중계기.md (sections 1, 3, 4, 12).
 """
 from __future__ import annotations
 

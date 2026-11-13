@@ -123,14 +123,14 @@
   - ⓑ 낡거나 빠진 메뉴판을 하나씩 조사
   - ⓒ 장부 청소(3절)
   - ⓓ 상태 보기(`127.0.0.1:3461` `GET /health`·`GET /status`)
-- **시작:** IRIS 실행기(`<이름> Face.cmd`, P03 `handoff.mjs`가 만든다)에 한 줄을 더한다: `pythonw.exe -I <…>\mcp-relay\relay.py daemon`. 업데이터 kick 줄과 같은 방식이다. 실행기가 띄우고 바로 끝나므로, 공용 중계기는 어떤 세션 가계도에도 속하지 않는다. 그래서 Face 창 닫기(v2.97)의 세션 가계도 정리에 휘말리지 않는다.
+- **시작:** IRIS 실행기(`<이름> Face.cmd`, P02 `handoff.mjs`가 만든다)에 한 줄을 더한다: `pythonw.exe -I <…>\mcp-relay\relay.py daemon`. 업데이터 kick 줄과 같은 방식이다. 실행기가 띄우고 바로 끝나므로, 공용 중계기는 어떤 세션 가계도에도 속하지 않는다. 그래서 Face 창 닫기(v2.97)의 세션 가계도 정리에 휘말리지 않는다.
 - **중복 실행 방지:** 포트 3461을 127.0.0.1에만 열어 둔다. 이미 쓰고 있으면 곧바로 끝낸다(`daemon.json`에 PID·시작 시각·끄기 열쇠).
 - **끄기:** `relay.py daemon --stop`. `daemon.json`의 PID·시작 시각·명령줄을 확인하고, 열쇠 헤더를 붙인 `POST /shutdown`으로 끈다. 브라우저가 몰래 보내는 요청은 열쇠가 없어 거절된다.
 - **장애 시:** 공용 중계기가 죽어도 열린 세션의 MCP는 계속 동작한다. 다음 IRIS 시작 때 다시 뜨며, 그때 장부를 청소한다.
 - **Face 연동(코드 변경 없음):**
   - 안내원과 실제 MCP는 **클로드·코덱스 프로세스의 가계도 안**에 있다. 그래서 v2.97 "창 닫기 = 세션 가계도 종료·확인"이 그대로 적용된다.
   - 최소화·새로고침·화면 연결 끊김은 클로드·코덱스 프로세스를 건드리지 않으므로 MCP도 유지된다.
-  - 이번 작업은 P02(Face) 파일을 고치지 않는다. 이 PC의 개발용 실행기 `IRIS-Face.cmd`(P02 원본을 직접 띄움)에도 같은 kick 줄을 더한다.
+  - 이번 작업은 P01(Face) 파일을 고치지 않는다. 이 PC의 개발용 실행기 `IRIS-Face.cmd`(P01 원본을 직접 띄움)에도 같은 kick 줄을 더한다.
   - Face 화면에 중계기 상태를 보여 주는 일은 남은 과제로 둔다(`/status` 제공).
 
 ## 8. 조각 8 — 기술 선택
@@ -148,7 +148,7 @@
 
 ## 9. 조각 9 — 설치 패키지 편입
 
-- **원본:** P03 `mcp-relay\`(AGENTS.md·CLAUDE.md 포함, 독립 폴더). 설치 사본 `<설치 폴더>\_agent\shared\tools\mcp-relay\`(slot 부품 — 업데이트 때 `.prev`로 옮기고 새로 놓음). 상태 `<설치 폴더>\_agent\shared\mcp-relay\`(사용자 자료 — 업데이트·재설치에도 보존).
+- **원본:** P02 `mcp-relay\`(AGENTS.md·CLAUDE.md 포함, 독립 폴더). 설치 사본 `<설치 폴더>\_agent\shared\tools\mcp-relay\`(slot 부품 — 업데이트 때 `.prev`로 옮기고 새로 놓음). 상태 `<설치 폴더>\_agent\shared\mcp-relay\`(사용자 자료 — 업데이트·재설치에도 보존).
 - **잠금표:** 부품 `mcp-relay` = `kind: dir`, `source: ./mcp-relay`, `file: mcp-relay/iris-mcp-relay.zip`, `dest: _agent/shared/tools/mcp-relay`, MIT. updater와 같은 모양이다. 수집·지문·꾸러미 목록·정적 검사·재현 검사는 기존 dir 부품 규칙을 탄다.
 - **설치(새 PC):**
   - 풀기 단계가 부품을 놓고, 검증기가 `relay.py`와 판 표시를 확인한다.

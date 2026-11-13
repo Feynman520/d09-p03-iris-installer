@@ -420,7 +420,7 @@ export async function pack({
 
   // collect()'s per-part record, handed over through the stage dir. Read up
   // front because renderNotices() needs it too: `face` carries no version in
-  // lock.json (collect reads it out of P02's package.json), so partsMeta is
+  // lock.json (collect reads it out of P01's package.json), so partsMeta is
   // the only place the notice table can get it.
   const partsMetaPath = path.join(stageDir, 'parts-meta.json');
   const partsMeta = fs.existsSync(partsMetaPath) ? JSON.parse(fs.readFileSync(partsMetaPath, 'utf8')) : null;

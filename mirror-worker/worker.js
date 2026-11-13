@@ -10,7 +10,7 @@
 // 허용 주소로 쓰고 있으므로 끄지 않는다(latest.json 의 url 칸도 r2.dev 그대로 — 옛 창이 거절하지 않게).
 //
 // 읽기 전용(GET·HEAD)이고, 버킷에 실제로 있는 파일 이름 모양만 내준다. 이어받기(Range)·조건부 요청(If-None-Match)을 지원한다.
-// 배포 = `node build/mirror-worker-deploy.mjs` (P03 저장소 루트에서). 시험 = tests/mirror-worker.test.mjs.
+// 배포 = `node build/mirror-worker-deploy.mjs` (P02 저장소 루트에서). 시험 = tests/mirror-worker.test.mjs.
 
 /** 내줄 수 있는 이름: 설치 패키지 zip, 부품(iris-face·iris-messenger …) zip, 각각의 .sha256·.sha256.sig, latest.json. */
 export const ALLOWED_KEY = /^(?:(?:IRIS-Setup_[A-Za-z0-9._-]+|iris-[a-z0-9-]+-v\d+\.\d+\.\d+[A-Za-z0-9._-]*)\.zip(?:\.sha256(?:\.sig)?)?|latest\.json)$/;

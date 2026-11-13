@@ -173,7 +173,7 @@ test('lock v2: repo-relative dir/file sources exist in this checkout', () => {
   for (const [name, p] of parts) {
     if (p.kind !== 'dir' && p.kind !== 'file') continue;
     // Absolute sources point at this PC's live folders (dash, hooks, templates,
-    // ontology) and at the sibling P02 checkout -- those are checked by
+    // ontology) and at the sibling P01 checkout -- those are checked by
     // verify/static.mjs at build time, not here.
     if (path.isAbsolute(p.source) || p.source.startsWith('..')) continue;
     assert.ok(fs.existsSync(path.join(ROOT_DIR, p.source)), `${name}: source ${p.source} not found`);

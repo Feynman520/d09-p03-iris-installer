@@ -179,7 +179,7 @@ export async function writeFaceLauncher(root, name, { desktopDir = null, runPs =
   const lnkPath = desktopDir ? path.join(desktopDir, `${name}.lnk`) : null;
   // Icon: a shortcut to a .cmd gets the black console icon by default -- not
   // what "IRIS" on a beginner's desktop should look like. Use Face's own icon
-  // when it ships one (P02 app\iris.ico); until then Windows' default stays.
+  // when it ships one (P01 app\iris.ico); until then Windows' default stays.
   const icoPath = path.join(faceDirFor(root), 'app', 'iris.ico');
   const iconLine = fs.existsSync(icoPath) ? [`$sc.IconLocation = ${psQuote(`${icoPath},0`)}`] : [];
   const script = [
@@ -214,7 +214,7 @@ export async function writeFaceLauncher(root, name, { desktopDir = null, runPs =
 // ③ 첫 세션 spec + Face 실행
 // ---------------------------------------------------------------------------
 
-// Model/effort defaults mirror P02 daemon/agents.mjs AGENTS[...].default, with
+// Model/effort defaults mirror P01 daemon/agents.mjs AGENTS[...].default, with
 // effort pinned to 'high' for the setting-up session (task-14-brief). Both are
 // overridable so a rehearsal can pick a cheap model.
 // permission/approval/sandbox: the setting-up session starts with maximum
@@ -347,7 +347,7 @@ export function relaunchFace({
   }
 }
 
-// Windows path comparison, identical to P02 launch.mjs's own normCwd (which is
+// Windows path comparison, identical to P01 launch.mjs's own normCwd (which is
 // what decides there whether a session already exists for a folder): forward
 // slashes are separators too, a trailing separator means nothing, and case
 // does not matter.

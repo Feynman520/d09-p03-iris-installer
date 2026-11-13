@@ -140,13 +140,13 @@
     },
     "face": {
       "kind": "dir",
-      "source": "../P02-아이리스 페이스(IRIS-Face) 〖Local App〗",
+      "source": "../P01-아이리스 페이스(IRIS-Face) 〖Local App〗",
       "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "modules", "daemon/__pycache__", ".stack", "out"],
       "npmCi": true,
       "file": "face/iris-face.zip",
       "dest": "_agent/shared/tools/face",
       "license": "MIT",
-      "note": "판은 P02 package.json 에서 빌드 때 읽어 manifest 에 넣는다(손으로 적지 않는다)."
+      "note": "판은 P01 package.json 에서 빌드 때 읽어 manifest 에 넣는다(손으로 적지 않는다)."
     },
     "messenger": {
       "kind": "url",
@@ -194,7 +194,7 @@
       "dest": "_agent/shared/tools/mcp-relay",
       "entry": "relay.py",
       "license": "MIT",
-      "note": "IRIS MCP 중계기(설계 정본 = docs/설계-MCP중계기.md). P03 이 원본을 관리한다. 동봉 python 으로 돈다(표준 라이브러리만)."
+      "note": "IRIS MCP 중계기(설계 정본 = docs/설계-MCP중계기.md). P02 이 원본을 관리한다. 동봉 python 으로 돈다(표준 라이브러리만)."
     },
     "superpowers": {
       "kind": "git",

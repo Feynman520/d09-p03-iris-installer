@@ -7,7 +7,7 @@
 // run with the bundled Node (<root>\_agent\shared\tools\node\node.exe). Pure
 // ESM, zero dependencies, no network: everything it needs was fetched, hashed
 // and signature-checked by the Face daemon before the plan was written
-// (P02 docs\설계-업데이트-2026-09-14.md sections 3 and 4).
+// (P01 docs\설계-업데이트-2026-09-14.md sections 3 and 4).
 //
 // Why a separate program at all: the daemon cannot replace its own folder
 // while it is running out of it. So the daemon writes plan.json, starts this
@@ -448,7 +448,7 @@ export async function applyFaceItem({
 // ---------------------------------------------------------------------------
 
 // Structural install/soul-layout schema (installer/lib/receipt.mjs RECEIPT_SCHEMA,
-// P02 daemon\update.mjs RECEIPT_SCHEMA_V2) -- a COPY, not an import: this file
+// P01 daemon\update.mjs RECEIPT_SCHEMA_V2) -- a COPY, not an import: this file
 // already keeps its own copies of installer/lib/ logic (see preserveAside/
 // moveDir/carryOver above), because <root>\_agent\shared\tools\updater\ ships
 // far from installer/lib\ once installed. A receipt written by a different
@@ -633,7 +633,7 @@ export async function applyPlan({
   // The structural package already contains the newest Face, so a plan that
   // carries one hands everything to the installer's automatic mode and stops
   // here: the installer replaces the changed parts, fixes the receipt and
-  // starts the window itself (P02 설계 4-2).
+  // starts the window itself (P01 설계 4-2).
   const pkg = planItems.find((i) => i.kind === 'package');
   if (pkg) {
     let r;
