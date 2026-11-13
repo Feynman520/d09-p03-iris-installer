@@ -133,6 +133,9 @@ export const V2_LAYOUT = {
   // 설치한 모듈). v1 install.mjs 와 같은 목록이며 바꾸면 업데이터도 같이 고쳐야
   // 한다.
   face: { kind: 'archive', strip: 0, mode: 'slot', carryOver: ['state', 'modules'] },
+  // 2.0.64(2026-11-13 사용자 결정 "선택 = 설치 패키지에 넣지 않는다"): 메신저는 잠금표에서 빠졌다 — 이 줄은 잠들어 있다(잠금표에 있는
+  // 부품만 놓는다, partsToUnpack). 이미 깔린 메신저는 건드리지 않는다: `face\modules` 는 위 carryOver 가 새 창 사본으로 옮긴다
+  // (업그레이드 게이트 ③ⓛ). 모듈을 다시 동봉하려면 잠금표에 항목 하나를 더하면 된다.
   messenger: { kind: 'module', moduleName: 'messenger' },
   updater: { kind: 'archive', strip: 0, mode: 'slot' },
   // MCP 중계기(설계-MCP중계기.md 9절): 동봉 python 으로 도는 표준 라이브러리 파이썬 묶음.
@@ -620,6 +623,9 @@ export async function run(ctx) {
       let carryFailed = [];
       if (result.ok && moved && layout.carryOver) {
         ({ carried, failed: carryFailed } = carryOver(moved, slot, layout.carryOver));
+        // 못 옮긴 폴더는 지워지지 않고 `<부품>.prev` 에 남는다. 조용히 넘어가지 않게 기록에 크게 남긴다(v1 install.mjs 는 이미 남긴다).
+        // 알려진 빈틈(2026-11-13 독립 검토): 이 경우에도 부품은 "완료"로 적혀 다음 실행이 다시 옮기지 않는다 — 멈춤 + 이어 옮기기는 별도 설계.
+        if (carryFailed.length) log(`[unpack] ${partId}: 사용자 폴더를 새 사본으로 옮기지 못했습니다 — ${rel(moved)} 에 그대로 남아 있습니다: ${carryFailed.join(' | ')}`);
       }
 
       const info = {

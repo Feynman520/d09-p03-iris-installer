@@ -613,6 +613,45 @@ test('unpack (Task 24b #3): 지문·판·꼬리가 전부 이전과 같으면(�
 // 배치표 자체 검사 — 잠금표와 어긋나지 않는지
 // ---------------------------------------------------------------------------
 
+// 2.0.64(2026-11-13 사용자 결정): 선택 모듈(메신저)은 설치 패키지에 넣지 않는다 — 설정에서 「설치」를 눌러야 깔린다.
+test('unpack (2.0.64): 진짜 lock.json 은 선택 모듈을 싣지 않는다(모듈 부품 0 · face\\modules 로 가는 부품 0)', () => {
+  const lock = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
+  const ids = Object.keys(lock.parts);
+  assert.equal(ids.includes('messenger'), false, '메신저는 잠금표에 없다');
+  assert.deepEqual(ids.filter((p) => unpack.V2_LAYOUT[p]?.kind === 'module'), [], '모듈 부품을 다시 동봉하려면 판정 대장(D09 구조 재정리 1단계)부터 고친다');
+  assert.deepEqual(ids.filter((p) => /(^|\/)face\/modules(\/|$)/.test(String(lock.parts[p].dest ?? ''))), [], 'face\\modules 아래로 가는 부품이 없다');
+  assert.equal(unpack.partsToUnpack({ lock }).includes('messenger'), false, '풀 목록에도 없다');
+  // 배치표의 잠든 줄은 남겨 둔다(다시 동봉할 때 잠금표 항목 하나면 되도록) — 지우면 이 줄도 함께 고친다.
+  assert.equal(unpack.V2_LAYOUT.messenger?.kind, 'module');
+});
+
+test('unpack (2.0.64): 잠금표에 없는 선택 모듈이 이미 깔려 있어도(옛 판이 깔았거나 설정에서 설치) 풀기는 그 폴더를 건드리지 않는다', async () => {
+  const v1 = await makePayload('optmod-v1', { nodeVersion: '24.21.0' });
+  const ctx = makeCtx('optmod', { built: v1 });
+  ctx.verifiers = passAll(v1.lock);
+  await unpack.run(ctx);
+
+  // 옛 판이 깔아 둔 메신저 + 그 사람의 로그인·열쇠.
+  const mod = path.join(ctx.root, '_agent', 'shared', 'tools', 'face', 'modules', 'messenger');
+  put(path.join(mod, 'module.json'), JSON.stringify({ name: 'messenger', version: '0.4.3' }));
+  put(path.join(mod, '.official'), '');
+  put(path.join(mod, 'state', 'login.json'), '{"me":"kept"}');
+  const before = snapshot(mod);
+
+  // 판이 올라간 업데이트(부품 하나가 실제로 바뀜) — 잠금표에 messenger 는 없다.
+  const v2 = await makePayload('optmod-v2', { nodeVersion: '25.0.0' });
+  assert.equal('messenger' in v2.lock.parts, false);
+  const ctx2 = makeCtx('optmod', { built: v2, root: ctx.root });
+  ctx2.verifiers = passAll(v2.lock);
+  const { recorded } = await unpack.run(ctx2);
+
+  assert.ok(recorded.placed.includes('node'), '업데이트는 실제로 일했다');
+  assert.equal(recorded.placed.includes('messenger'), false);
+  assert.equal(recorded.moved.some((m) => m.part === 'messenger'), false, '옆으로 옮기지도 않는다');
+  assert.deepEqual(snapshot(mod), before, '모듈 폴더는 시각·내용까지 그대로');
+  assert.deepEqual(fs.readdirSync(path.dirname(mod)), ['messenger'], '.prev 같은 곁폴더가 생기지 않는다');
+});
+
 test('unpack: 진짜 lock.json 의 부품이 전부 배치표에 있다(뼈대·내려받기 몫 제외)', async () => {
   const lock = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
   const ctx = { lock, root: 'X:\\soul', payloadDir: 'X:\\payload' };

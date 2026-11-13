@@ -532,6 +532,18 @@ async function phaseFirstRun(zipInfo) {
       check('①', 'handoff.messenger 는 중첩 키', typeof handoff.messenger?.installed === 'boolean'
         && handoff.messenger?.prompted === false && !('messengerPrompted' in handoff),
         JSON.stringify(handoff.messenger));
+      // 2.0.64(2026-11-13 "선택 = 설치 패키지에 넣지 않는다"): 새 설치에는 선택 모듈이 하나도 없다 — 잠금표가 직접 싣는 모듈만 예외.
+      // 인수 문서도 installed:false 여야 창이 첫 실행 메신저 안내를 띄우지 않는다.
+      {
+        // 기대값은 **시험하는 zip 의** 잠금표에서 만든다 — 작업 폴더 것을 읽으면 `--zip` 으로 옛 판(메신저 동봉)을 볼 때 거짓 실패한다.
+        const lockParts = JSON.parse(fs.readFileSync(path.join(ZIP_DIR, 'lock.json'), 'utf8')).parts ?? {};
+        const bundled = Object.keys(lockParts).filter((id) => /(^|\/)face\/modules\//.test(String(lockParts[id]?.dest ?? ''))).map((id) => String(lockParts[id].dest).split('/').pop());
+        const modsDir = path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'face', 'modules');
+        const present = fs.existsSync(modsDir) ? fs.readdirSync(modsDir) : [];
+        check('①', '새 설치의 선택 모듈 = 잠금표가 싣는 것뿐(메신저는 설정에서 설치)', present.slice().sort().join('|') === bundled.slice().sort().join('|'),
+          `modules=[${present.join(', ')}] 잠금표=[${bundled.join(', ')}]`);
+        check('①', 'handoff.messenger.installed 가 실제와 같다', handoff.messenger?.installed === present.includes('messenger'), JSON.stringify(handoff.messenger));
+      }
       check('①', 'handoff 경로는 전부 상대경로',
         !/[A-Za-z]:\\/.test(handoffRaw) && !handoffRaw.includes('C:/'),
         'reportPath/diagnosticsPath/resume 에 드라이브 문자 없음');

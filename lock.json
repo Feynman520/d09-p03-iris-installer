@@ -148,17 +148,6 @@
       "license": "MIT",
       "note": "판은 P01 package.json 에서 빌드 때 읽어 manifest 에 넣는다(손으로 적지 않는다)."
     },
-    "messenger": {
-      "kind": "url",
-      "version": "0.4.3",
-      "url": "https://github.com/Feynman520/d06-p04-iris-messenger/releases/download/iris-messenger--v0.4.3/iris-messenger-v0.4.3.zip",
-      "sha256": "b08519ff3f8e81b3217d6767ca79a81eb062ef4a939c0b5af51b679e4e4d3e6c",
-      "sha256Source": "iris-release.mjs messenger 0.4.3 (2026-09-19, 78,864 bytes)",
-      "file": "face/iris-messenger-v0.4.3.zip",
-      "dest": "_agent/shared/tools/face/modules/messenger",
-      "license": "MIT",
-      "note": "2026-09-19 0.4.3(말풍선 폭). Face 자체 서명 모듈 설치기로 꽂는다(1.4.0 결정 유지)."
-    },
     "dash": {
       "kind": "dir",
       "source": "C:/IRIS/_agent/claude/tools/teamclaude-dash",

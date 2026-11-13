@@ -18,6 +18,8 @@
 //                 ⓕ 인수 문서 state 가 업데이트 전과 같다(setup-incomplete 로 굴러떨어지지 않음)
 //                 ⓖ 사용자 자료(연습용으로 심은 파일)가 그대로다
 //                 ⓚ 업데이트 전 코덱스 대화(연결 이름 openai)가 업데이트 뒤 IRIS 창의 재개 호환으로 지금 연결 이름에 맞춰진다(2.0.54)
+//                 ⓛ 업데이트 전에 깔려 있던 선택 모듈(메신저 등)이 새 판 잠금표에 없어도 한 바이트도 달라지지 않는다 — 판·공식 표시·
+//                    로그인 state(2.0.64, 메신저를 설치 패키지에서 뺀 판부터. 옛 판이 메신저를 동봉한 2.0.63 이하에서 올 때 실제로 잰다)
 //
 // 안전 규칙(verify/e2e.mjs 와 같다): 저장소 밖에 쓰는 곳은 C:\IRIS-upg 하나뿐이며 finally 에서 지운다.
 // 진짜 C:\IRIS·바탕화면·HKCU\Environment·사용자 프로필은 건드리지 않는다(IRIS_INSTALLER_NO_USER_ENV=1 +
@@ -37,6 +39,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { extractZip } from '../lib/zip.mjs';
@@ -306,6 +309,31 @@ function identityChanged(prevManifest, prevLock, id, identity) {
   return false;
 }
 
+// ③ⓛ 선택 모듈 지문(2.0.64) -------------------------------------------------------------------
+// face\modules\<이름>\ 아래 모든 파일의 상대경로 → sha256. 이름 규칙 밖 폴더(.prev 등)는 ③ⓗ 몫이라 세지 않는다.
+const MODULES_DIR = path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'face', 'modules');
+const GATE_MODULE = 'gate-optional'; // 옛 판이 모듈을 깔지 않았을 때 심는 시험 모듈 이름(모듈 이름 규칙 안)
+function snapshotModules() {
+  const out = {};
+  if (!fs.existsSync(MODULES_DIR)) return out;
+  for (const name of fs.readdirSync(MODULES_DIR)) {
+    const dir = path.join(MODULES_DIR, name);
+    let isDir = false; try { isDir = fs.statSync(dir).isDirectory(); } catch { isDir = false; }
+    if (!isDir || !/^[a-z][a-z0-9-]{1,31}$/.test(name)) continue;
+    const files = {};
+    const walk = (rel) => {
+      for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+        const child = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(child);
+        else files[child] = createHash('sha256').update(fs.readFileSync(path.join(dir, child))).digest('hex');
+      }
+    };
+    walk('');
+    out[name] = files;
+  }
+  return out;
+}
+
 function psParses(file) {
   const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     `$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile('${file.replace(/'/g, "''")}',[ref]$t,[ref]$e)|Out-Null; if($e.Count){$e|%{$_.Message};exit 1}else{exit 0}`],
@@ -377,6 +405,29 @@ async function main() {
     // ③ⓚ 기준점(2.0.54, 2026-11-04 다른 선생님 신고 "업데이트 뒤 옛 코덱스 대화 재개 실패"): 업데이트 **전** 대화를 심는다 —
     // 연결 이름 'openai'(설치 패키지 2.0.49 이전의 코덱스 기본)로 만든 대화 기록 + 목록 DB 한 줄. 모델 호출 0.
     const oldThread = plantOldCodexThread();
+    // ③ⓛ 기준점(2.0.64, 2026-11-13 "메신저 = 선택, 설치 패키지에서 뺀다"): 옛 판이 깔아 둔(또는 사용자가 설정에서 깐) 선택 모듈은
+    // 새 판이 잠금표에 싣지 않아도 그대로여야 한다 — 로그인·열쇠(state)를 흉내 낸 파일을 심고, 모듈 폴더 전체의 지문을 떠 둔다.
+    // 빈손 통과를 막는 두 장치: ⓐ 옛 판 잠금표가 모듈을 동봉했다면 그 모듈이 실제로 깔려 있어야 하고(안 깔렸으면 지킬 것이 없어 ③ⓛ이
+    // 헛돈다), ⓑ 옛 판이 모듈을 하나도 깔지 않았으면(2.0.64 이후끼리) "사용자가 설정에서 깐 모듈" 을 흉내 낸 시험 모듈을 하나 심는다.
+    const prevLockParts = readJson(path.join(ZIP_PREV, 'lock.json'))?.parts ?? {};
+    const prevBundledMods = Object.keys(prevLockParts).filter((id) => /(^|\/)face\/modules\//.test(String(prevLockParts[id]?.dest ?? ''))).map((id) => String(prevLockParts[id].dest).split('/').pop());
+    const prevModsMissing = prevBundledMods.filter((n) => !fs.existsSync(path.join(MODULES_DIR, n, 'module.json')));
+    check(`① 옛 판이 동봉한 모듈(${prevBundledMods.length}개)이 깔려 있다`, prevModsMissing.length === 0,
+      prevModsMissing.length ? `없음: ${prevModsMissing.join(', ')}` : (prevBundledMods.join(', ') || '(옛 판도 모듈을 싣지 않음 — 시험 모듈을 심는다)'));
+    if (Object.keys(snapshotModules()).length === 0) {
+      const fake = path.join(MODULES_DIR, GATE_MODULE);
+      fs.mkdirSync(fake, { recursive: true });
+      fs.writeFileSync(path.join(fake, 'module.json'), JSON.stringify({ name: GATE_MODULE, version: '0.0.1', contract: 1, grade: 0, entry: 'index.mjs' }), 'utf8');
+      fs.writeFileSync(path.join(fake, 'index.mjs'), '// upgrade gate stand-in for a module the user installed from Settings\n', 'utf8');
+      fs.writeFileSync(path.join(fake, '.official'), '', 'utf8');
+    }
+    const modulesBefore = snapshotModules();
+    for (const name of Object.keys(modulesBefore)) {
+      const planted = path.join(MODULES_DIR, name, 'state', 'upgrade-gate-login.json');
+      fs.mkdirSync(path.dirname(planted), { recursive: true });
+      fs.writeFileSync(planted, JSON.stringify({ me: `${name}-before-${prevVersion}` }), 'utf8');
+    }
+    const modulesPlanted = snapshotModules();
     // ③ⓘ 기준점(2.0.35): 표식 폴더(R01-연습)를 만든 **뒤**의 역할 폴더 목록 — 업데이트가 여기에 무엇도 더하거나 빼면 안 된다.
     const rolesBefore = fs.readdirSync(SOUL_ROOT).filter((n) => /^R\d{2}-/.test(n)).sort();
 
@@ -441,6 +492,27 @@ async function main() {
     const modEntries = fs.existsSync(modsDir) ? fs.readdirSync(modsDir).filter((n) => { try { return fs.statSync(path.join(modsDir, n)).isDirectory(); } catch { return false; } }) : [];
     const strayMods = modEntries.filter((n) => !/^[a-z][a-z0-9-]{1,31}$/.test(n));
     check('③ⓗ face\\modules 에 이름 규칙 밖 폴더(.prev 등)가 없다', strayMods.length === 0, strayMods.length ? `남은 것: ${strayMods.join(', ')}` : modEntries.join(', ') || '(비어 있음)');
+    // ③ⓛ 선택 모듈 무회귀(2.0.64): 새 판 잠금표가 싣지 않는 모듈은 업데이트 전과 **한 바이트도** 다르지 않아야 한다(판·공식 표시·로그인 state).
+    // 새 판이 그 모듈을 직접 싣는 경우(다시 동봉)는 판이 바뀔 수 있으므로 "있다 + 심은 state 가 그대로"만 본다.
+    const modulesAfter = snapshotModules();
+    const bundledMods = new Set(Object.keys(nextLock?.parts ?? {}).filter((id) => /(^|\/)face\/modules\//.test(String(nextLock.parts[id]?.dest ?? ''))).map((id) => String(nextLock.parts[id].dest).split('/').pop()));
+    const modNames = Object.keys(modulesPlanted);
+    const modProblems = [];
+    for (const name of modNames) {
+      const a = modulesAfter[name];
+      if (!a) { modProblems.push(`${name}: 업데이트 뒤 사라짐`); continue; }
+      const stateKey = Object.keys(modulesPlanted[name]).find((k) => k.endsWith('upgrade-gate-login.json'));
+      if (a[stateKey] !== modulesPlanted[name][stateKey]) modProblems.push(`${name}: 심어 둔 state 가 달라짐`);
+      if (bundledMods.has(name)) continue;
+      const changed = [...new Set([...Object.keys(modulesPlanted[name]), ...Object.keys(a)])].filter((k) => modulesPlanted[name][k] !== a[k]);
+      if (changed.length) modProblems.push(`${name}: 달라진 파일 ${changed.slice(0, 5).join(', ')}${changed.length > 5 ? ` 외 ${changed.length - 5}` : ''}`);
+    }
+    const newcomers = Object.keys(modulesAfter).filter((n) => !modNames.includes(n) && !bundledMods.has(n));
+    if (newcomers.length) modProblems.push(`업데이트가 잠금표에 없는 모듈을 새로 깔았다: ${newcomers.join(', ')}`);
+    if (modNames.length === 0) modProblems.push('지켜볼 모듈이 하나도 없다(시험 모듈 심기가 실패했다) — 이 검사는 빈손으로 통과하지 않는다');
+    check(`③ⓛ 업데이트 전에 깔려 있던 선택 모듈(${modNames.length}개)이 그대로다 — 새 판이 싣지 않아도 지우거나 바꾸지 않는다`,
+      modProblems.length === 0,
+      modProblems.length ? modProblems.join(' / ') : modNames.map((n) => `${n}(파일 ${Object.keys(modulesPlanted[n]).length}개${bundledMods.has(n) ? ', 새 판이 동봉' : ''}${n === GATE_MODULE ? ', 시험 모듈' : ''})`).join(', '));
 
     // ③ⓔ 실행 파일 문법 -- 옛 판이 남긴 파일과 새 파일이 섞여도 "켜지는가"
     const manage = path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'teamclaude', 'teamclaude-manage.ps1');

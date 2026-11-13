@@ -68,8 +68,14 @@ const LAYOUT = {
   // and installed modules away -- the structural-package update path made that
   // reachable without anyone re-running the wizard (2026-09-14 review).
   face: { kind: 'archive', strip: 0, dest: (t) => path.join(t, 'face'), carryOver: ['state', 'modules'] },
-  // IRIS Messenger ships as a Face extension module and is installed by
-  // default (user decision 2026-09-14). `module` = hand the signed zip to
+  // IRIS Messenger is a Face extension module. It was installed by default
+  // from 1.4.0 (user decision 2026-09-14) until 2.0.63; since 2.0.64 (user
+  // decision 2026-11-13: optional = not in the package) lock.json no longer
+  // lists it, so this entry is dormant -- parts are only placed when the lock
+  // names them. It stays so a module can be bundled again by adding one lock
+  // entry. An already installed messenger is never touched: it lives in
+  // face\modules, which `carryOver` above moves into the new face copy.
+  // `module` = hand the signed zip to
   // Face's own installer (<tools>\face\daemon\modinstall.mjs) so the same
   // path/manifest/signature checks apply as for a module installed from the
   // settings drawer; the result lands in <tools>\face\modules\messenger with

@@ -36,6 +36,7 @@
 | `nameEnMissing` | 영어 이름이 비어 있는 폴더 이름 | 첫 인사에서 채우기 제안 |
 | `firstMessage` | 첫 인사 프롬프트 | Face는 내용을 만들지 않고 이 문자열을 그대로 주도 에이전트에 보낸다 |
 | `messenger.prompted` | Face가 메신저 로그인 안내를 한 번 보였는지 (정본 = 이 중첩 키; 평면 `messengerPrompted`는 쓰지 않는다) | Face가 `true`로 갱신(이 필드만 Face가 쓴다) |
+| `messenger.installed` | 인수 문서를 처음 쓸 때 `face\modules\messenger` 폴더가 있었는지. **2.0.64 부터 새 설치는 `false`**(메신저 = 선택, 설치 패키지에 없음 — 위 예시의 `true` 는 2.0.63 까지의 값) | `true` 일 때만 Face가 메신저 로그인 안내를 1회 보인다. 나중에 설정에서 메신저를 설치해도 이 칸은 바뀌지 않는다(안내는 설치 흐름이 대신한다) |
 | `resume` | 「설치 이어하기」가 실행할 것 | 영혼 안 설치기 사본 |
 
 규칙: 경로는 전부 영혼 루트 상대경로(휴대성). 토큰·키·이메일·사용자 이름 없음. Face는 `messenger.prompted` 외 어떤 필드도 쓰지 않는다.
