@@ -95,3 +95,9 @@ npm run verify           # 2·3층 전부: static → reproduce → extract-matr
 ## 허가서
 
 이 저장소는 MIT입니다(`LICENSE`). 동봉 부품의 허가서 사본은 zip 안 `payload/licenses/NOTICES.md` 에 함께 들어갑니다.
+
+## 기여 (Contributing)
+
+의견과 PR 안내는 [CONTRIBUTING.md](CONTRIBUTING.md)를, 보안 문제 신고는 [SECURITY.md](SECURITY.md)를 봐 주세요.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and [SECURITY.md](SECURITY.md) for reporting security issues.
