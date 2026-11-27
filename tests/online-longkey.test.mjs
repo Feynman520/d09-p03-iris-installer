@@ -16,6 +16,7 @@ import {
 } from '../installer/lib/online.mjs';
 import {
   pickClaudeAccount, parseLongKeyResult, longKeyMessage, longKeyToolPath, irisKeyFilePath, resetLongKey,
+  longKeyToolReady, reloadRelay,
   LONGKEY_APPROVE_SEC, LONGKEY_HARD_LIMIT_MS,
 } from '../installer/lib/longkey.mjs';
 
@@ -30,7 +31,7 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 let seq = 0;
 /** 임시 영혼: 도구 파일(빈 자리표) · 동봉 node 자리 · 중계기 설정(클로드 1 + 코덱스 1). */
-function makeSoul(label, { accounts, tool = '// placeholder\n', node = true } = {}) {
+function makeSoul(label, { accounts, tool = '// placeholder that knows --also-iris\n', node = true } = {}) {
   const root = path.join(tmp, `${label}-${++seq}`);
   const nodeDir = path.join(root, '_agent', 'shared', 'tools', 'node');
   const configPath = path.join(root, '_agent', 'shared', 'portable-state', 'teamclaude', 'teamclaude.json');
@@ -333,6 +334,65 @@ test('기록에는 "claude account #N" 꼴만 남는다 — 계정 이름 · 승
   for (const bad of [OWNER, 'localhost', URL_HINT, 'oauth/authorize', 'login_hint', 'A2', 'R2']) assert.ok(!all.includes(bad), `기록에 ${bad} 가 있으면 안 된다:\n${all}`);
 });
 
+test('옛 도구(두 자리 쓰기를 모르는 판)가 깔려 있으면 카드를 내지 않고, 눌러도 띄우지 않는다', () => {
+  // 옛 도구는 --also-iris 를 흘려듣고 중계기 자리만 바꾼다 — 그런 반쪽 쓰기가 "실패"로 읽히지 않게 띄우기 전에 가린다.
+  const s = makeSoul('old-tool', { tool: "// longkey.mjs 2.0.65\nconst account = arg('--account');\n" });
+  assert.equal(longKeyToolReady(s.root), false);
+  assert.deepEqual(longKeyAvailability({ root: s.root, nodeDir: s.nodeDir, teamclaudeConfigPath: s.configPath }), { available: false, reason: 'no-tool' });
+  const { r, spawns } = launch(s);
+  assert.deepEqual({ ok: r.ok, reason: r.reason }, { ok: false, reason: 'no-tool' });
+  assert.equal(spawns.length, 0);
+  assert.equal(longKeyToolReady(makeSoul('new-tool').root), true);
+  assert.equal(longKeyToolReady(makeSoul('none-tool', { tool: null }).root), false);
+  // 이 저장소가 싣는 도구는 아는 판이다.
+  const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+  assert.ok(fs.readFileSync(path.join(here, '..', 'payload-src', 'tools', 'iris-auth', 'longkey.mjs'), 'utf8').includes('--also-iris'));
+});
+
+test('다시 읽기 한 번 더: 도구가 중계기 계정 줄을 썼는데 다시 읽기 부탁이 닿지 않았을 때만, 조금 뒤 한 번 부탁한다', async () => {
+  const year = Date.now() + YEAR_MS;
+  const cases = [
+    ['계정 줄을 썼고 부탁이 안 닿음', `{"ok":true,"relay":"ok","iris":"ok","expiresAt":${year},"reloaded":false}`, 1],
+    ['한 자리만(계정 줄) 썼고 부탁이 안 닿음', `{"ok":false,"partial":true,"relay":"ok","iris":"failed","expiresAt":${year},"reloaded":false,"reason":"iris-write-failed"}`, 1],
+    ['도구의 부탁이 이미 닿음', `{"ok":true,"relay":"ok","iris":"ok","expiresAt":${year},"reloaded":true}`, 0],
+    ['계정 줄을 쓰지 못함', `{"ok":false,"partial":true,"relay":"failed","iris":"ok","expiresAt":${year},"reloaded":false,"reason":"relay-changed"}`, 0],
+    ['아무것도 못 씀', '{"ok":false,"relay":"skipped","iris":"skipped","reason":"timeout"}', 0],
+  ];
+  for (const [what, json, want] of cases) {
+    const s = makeSoul('reload');
+    let asked = 0;
+    const { child, logs } = launch(s, { reloadFn: async () => { asked += 1; return true; }, reloadRetryMs: 20 });
+    child.stdout.emit('data', `RESULT ${json}\n`);
+    child.emit('exit', 0);
+    assert.equal(asked, 0, `${what}: 곧바로 부탁하지 않는다`);
+    await tick(80);
+    assert.equal(asked, want, what);
+    assert.equal(logs.filter((l) => /reload retry ok=true/.test(l)).length, want);
+  }
+  // 넘겨받지 않았으면(기본) 아무 데도 부탁하지 않는다 — 시험 · 다른 쓰임이 살아 있는 중계기를 두드리지 않는다.
+  const quiet = makeSoul('reload-none');
+  const q = launch(quiet, { reloadRetryMs: 10 });
+  q.child.stdout.emit('data', `RESULT {"ok":true,"relay":"ok","iris":"ok","expiresAt":${year},"reloaded":false}\n`);
+  q.child.emit('exit', 0);
+  await tick(50);
+  assert.ok(!q.logs.some((l) => /reload retry/.test(l)));
+  // 부탁이 실패해도(중계기가 꺼져 있음) 카드 결과는 그대로다.
+  const down = makeSoul('reload-down');
+  const d = launch(down, { reloadFn: async () => { throw new Error('ECONNREFUSED'); }, reloadRetryMs: 10 });
+  d.child.stdout.emit('data', `RESULT {"ok":true,"relay":"ok","iris":"ok","expiresAt":${year},"reloaded":false}\n`);
+  await tick(50);
+  assert.equal(longKeyStatus({ root: down.root }).state, 'done');
+  assert.ok(d.logs.some((l) => /reload retry ok=false/.test(l)));
+});
+
+test('다시 읽기 부탁의 모양: 이 PC 의 중계기에 본문 없는 POST 한 번 — 꺼져 있으면 false(던지지 않는다)', async () => {
+  const seen = [];
+  assert.equal(await reloadRelay(3456, { fetchFn: async (url, opts) => { seen.push([url, opts]); return { ok: true }; } }), true);
+  assert.deepEqual(seen, [['http://127.0.0.1:3456/teamclaude/reload', { method: 'POST' }]]);
+  assert.equal(await reloadRelay(3456, { fetchFn: async () => ({ ok: false }) }), false);
+  assert.equal(await reloadRelay(3456, { fetchFn: async () => { throw new Error('ECONNREFUSED'); } }), false);
+});
+
 // ---------------------------------------------------------------------------
 // 진짜 node + 가짜 도구 파일(파이프 · 자기 PID 끝내기)
 // ---------------------------------------------------------------------------
@@ -345,6 +405,7 @@ const waitFor = async (pred, what, ms = 15000) => {
 
 test('진짜 프로그램으로: 가짜 도구가 찍은 승인 주소와 RESULT 를 파이프로 읽는다 · 인자와 환경이 도구에 그대로 닿는다', async () => {
   const fake = [
+    '// fake tool: understands --also-iris',
     "import fs from 'node:fs';",
     "import path from 'node:path';",
     "const seen = { args: process.argv.slice(2), tc: process.env.TEAMCLAUDE_CONFIG, dir: process.env.CLAUDE_CONFIG_DIR, lk: process.env.IRIS_LONGKEY_FILE ?? null };",
@@ -368,6 +429,7 @@ test('진짜 프로그램으로: 가짜 도구가 찍은 승인 주소와 RESULT
 
 test('진짜 프로그램으로: 승인을 기다리는 프로그램을 닫을 때 자기 PID 만 끝낸다(남지 않는다)', async () => {
   const fake = [
+    '// fake tool: understands --also-iris',
     `process.stdout.write('${APPROVE_URL}\\n');`,
     'setInterval(() => {}, 1000);',
   ].join('\n');

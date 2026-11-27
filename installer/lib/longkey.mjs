@@ -24,6 +24,10 @@ export const LONGKEY_APPROVE_SEC = 300;
 export const LONGKEY_HARD_LIMIT_MS = (LONGKEY_APPROVE_SEC + 45) * 1000;
 // RESULT 를 낸 뒤에도 프로그램이 남아 있으면 이만큼 기다렸다가 그 PID 를 끝낸다.
 export const LONGKEY_LINGER_MS = 8000;
+// 도구가 중계기 계정 줄을 썼는데 다시 읽기 부탁이 닿지 않았을 때(중계기가 막 뜨는 중이었을 수 있다) 이만큼 뒤에 한 번 더 부탁한다.
+// 중계기가 정말 꺼져 있으면 이 부탁도 그냥 실패하고, 중계기는 켜질 때 파일을 읽는다.
+export const LONGKEY_RELOAD_RETRY_MS = 5000;
+export const LONGKEY_RELAY_PORT = 3456;
 
 const AUTHORIZE_RE = /https:\/\/claude\.ai\/oauth\/authorize\?[^\s"'<>]+/;
 const RESULT_RE = /(?:^|\n)RESULT (\{[^\n]*\})\r?\n/;
@@ -102,6 +106,19 @@ function nodeExeOf(root, nodeDir) {
   return path.join(nodeDir ?? path.join(root, '_agent', 'shared', 'tools', 'node'), 'node.exe');
 }
 
+/**
+ * 설치본의 도구가 두 자리 쓰기(`--also-iris`)를 아는 판인가. 모르는 옛 도구는 그 인자를 흘려듣고 중계기 자리만 바꾼 뒤
+ * 다른 모양의 결과를 낸다(이쪽은 "실패"로 읽게 된다) — 그래서 띄우기 전에 가린다. 도구가 없으면 false.
+ */
+export function longKeyToolReady(root, { fs: fsImpl = fs } = {}) {
+  try { return fsImpl.readFileSync(longKeyToolPath(root), 'utf8').includes('--also-iris'); } catch { return false; }
+}
+
+/** 중계기에 "설정을 다시 읽어 달라"고 한 번 부탁한다(계정 · 열쇠를 보내지 않는다). 꺼져 있으면 false. */
+export async function reloadRelay(port = LONGKEY_RELAY_PORT, { fetchFn = fetch } = {}) {
+  try { const r = await fetchFn(`http://127.0.0.1:${port}/teamclaude/reload`, { method: 'POST' }); return r?.ok === true; } catch { return false; }
+}
+
 /** 카드를 낼 수 있는가(읽기만). → { available, reason } — reason: no-tool · no-node · no-config · no-account · ambiguous · already */
 export function longKeyAvailability({
   root, nodeDir, teamclaudeConfigPath,
@@ -109,7 +126,7 @@ export function longKeyAvailability({
 } = {}) {
   try {
     if (!root) return { available: false, reason: 'no-root' };
-    if (!existsFn(longKeyToolPath(root))) return { available: false, reason: 'no-tool' };
+    if (!existsFn(longKeyToolPath(root)) || !longKeyToolReady(root, { fs: fsImpl })) return { available: false, reason: 'no-tool' };
     if (!existsFn(nodeExeOf(root, nodeDir))) return { available: false, reason: 'no-node' };
     const pick = pickClaudeAccount({ root, teamclaudeConfigPath: teamclaudeConfigPath ?? resolveConfigPathFn({ root }), fs: fsImpl });
     if (!pick.ok) return { available: false, reason: pick.reason };
@@ -141,13 +158,13 @@ export function parseLongKeyResult(text) {
   const state = j?.ok === true && both ? 'done' : (one ? 'partial' : 'failed');
   const expiresAt = one && Number.isFinite(Number(j?.expiresAt)) && Number(j.expiresAt) > 0 ? Number(j.expiresAt) : null;
   const reason = state === 'done' ? null : (REASONS.has(j?.reason) ? j.reason : 'failed');
-  return { state, slots, expiresAt, reason };
+  return { state, slots, expiresAt, reason, reloaded: j?.reloaded === true };
 }
 
 const jobs = new Map(); // 영혼 루트(소문자) → 일 하나
 const jobKey = (root) => String(root ?? '').toLowerCase();
 /** 시험용: 기억을 비운다(프로그램을 끝내지는 않는다). */
-export function resetLongKey() { for (const j of jobs.values()) { clearTimeout(j.timer); clearTimeout(j.linger); } jobs.clear(); }
+export function resetLongKey() { for (const j of jobs.values()) { clearTimeout(j.timer); clearTimeout(j.linger); clearTimeout(j.reloadTimer); } jobs.clear(); }
 
 function publicResult(job) {
   return { state: job.state, slots: job.slots, expiresAt: job.expiresAt, reason: job.reason };
@@ -163,6 +180,9 @@ export function startLongKey({
   spawnFn = spawn, killFn = defaultKillTree, existsFn = fs.existsSync, fs: fsImpl = fs,
   resolveConfigPathFn = resolveTeamclaudeConfigPath,
   approveSec = LONGKEY_APPROVE_SEC, hardLimitMs = LONGKEY_HARD_LIMIT_MS, lingerMs = LONGKEY_LINGER_MS,
+  // reloadFn = 중계기에 다시 읽기를 한 번 더 부탁하는 함수. 기본은 없음(시험 · 다른 쓰임에서 살아 있는 중계기를 두드리지 않게) —
+  // 설치기 서버만 넘긴다.
+  reloadFn = null, reloadRetryMs = LONGKEY_RELOAD_RETRY_MS,
   env = process.env, now = () => Date.now(), log = () => {}, onFinish = null,
 } = {}) {
   const key = jobKey(root);
@@ -177,7 +197,7 @@ export function startLongKey({
   if (!root) return refuse('no-root');
   const tool = longKeyToolPath(root);
   const nodeExe = nodeExeOf(root, nodeDir);
-  if (!existsFn(tool)) return refuse('no-tool');
+  if (!existsFn(tool) || !longKeyToolReady(root, { fs: fsImpl })) return refuse('no-tool');
   if (!existsFn(nodeExe)) return refuse('no-node');
   const configPath = teamclaudeConfigPath ?? resolveConfigPathFn({ root });
   const pick = pickClaudeAccount({ root, teamclaudeConfigPath: configPath, fs: fsImpl });
@@ -235,6 +255,17 @@ export function startLongKey({
     // 결과를 낸 프로그램은 곧 스스로 끝난다. 남아 있으면 그 PID 만 끝낸다.
     job.linger = setTimeout(killOwn, lingerMs);
     job.linger.unref?.();
+    // 중계기 계정 줄은 썼는데 도구의 다시 읽기 부탁이 닿지 않았다 → 조금 뒤 한 번 더 부탁한다. 중계기가 그 순간 막 뜨는
+    // 중이었다면(파일을 이미 읽은 뒤 · 아직 귀를 열기 전) 옛 열쇠를 든 채 돌게 되기 때문이다. 꺼져 있었다면 아무 일도 없다.
+    if (parsed.slots.relay === 'ok' && !parsed.reloaded && typeof reloadFn === 'function') {
+      job.reloadTimer = setTimeout(() => {
+        Promise.resolve().then(() => reloadFn()).then(
+          (ok) => log(`longkey relay reload retry ok=${ok === true}`),
+          () => log('longkey relay reload retry ok=false'),
+        );
+      }, reloadRetryMs);
+      job.reloadTimer.unref?.();
+    }
   };
   child?.stdout?.on?.('data', onData);
   child?.stderr?.on?.('data', () => { /* 읽고 버린다 — 파이프가 차서 멈추지 않게 */ });

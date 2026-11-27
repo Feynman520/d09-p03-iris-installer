@@ -42,7 +42,7 @@ import {
 import { createSetupRunner } from './lib/adapters/setup-runner.mjs';
 import { createOnlineRunner } from './lib/adapters/online-runner.mjs';
 // 2.0.66 「1년 열쇠 받기(권장)」 카드의 화면 글(순수 함수). 프로그램을 띄우는 쪽은 다른 온라인 일처럼 onlineRunner 로 부른다.
-import { longKeyMessage } from './lib/longkey.mjs';
+import { longKeyMessage, reloadRelay as reloadRelayForLongKey } from './lib/longkey.mjs';
 // Update mode only (POST /api/auto). The v1 `install()` is deliberately NOT
 // imported any more: an update runs the SAME v2 engine the wizard runs, with
 // the stages an update can change reset to `pending` first (lib/update-plan).
@@ -1411,7 +1411,11 @@ export function startServer({
     longKeyEverStarted = true;
     let started;
     try {
-      started = await onlineRunner.startLongKey({ root: state.soul.root, nodeDir: state.nodeDir, log, onFinish: recordLongKey });
+      started = await onlineRunner.startLongKey({
+        root: state.soul.root, nodeDir: state.nodeDir, log, onFinish: recordLongKey,
+        // 도구가 계정 줄을 썼는데 다시 읽기 부탁이 닿지 않았을 때만, 조금 뒤 한 번 더 부탁한다(lib/longkey.mjs).
+        reloadFn: () => reloadRelayForLongKey(),
+      });
     } catch (err) {
       started = { ok: false, reason: 'spawn-failed' };
       log(`longkey start threw: ${String(err?.message ?? err)}`);
