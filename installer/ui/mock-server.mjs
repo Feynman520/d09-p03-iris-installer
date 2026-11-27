@@ -9,12 +9,17 @@
 //   --legacy     1.x IRIS 자료가 있는 자리               --fail venv 그 단계에서 설치가 멈춘다
 //   --reinstall  1.x 영수증을 자동 업데이트로 연 상태     --speed     단계 하나에 걸리는 시간(기본 700ms)
 //   --login-reason window-closed|page-blocked|import-failed   로그인이 그 까닭으로 실패한다
+//   --longkey ok|fail|wait|none   「1년 열쇠 받기(권장)」 카드에서 「받기」를 누른 뒤의 모습(2.0.66)
+//             ok = 승인 대기 → 받음(기본) · fail = 시간 초과 · wait = 승인 대기에서 멈춤 · none = 카드 없음
+//             카드는 Claude 로그인이 끝난 뒤에만 보인다(ChatGPT 만 고르면 없다). 가짜라 아무것도 받지 않고 쓰지 않는다.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize } from 'node:path';
 import { validateNodes, assignCodes, folderName } from './structure.mjs';
+// 카드의 글은 진짜 서버와 같은 함수에서 만든다(순수 함수 — 아무것도 띄우지 않는다).
+import { longKeyMessage } from '../lib/longkey.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -159,6 +164,31 @@ function allLoginsDone() {
   return Object.values(state.online.logins).every((l) => l.state === 'done' || l.state === 'not-needed');
 }
 
+// ---------------------------------------------------------------- 1년 열쇠 받기(권장) 카드 — 가짜
+const LONGKEY_MODE = value('longkey', 'ok');
+// 가짜 승인 주소(모양만 진짜와 같다 — 눌러도 Claude 가 거절하는 값이고, 이 서버는 어디에도 요청하지 않는다).
+const FAKE_APPROVE_URL = 'https://claude.ai/oauth/authorize?code=true&client_id=mock&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fcallback&scope=user%3Ainference&state=mock';
+const longKey = { state: 'idle', skipped: false, url: null, startedAt: null, expiresAt: null, reason: null };
+let longKeyTimers = [];
+function longKeyView() {
+  const claude = state.online.logins && state.online.logins.claude;
+  const offered = LONGKEY_MODE !== 'none' && !!claude && claude.state === 'done';
+  return { offered, ...longKey, message: longKeyMessage(longKey) };
+}
+function startLongKey() {
+  if (longKey.state === 'starting' || longKey.state === 'approve') return { ok: true, already: true };
+  for (const t of longKeyTimers) clearTimeout(t);
+  Object.assign(longKey, { state: 'starting', skipped: false, url: null, startedAt: Date.now(), expiresAt: null, reason: null });
+  longKeyTimers = [setTimeout(() => { Object.assign(longKey, { state: 'approve', url: FAKE_APPROVE_URL }); }, SPEED)];
+  if (LONGKEY_MODE === 'wait') return { ok: true };
+  longKeyTimers.push(setTimeout(() => {
+    const year = Date.now() + 365 * 86400000;
+    if (LONGKEY_MODE === 'fail') Object.assign(longKey, { state: 'failed', url: null, reason: 'timeout' });
+    else Object.assign(longKey, { state: 'done', url: null, expiresAt: year, reason: null });
+  }, SPEED * 4));
+  return { ok: true };
+}
+
 // ---------------------------------------------------------------- HTTP
 const MIME = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 
@@ -245,7 +275,14 @@ const server = createServer(async (req, res) => {
     }
 
     if (path === '/api/online/start') { startOnline(); return json(res, 200, { ok: true }); }
-    if (path === '/api/online/status') return json(res, 200, state.online);
+    if (path === '/api/online/status') return json(res, 200, { ...state.online, longKey: longKeyView() });
+    if (path === '/api/online/longkey/skip') { longKey.skipped = true; return json(res, 200, { ok: true, longKey: longKeyView() }); }
+    if (path === '/api/online/longkey') {
+      if (req.method !== 'POST') return json(res, 200, { ok: true, longKey: longKeyView() });
+      if (!longKeyView().offered) return json(res, 200, { ok: false, reason: 'claude-login-first', message: 'Claude 로그인이 끝난 뒤에 받을 수 있습니다.', longKey: longKeyView() });
+      const started = startLongKey();
+      return json(res, 200, { ...started, longKey: longKeyView() });
+    }
     if (path === '/api/online/login') { finishLogin(body.provider); return json(res, 200, { ok: true }); }
     if (path === '/api/online/login/retry') { finishLogin(body.provider); return json(res, 200, { ok: true }); }
     if (path === '/api/online/relay') {
@@ -273,6 +310,11 @@ const server = createServer(async (req, res) => {
           folders,
           nameEnMissing: state.decisions ? state.decisions.nameEnMissing : [],
           checks: '9항목 가운데 8항목 통과 · 1항목 남은 일',
+          // 2.0.66: 인수 문서의 1년 열쇠 한 줄(완료 보고가 이 값과 카드의 지금 상태로 한 줄을 쓴다)
+          claudeLongKey: !((state.choice && state.choice.subscriptions) || []).includes('claude')
+            ? { state: 'not-needed', expiresAt: null, howTo: null }
+            : longKey.state === 'done' ? { state: 'received', expiresAt: new Date(longKey.expiresAt).toISOString(), howTo: null }
+              : { state: 'not-received', expiresAt: null, howTo: '설정 → 계정 · 보안 → 1년 열쇠 받기' },
         },
         pendingCapabilities: ['edge', 'office'],
       });

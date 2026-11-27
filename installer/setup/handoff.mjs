@@ -131,6 +131,20 @@ export function relayBlock(receipt) {
   return { state: r.state ?? 'pending', accounts: Number(r.accounts ?? 0) };
 }
 
+// 2.0.66 — 클로드 1년 열쇠 한 줄(설치 화면의 「1년 열쇠 받기(권장)」 카드 결과). **IRIS 창 세션용 1년 열쇠**를 설치 때
+// 받았는가만 말한다(중계기 계정의 열쇠와는 무관하다). 영수증 `online.logins.claude` 의 longKey · longKeyExpiresAt 에서 만든다.
+// 이름 · 열쇠는 없다. **상태 판정(handoffState)에는 쓰지 않는다** — 받지 않았어도 설치는 `ready` 다.
+export const LONGKEY_HOW_TO = '설정 → 계정 · 보안 → 1년 열쇠 받기';
+
+export function claudeLongKeyBlock(receipt, subscriptions = []) {
+  if (!subscriptions.includes('claude')) return { state: 'not-needed', expiresAt: null, howTo: null };
+  const c = receipt?.online?.logins?.claude ?? {};
+  const ms = Number(c.longKeyExpiresAt);
+  const expiresAt = Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
+  if (c.longKey === true) return { state: 'received', expiresAt, howTo: null };
+  return { state: 'not-received', expiresAt: null, howTo: LONGKEY_HOW_TO };
+}
+
 /**
  * handoffState — Face 첫 실행의 세 갈래(계약 표).
  *   setup-incomplete : 아홉 단계가 덜 끝났다 → 안내 카드 + 「설치 이어하기」
@@ -232,6 +246,8 @@ export function buildHandoff(ctx, {
     leadAgent,
     login,
     relay: relayBlock(receipt),
+    // 2.0.66: IRIS 창 세션용 클로드 1년 열쇠를 설치 때 받았는가(received · not-received · not-needed) — 안내용 한 줄, 판정에는 안 쓴다.
+    claudeLongKey: claudeLongKeyBlock(receipt, subscriptions),
     setup: { allDone: setup.allDone, failed: setup.failed },
     folders,
     // 2.0.35: 첫 세션이 볼 구조 상태. interview = 설치기가 R/D/P 를 만들지 않았고 첫 세션이 인터뷰로 만든다.
@@ -299,10 +315,31 @@ export function refreshHandoffAfterOnline(ctx, { fs = ctx?.fs ?? nodeFs, now = n
     writtenAt: now.toISOString(),
     login,
     relay: relayBlock(receipt),
+    claudeLongKey: claudeLongKeyBlock(receipt, subscriptions),
     setup: { allDone: setup.allDone, failed: setup.failed },
     state: handoffState({ setup, login, subscriptions }),
   };
   if (next.state === 'ready' && !next.setupCompletedAt) next.setupCompletedAt = now.toISOString();
+  const file = assertInside(root, handoffPath(root), { fs });
+  atomicWriteJson(fs, file, next);
+  return { path: file, handoff: next, written: true };
+}
+
+/**
+ * refreshHandoffLongKey(ctx) — 「1년 열쇠 받기」 카드의 결과가 났을 때 서버가 부른다(2.0.66).
+ * 이미 있는 인수 문서의 `claudeLongKey` **한 칸만** 갈아 끼운다 — state · login · relay · writtenAt · messenger 를
+ * 비롯한 다른 칸은 읽은 그대로 다시 쓴다. 인수 문서가 없으면 만들지 않는다. 내용이 같으면 쓰지 않는다.
+ */
+export function refreshHandoffLongKey(ctx, { fs = ctx?.fs ?? nodeFs } = {}) {
+  const root = ctx.root;
+  const prior = readHandoff(root, { fs });
+  if (!prior) return { path: handoffPath(root), handoff: null, written: false, reason: 'no-handoff' };
+  const subscriptions = Array.isArray(prior.subscriptions) ? prior.subscriptions : [];
+  const block = claudeLongKeyBlock(ctx.receipt ?? {}, subscriptions);
+  if (JSON.stringify(prior.claudeLongKey ?? null) === JSON.stringify(block)) {
+    return { path: handoffPath(root), handoff: prior, written: false, reason: 'unchanged' };
+  }
+  const next = { ...prior, claudeLongKey: block };
   const file = assertInside(root, handoffPath(root), { fs });
   atomicWriteJson(fs, file, next);
   return { path: file, handoff: next, written: true };
@@ -495,6 +532,6 @@ export function copyInstallerProgram(ctx, { fs = ctx?.fs ?? nodeFs, log = ctx?.l
 }
 
 export default {
-  writeHandoff, buildHandoff, refreshHandoffAfterOnline, copyInstallerProgram,
+  writeHandoff, buildHandoff, refreshHandoffAfterOnline, refreshHandoffLongKey, copyInstallerProgram,
   handoffPath, firstMessageText, handoffState, setupSummary,
 };

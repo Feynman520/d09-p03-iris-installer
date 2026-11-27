@@ -735,6 +735,10 @@ async function main() {
       if (!adaptersSrc.includes(`PS_TRUST_SYSTEM_CA = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }"`)) problems.push('setup/adapters.mjs lacks the only-when-empty NODE_USE_SYSTEM_CA line for hooks');
       // The notice hook is built with psRunQuietTimed (inner time limit, always exit 0, no error text) -- not psRun, which the four blocking hooks keep.
       if (!adaptersSrc.includes("return `${PS_TRUST_SYSTEM_CA}; ${psRunQuietTimed({ waitMs: innerTimeoutMs, startupLimitMs }, node, script, '--hook')}`") || !/command: authNoticeHookCommand\(nodeExePath\(root\), authStatus\)/.test(adaptersSrc)) problems.push('setup/adapters.mjs: the login-key notice hook (node status.mjs --hook) is not built with the NODE_USE_SYSTEM_CA line');
+      // 2.0.66 adds a sixth: the one-year-key helper the installer starts with the bundled node when the person
+      // presses the card (installer/lib/longkey.mjs). Its child env gets the variable only when it is empty.
+      // (tests/online-longkey.test.mjs holds the same line against the source, so this check cannot drift unnoticed.)
+      if (!read('installer/lib/longkey.mjs').includes("if (childEnv.NODE_USE_SYSTEM_CA == null || childEnv.NODE_USE_SYSTEM_CA === '') childEnv.NODE_USE_SYSTEM_CA = '1';")) problems.push('lib/longkey.mjs does not set NODE_USE_SYSTEM_CA (only when empty) for the one-year-key helper');
       const updZip = path.join(payloadDir, 'updater', 'iris-updater.zip');
       if (!fs.existsSync(updZip)) problems.push('missing payload/updater/iris-updater.zip');
       else {
@@ -755,9 +759,9 @@ async function main() {
         }
       }
       record(
-        '㉒ IRIS-started Node trusts the Windows certificate store too (installer, relay, updater, session-start hook)',
+        '㉒ IRIS-started Node trusts the Windows certificate store too (installer, relay, updater, session-start hook, one-year-key helper)',
         problems.length === 0,
-        problems.length === 0 ? '5 launch point(s) wired' : problems.join('; '),
+        problems.length === 0 ? '6 launch point(s) wired' : problems.join('; '),
       );
     }
   } finally {

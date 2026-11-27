@@ -27,6 +27,17 @@
 - `POST /api/summary/confirm` → `{ ok }` (choice·decisions 둘 다 있어야 함) → step=setup
 - `POST /api/setup/start` → 202 `{ ok, running:true }` · `GET /api/setup/progress` → `setup` 객체 · `POST /api/setup/retry` → 실패 단계부터 재시작
 - `POST /api/online/start` → 인터넷 확인·(Claude 선택 시) Claude Code + document-skills 내려받기 시작 · `GET /api/online/status` → `online` 객체 · `POST /api/online/login` 본문 `{ provider }` → 로그인 창 띄움 · `POST /api/online/login/retry` 본문 `{ provider }` · `POST /api/online/relay` → 중계기 시작·확인
+- **1년 열쇠 받기(권장 카드, 2.0.66)** — 받는 것은 **IRIS 창 세션용 1년 열쇠 하나**다(IRIS 창 설정 → 계정 · 보안의 「1년 열쇠 받기」와 같은 도구 · 같은 길). 중계기 설정(계정 줄)은 쓰지 않는다. Claude 로그인이 **끝난 뒤**(`logins.claude.state:"done"` = 중계기에 계정이 들어간 뒤) 사람이 누를 때만 움직인다. 누르지 않으면 서버는 어떤 파일도 쓰지 않고(조회는 읽기만 · 기록 없음), 이 카드의 상태는 `step` · 완료 판정(`setupAllDone` · `onlineDone` · 재실행 판정)에 쓰이지 않는다.
+  - `GET /api/online/longkey` → `{ ok, longKey, now }`. 같은 `longKey` 가 `GET /api/online/status` 응답에도 실린다(`online` 객체 안이 아니라 응답의 한 칸 — 상태 파일 · 영수증에는 가지 않는다).
+  - `longKey` = `{ offered, state, skipped, url, startedAt, expiresAt, reason, message }`
+    - `offered`: 카드를 낼 수 있는가. Claude 를 고르지 않았거나 · 로그인이 덜 끝났거나 · 낼 수 없는 PC(`reason`: `no-tool` · `no-node`)면 `false`.
+    - `state`: `idle` → `starting` → `approve`(브라우저 승인 대기 — `url` = 승인 주소, 화면의 「브라우저가 열리지 않았으면 여기」 링크) → `done` · `failed`. 끝난 뒤 `url` 은 `null`. 승인 주소는 화면으로만 가고 설치 기록 · 상태 파일 · 영수증에 남지 않는다(계정 이름을 도구에 넘기지 않아 주소에 계정 귀띔 칸도 없다).
+    - `expiresAt`: 열쇠 만료(밀리초). `reason`: `timeout` · `denied` · `short-lived` · `exchange-failed` · `exited` · `stopped` · `spawn-failed` · `failed` 한 낱말. `message`: 화면에 그대로 보일 한국어 한 문장(계정 이름 · 열쇠 · 도구의 원문 없음).
+    - `skipped`: 「나중에」를 눌렀는가(메모리에만 — 설치기를 다시 열면 `false`).
+  - `POST /api/online/longkey` → `{ ok, already?, reason?, message?, longKey }`. 동봉 node 로 설치본의 `iris-auth\longkey.mjs --timeout 300` 을 창 없이 · 딸린 프로세스로 띄운다(계정 인자 없음. 이쪽 한도 5분 남짓, 넘기면 자기가 띄운 PID 만 끝냄). 이미 돌고 있으면 새로 띄우지 않고 `already:true`. Claude 로그인이 끝나기 전이면 `ok:false, reason:"claude-login-first"`.
+  - `POST /api/online/longkey/skip` → `{ ok, longKey }` — 「나중에」. 파일 · 영수증 · 기록 무변경.
+  - 결과가 났을 때만 영수증 `online.logins.claude` 에 세 칸이 더해진다: `longKey`(`true` = 받음, `false` = 못 받음) · `longKeyExpiresAt` · `longKeyAt`. 이미 "받음"이 적혀 있으면 그 뒤의 실패가 그 줄을 고치지 않는다. 인수 문서가 이미 있으면 `claudeLongKey` 한 칸만 갈아 끼운다(`docs\인수문서-handoff-v2.md`).
+  - 설치 창이 닫히면(서버 종료 · `POST /api/quit`) 띄워 둔 프로그램을 끝내고 아무것도 적지 않는다. 서버 프로세스가 그 길을 밟지 못하고 죽어도 프로그램은 남지 않는다(딸린 프로세스라 윈도우가 함께 끝낸다). 브라우저 탭만 닫으면 서버가 살아 있으므로 프로그램도 승인 한도(5분)까지 기다린다 — 그사이 승인하면 열쇠는 저장되고 영수증에도 적힌다.
 - `GET /api/report` → `{ ok, markdown, handoff, pendingCapabilities }` · `POST /api/open-face` → Face 실행 `{ ok }`
 - **순서 가드**: 영혼 폴더에 쓰는 모든 POST(`/api/structure`·`/api/summary/confirm`·`/api/setup/*`·`/api/online/*`·`/api/open-face`)는 `POST /api/locate` 가 그 폴더를 받아들인 뒤에만 동작한다. 아니면 409 `{ ok:false, reason:"no_soul"|"no_locate" }` 이고 아무것도 쓰지 않는다. `mode:"foreign"` 판정은 앞서 받은 확인을 **취소**한다.
 - `POST /api/log/path` → `{ ok, path }` (화면 「로그 경로 복사」용)

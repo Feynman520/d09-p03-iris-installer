@@ -9,6 +9,10 @@
 //   startLogin({ provider, root, ... })    -> { ok, state, reason }
 //   loginStatus({ provider, root, ... })   -> { state, cli, relay, reason }
 //   startRelay({ root, ... })              -> { ok, state, accounts }
+//   longKeyAvailability({ root, ... })     -> { available, reason }            (읽기만)
+//   startLongKey({ root, onFinish, ... })  -> { ok, state, already?, reason? }
+//   longKeyStatus({ root })                -> { state, url, expiresAt, reason, message }
+//   stopLongKey({ root })                  -> { stopped }                      (자기가 띄운 PID 만)
 
 export const NOT_IMPLEMENTED = 'E-NOT-IMPLEMENTED';
 
@@ -41,5 +45,10 @@ export function createOnlineRunner({ importer = () => import('../online.mjs') } 
     startLogin: (args) => call(importer, 'startLogin', args),
     loginStatus: (args) => call(importer, 'loginStatus', args),
     startRelay: (args) => call(importer, 'startRelay', args),
+    // 2.0.66 — 「1년 열쇠 받기(권장)」 카드. 로그인이 끝난 뒤 사람이 누를 때만 쓰인다(완료 판정과 무관).
+    longKeyAvailability: (args) => call(importer, 'longKeyAvailability', args),
+    startLongKey: (args) => call(importer, 'startLongKey', args),
+    longKeyStatus: (args) => call(importer, 'longKeyStatus', args),
+    stopLongKey: (args) => call(importer, 'stopLongKey', args),
   };
 }

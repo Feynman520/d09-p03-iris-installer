@@ -206,3 +206,40 @@ test('--hook 은 상태 파일을 쓰지 않는다 — 없으면 만들지 않�
   assert.notEqual(fs.readFileSync(h.statusFile, 'utf8'), written);
   assert.deepEqual(readStatus(h).notify, { key: 'new-key', at: 999 }, '창의 점검은 자기 알림 기록을 이어 간다');
 });
+
+// ---------------------------------------------------------------------------
+// 2.0.66 — 설치 화면의 「1년 열쇠 받기(권장)」 카드가 기대는 약속. 카드는 이 도구를 **고치지 않고** IRIS 창이 띄우는 꼴
+// (계정 인자 없음 = IRIS 창 세션용 열쇠) 그대로 띄운다 — `installer\lib\longkey.mjs` 가 읽는 것은 승인 주소 한 줄과 RESULT 한 줄이다.
+// 도구(2.0.65 에 실린 판 그대로)가 그 약속대로 찍는지 본다. 승인을 끝내지 않으므로 열쇠 교환 요청은 한 번도 나가지 않는다.
+// ---------------------------------------------------------------------------
+test('1년 열쇠 도구의 IRIS 세션용 길: 승인 주소 한 줄(계정 귀띔 없음 · 이 PC 로 복귀) + RESULT 한 줄 — 승인이 없으면 아무것도 쓰지 않는다', () => {
+  const h = makeHome('longkey-iris');
+  const tc = h.env.TEAMCLAUDE_CONFIG;
+  const before = fs.readFileSync(tc);
+  const r = spawnSync(process.execPath, [path.join(SRC, 'longkey.mjs'), '--no-open', '--timeout', '1'], { env: h.env, encoding: 'utf8', timeout: 30000, windowsHide: true });
+  assert.equal(r.status, 1, r.stderr);
+  const out = r.stdout ?? '';
+
+  const url = /https:\/\/claude\.ai\/oauth\/authorize\?[^\s"'<>]+/.exec(out)?.[0];
+  assert.ok(url, '승인 주소를 표준 출력에 찍는다(설치기가 이 모양으로 찾는다)');
+  const u = new URL(url);
+  assert.match(u.searchParams.get('redirect_uri'), /^http:\/\/localhost:\d+\/callback$/);
+  assert.equal(u.searchParams.get('scope'), 'user:inference', 'IRIS 세션용 권한만');
+  assert.equal(u.searchParams.get('login_hint'), null, '계정 인자를 주지 않으면 주소에 계정 귀띔이 없다');
+  for (const k of ['access_token', 'refresh_token', 'token', 'code_verifier']) assert.equal(u.searchParams.get(k), null, `승인 주소에 ${k} 없음`);
+
+  const line = out.split('\n').filter((l) => l.startsWith('RESULT ')).pop();
+  assert.deepEqual(JSON.parse(line.slice(7)), { ok: false, error: '시간 초과(승인 없음)' }, '실패의 RESULT 모양(설치기가 이 글에서 까닭을 고른다)');
+  assert.ok(out.endsWith(`${line}\n`), 'RESULT 가 마지막 줄이고 줄바꿈으로 끝난다');
+
+  assert.ok(fs.readFileSync(tc).equals(before), '중계기 설정은 읽지도 쓰지도 않는 길이다');
+  assert.equal(fs.existsSync(h.env.IRIS_LONGKEY_FILE), false, '열쇠 파일을 만들지 않는다');
+  assert.deepEqual(fs.readdirSync(path.dirname(tc)).sort(), ['teamclaude.auth-health.json', 'teamclaude.json']);
+});
+
+test('1년 열쇠 도구는 2.0.65 에 실린 판 그대로다 — 두 자리 쓰기(`--also-iris`)는 싣지 않았다', () => {
+  const src = fs.readFileSync(path.join(SRC, 'longkey.mjs'), 'utf8');
+  assert.ok(!src.includes('--also-iris'));
+  // 성공의 RESULT 모양(IRIS 세션용): ok · email · expiresAt · expiresIn · scope — 설치기는 ok 와 expiresAt 만 받는다.
+  assert.match(src, /result\(\{ ok: true, email: rec\.email, expiresAt: rec\.expiresAt, expiresIn: rec\.expiresIn, scope: rec\.scope \}\);/);
+});
