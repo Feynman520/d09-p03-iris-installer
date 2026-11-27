@@ -527,7 +527,8 @@ export function v2Verifiers(ctx) {
   };
   V.hooks = async () => {
     const d = dest('hooks');
-    const need = ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py'];
+    // 2.0.67: 훅 다리(agy-hook-bridge.py)도 이 부품의 필수 파일이다 — 놓기만 하고 어디에도 등록하지 않는다(adapters.mjs HOOK_EXTRAS).
+    const need = ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py', 'agy-hook-bridge.py'];
     const gone = need.filter((f) => !exists(fs, d, f));
     return { ok: gone.length === 0, detail: gone.length ? `없음: ${gone.join(',')}` : need.join(',') };
   };

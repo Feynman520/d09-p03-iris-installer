@@ -44,7 +44,14 @@ export const CLEANUP_PERIOD_DAYS = 3650;
 // 훅으로 등록하지는 않는다(시험 파일이다).
 // bg-leftover-guard.py(2.0.42)는 클로드 전용 Stop 훅이다 — 코덱스 hooks.json 에는 넣지 않는다.
 export const HOOK_SCRIPTS = ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py'];
-export const HOOK_EXTRAS = ['block-blanket-kill.test.py', 'guard-iris-path.test.py', 'bg-leftover-guard.test.py'];
+// 2.0.67: 훅 다리(agy-hook-bridge.py)와 그 시험 파일도 **놓기만** 한다 — 이 목록은 "등록하지 않는 파일" 쪽이다.
+// 다리는 Antigravity 의 훅 입력을 위 가드 둘에 잇는 번역기라, 가드와 같은 폴더에 있어야 한다(자기 자리에서 가드를 찾는다).
+// 클로드 settings.json · 코덱스 hooks.json 에 넣지 않고, HOOK_SCRIPTS · NAME_MATCHED_HOOKS 에도 넣지 않는다.
+// Antigravity 쪽 훅 설정에 다리를 등록하는 것은 IRIS 창이며(그 기능이 열린 PC 에서 세션을 열 때), 설치기는 그 설정 폴더를 건드리지 않는다.
+export const HOOK_EXTRAS = [
+  'block-blanket-kill.test.py', 'guard-iris-path.test.py', 'bg-leftover-guard.test.py',
+  'agy-hook-bridge.py', 'agy-hook-bridge.test.py',
+];
 
 // 클로드 플러그인 5종. `part` = 잠금표 부품 id(= 도구 폴더 위치), `name` = 플러그인
 // 이름(`<name>@iris-local` 로 켜진다). document-skills 만 허가서상 내려받기라
