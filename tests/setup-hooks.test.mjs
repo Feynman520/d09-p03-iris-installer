@@ -160,61 +160,132 @@ test('옛 훅 넷: 옛 판 꼴(껍데기 없음)의 우리 훅은 새 명령 · 
 });
 
 // 신선도 훅의 빈틈(2.0.65 에서 고침): 이 훅은 스크립트가 `_ontology`, 파이썬이 `shims` 에 있어 명령에 설치기 소유 폴더가 없다.
-// 그래서 2.0.54 이전 판의 옛 꼴이 업데이트 때 갈리지 않았다. 클로드 설정에서는 "이 설치 폴더의 _ontology\check_fresh.py 를
-// --hook session 으로 부르는 줄"을 우리 줄로 알아본다. 전체 흐름의 재현 시험은 tests/setup-adapters.test.mjs 에 있다.
+// 그래서 2.0.54 이전 판의 옛 꼴이 업데이트 때 갈리지 않았다. 전체 흐름의 재현 시험은 tests/setup-adapters.test.mjs 에 있다.
 // 갈아 끼울 때는 명령 한 줄을 통째로 바꾼다. 그래서 "우리 줄"은 과거 설치기가 실제로 써 넣은 명령 **전체**와 글자가 같을 때뿐이다 —
 // 그 사람이 뒤에 자기 명령을 붙였거나 인자 · 파이썬을 바꿨다면, 그것을 지우지 않도록 그대로 둔다(2026-11-27 코드 검토 "막아야 함").
-test('isOurFreshnessHook: 과거 설치기가 써 넣은 명령 전체와 같을 때만 우리 것 — 조금이라도 다르면 그 사람이 손댄 줄', () => {
-  const ours = path.win32.join(ROOT, '_ontology', 'check_fresh.py');
-  const shim = path.win32.join(ROOT, '_agent', 'shared', 'shims', 'python.cmd');
-  const yes = (c) => assert.equal(adapters.isOurFreshnessHook(ROOT, c), true, c);
-  const no = (c) => assert.equal(adapters.isOurFreshnessHook(ROOT, c), false, c);
-  const v54 = `"${shim}" "${ours}" --hook session`;                         // 2.0.0 ~ 2.0.54 가 쓴 글자
-  const v55 = `& "${shim}" "${ours}" --hook session; exit $LASTEXITCODE`;   // 2.0.55 ~ 2.0.64 가 쓴 글자
-  assert.deepEqual(adapters.historicalFreshnessCommands(ROOT), [v54, v55], '이력에서 확인한 두 꼴(다른 꼴은 설치기가 쓴 적이 없다)');
-  yes(v54);
-  yes(v55);
-  yes(v54.toUpperCase().replace('--HOOK SESSION', '--hook session')); // 경로의 대소문자만 다른 것
-  yes(`  ${v54}  `);                                                  // 앞뒤 빈칸
-  // 그 사람이 손댄 줄 — 전부 그대로 둔다.
-  no(`${v54}; echo mine`);                                            // 뒤에 자기 명령을 붙임
-  no(`${v54} && my-tool.exe`);
-  no(`${v55}; echo mine`);
-  no(`echo before; ${v54}`);                                          // 앞에 붙임
-  no(`${v54} --verbose`);                                             // 인자를 더함
-  no(`"${shim}" "${ours}" --hook other`);                             // 인자를 바꿈
-  no(`"${shim}" "${ours}"`);
-  no(`python "${ours}" --hook session`);                              // 다른 파이썬으로
-  no(`"${shim}" "${ours.split('\\').join('/')}" --hook session`);     // 설치기는 이렇게 쓴 적이 없다
-  no(`"${shim}" "D:\\OtherSoul\\_ontology\\check_fresh.py" --hook session`);   // 다른 영혼
-  no(`"${shim}" "${path.win32.join(ROOT, 'copy', 'check_fresh.py')}" --hook session`); // 이 폴더 안의 다른 자리
+const FRESH = path.win32.join(ROOT, '_ontology', 'check_fresh.py');
+const SHIM = path.win32.join(ROOT, '_agent', 'shared', 'shims', 'python.cmd');
+const V54 = `"${SHIM}" "${FRESH}" --hook session`;                         // 2.0.0 ~ 2.0.54 가 쓴 글자
+const V55 = `& "${SHIM}" "${FRESH}" --hook session; exit $LASTEXITCODE`;   // 2.0.55 ~ 2.0.64 가 쓴 글자
+// 클로드 설정에 쓰는 것과 같은 판정: 신선도 훅 = 과거 설치기가 쓴 두 꼴, 알림 훅 = 이 판을 만드는 동안 거쳐 온 꼴.
+const NOTICE_SCRIPT = path.win32.join(TOOLS, 'iris-auth', 'status.mjs');
+const claudeKnown = (w) => {
+  const c = String(w?.command ?? '');
+  if (c.includes(FRESH)) return adapters.historicalFreshnessCommands(ROOT);
+  if (c.includes(NOTICE_SCRIPT)) return adapters.historicalAuthNoticeCommands(NODE, NOTICE_SCRIPT);
+  return null;
+};
+// 이미 있는 명령 하나에 우리 훅 하나를 적용해 본다 → { 바뀌었나, 남은 명령들 }.
+function applyOver(event, existingCommand, wantedEntry, opts) {
+  const data = { hooks: { [event]: [{ matcher: 'startup', hooks: [{ type: 'command', command: existingCommand, timeout: 99 }] }] } };
+  const added = [];
+  adapters.mergeHooks(data, { [event]: [wantedEntry] }, added, 'hooks.', ROOT, opts);
+  return { added, commands: commands(data, event), entry: data.hooks[event][0] };
+}
+
+test('matchesKnownCommand: 명령 전체가 알려진 꼴과 같을 때만 — 대소문자와 앞뒤 빈칸만 무시한다', () => {
+  const forms = adapters.historicalFreshnessCommands(ROOT);
+  assert.deepEqual(forms, [V54, V55], '이력에서 확인한 두 꼴(다른 꼴은 설치기가 쓴 적이 없다)');
+  const yes = (c) => assert.equal(adapters.matchesKnownCommand(c, forms), true, c);
+  const no = (c) => assert.equal(adapters.matchesKnownCommand(c, forms), false, c);
+  yes(V54);
+  yes(V55);
+  yes(V54.toUpperCase());   // 경로의 대소문자만 다른 것
+  yes(`  ${V54}  `);        // 앞뒤 빈칸
+  no(`${V54}; echo mine`);  // 뒤에 자기 명령을 붙임
+  no(`${V54} && my-tool.exe`);
+  no(`${V55}; echo mine`);
+  no(`echo before; ${V54}`);
+  no(`${V54} --verbose`);
+  no(`"${SHIM}" "${FRESH}" --hook other`);
+  no(`"${SHIM}" "${FRESH}"`);
+  no(`python "${FRESH}" --hook session`);
+  no(`"${SHIM}" "${FRESH.split('\\').join('/')}" --hook session`); // 설치기는 이렇게 쓴 적이 없다
+  no(`"${SHIM}" "D:\\OtherSoul\\_ontology\\check_fresh.py" --hook session`);
   no('');
-  assert.equal(adapters.isOurFreshnessHook(null, v54), false);
+  assert.equal(adapters.matchesKnownCommand(V54, []), false);
+  assert.equal(adapters.matchesKnownCommand(V54, null), false);
 });
 
-test('신선도 훅: 추가 판정을 준 쪽(클로드 설정)만 옛 꼴을 갈고, 주지 않은 쪽(코덱스 훅 파일)은 예전과 같다', () => {
-  const shim = path.win32.join(ROOT, '_agent', 'shared', 'shims', 'python.cmd');
-  const old = `"${shim}" "${path.win32.join(ROOT, '_ontology', 'check_fresh.py')}" --hook session`;
-  const make = () => ({ hooks: { SessionStart: [{ matcher: 'startup|resume|clear|compact', hooks: [{ type: 'command', command: old, timeout: 30 }] }] } });
-  const wanted = () => ({ SessionStart: [adapters.claudeHookGroups(ROOT).SessionStart[0]] });
-  const extraOwned = (cmd) => adapters.isOurFreshnessHook(ROOT, cmd);
+test('신선도 훅: 옛 꼴 그대로면 갈아 끼우고, 그 사람이 손댄 줄은 한 글자도 바꾸지 않는다 — 중복도 더하지 않는다', () => {
+  const wanted = () => adapters.claudeHookGroups(ROOT).SessionStart[0];
+  const opts = { knownCommands: claudeKnown };
 
-  const plain = make();
-  const addedPlain = [];
-  adapters.mergeHooks(plain, wanted(), addedPlain, 'hooks.', ROOT);
-  assert.deepEqual(addedPlain, [], '추가 판정이 없으면 건드리지 않는다');
-  assert.equal(plain.hooks.SessionStart[0].hooks[0].command, old);
+  // 옛 꼴 그대로(2.0.54 이전) → 지금 꼴로.
+  const fixed = applyOver('SessionStart', V54, wanted(), opts);
+  assert.deepEqual(fixed.added, ['hooks.SessionStart[startup|resume|clear|compact](updated)']);
+  assert.deepEqual(fixed.commands, [V55], '지금 꼴 = 2.0.55 부터의 꼴');
+  assert.equal(fixed.entry.hooks[0].shell, 'powershell');
+  assert.equal(fixed.entry.hooks[0].timeout, 30, '시간 제한도 우리 값으로');
+  // 지금 꼴 그대로 → 명령은 그대로(달랐던 시간 제한만 우리 값으로), 다시 적용하면 변경 0.
+  const same = applyOver('SessionStart', V55, wanted(), opts);
+  assert.deepEqual(same.commands, [V55]);
 
-  const claude = make();
-  const added = [];
-  adapters.mergeHooks(claude, wanted(), added, 'hooks.', ROOT, { extraOwned });
-  assert.deepEqual(added, ['hooks.SessionStart[startup|resume|clear|compact](updated)']);
-  assert.equal(claude.hooks.SessionStart.length, 1);
-  assert.equal(claude.hooks.SessionStart[0].hooks[0].command, wanted().SessionStart[0].hooks[0].command);
-  assert.equal(claude.hooks.SessionStart[0].hooks[0].shell, 'powershell');
-  const again = [];
-  adapters.mergeHooks(claude, wanted(), again, 'hooks.', ROOT, { extraOwned });
-  assert.deepEqual(again, [], '다시 적용하면 변경 0');
+  // 그 사람이 손댄 줄 — 전부 그대로, 개수도 그대로(우리 신선도 훅을 옆에 더하지 않는다).
+  const node = path.win32.join(TOOLS, 'node', 'node.exe');
+  const touched = [
+    `${V54}; echo mine`,
+    `${V55}; echo mine`,
+    `${V54} --quiet`,
+    `python "${FRESH}" --hook session`,
+    // 재검토에서 짚은 우회: 뒤에 붙인 그 사람 명령이 **설치 폴더의 프로그램**(동봉 node)을 쓴다.
+    // 명령에 설치기 소유 폴더가 들어 있다는 것만으로 "우리 줄"이 되면 붙인 명령까지 지워진다.
+    `${V54}; & "${node}" my.js`,
+    `${V55}; & "${node}" "D:\\mine\\after.js"`,
+    `& "${node}" my.js; ${V54}`,
+    `"${path.win32.join(TOOLS, 'python', 'python.exe')}" "${FRESH}" --hook session; & "${node}" my.js`,
+  ];
+  for (const command of touched) {
+    const r = applyOver('SessionStart', command, wanted(), opts);
+    assert.deepEqual(r.added, [], `건드리면 안 된다: ${command}`);
+    assert.deepEqual(r.commands, [command], `한 글자도 바꾸지 않고, 하나 더 더하지도 않는다: ${command}`);
+    assert.equal(r.entry.hooks[0].timeout, 99, '시간 제한도 그대로');
+    assert.equal(r.entry.hooks[0].shell, undefined);
+  }
+});
+
+test('신선도 훅: 꼴 목록을 주지 않은 쪽(코덱스 훅 파일)에서도 소유 폴더 판정으로 넘어가지 않는다 — 지금 꼴과 같을 때 말고는 그대로', () => {
+  const wanted = () => adapters.codexHookConfig(ROOT).hooks.SessionStart[0];
+  const codexForm = `& "${SHIM}" "${FRESH}" --hook session`; // 코덱스 쪽은 2.0.0 부터 이 글자 하나다
+  assert.equal(wanted().hooks[0].command, codexForm);
+  const node = path.win32.join(TOOLS, 'node', 'node.exe');
+  for (const command of [V54, `${codexForm}; & "${node}" my.js`, `${codexForm}; echo mine`]) {
+    const r = applyOver('SessionStart', command, wanted());
+    assert.deepEqual(r.added, [], command);
+    assert.deepEqual(r.commands, [command], command);
+    assert.equal(r.entry.hooks[0].timeout, 99);
+  }
+});
+
+test('알림 훅도 전체 일치로만 갈아 끼운다 — 거쳐 온 꼴은 지금 꼴로, 그 사람이 손댄 줄은 그대로(중복 없음)', () => {
+  const wanted = () => adapters.claudeHookGroups(ROOT).SessionStart[1];
+  const opts = { knownCommands: claudeKnown };
+  const now = wanted().hooks[0].command;
+  const older = adapters.historicalAuthNoticeCommands(NODE, NOTICE_SCRIPT);
+  assert.equal(older.length, 3);
+  assert.ok(!older.includes(now), '옛 꼴 목록에 지금 꼴이 섞여 있지 않다');
+  for (const command of older) {
+    const r = applyOver('SessionStart', command, wanted(), opts);
+    assert.deepEqual(r.commands, [now], `옛 꼴은 지금 꼴로: ${command.slice(0, 80)}…`);
+    assert.equal(r.entry.hooks[0].timeout, adapters.AUTH_NOTICE_TIMEOUT_SEC, '바깥 시간 제한도 새 값으로');
+    assert.equal(r.entry.hooks[0].shell, 'powershell');
+  }
+  // 지금 꼴인데 시간 제한만 옛 값 → 시간 제한만 고친다.
+  const stale = applyOver('SessionStart', now, wanted(), opts);
+  assert.deepEqual(stale.commands, [now]);
+  assert.equal(stale.entry.hooks[0].timeout, adapters.AUTH_NOTICE_TIMEOUT_SEC);
+  // 그 사람이 손댄 줄: 우리 스크립트를 부르지만 꼴이 다르다 → 그대로, 그리고 우리 것을 하나 더 더하지 않는다.
+  for (const command of [
+    `${older[0]}; echo mine`,
+    `${now}; & "${NODE}" my.js`,
+    `& "${NODE}" "${NOTICE_SCRIPT}" --hook`,
+    `node "${NOTICE_SCRIPT}" --json`,
+  ]) {
+    const r = applyOver('SessionStart', command, wanted(), opts);
+    assert.deepEqual(r.added, [], command);
+    assert.deepEqual(r.commands, [command], command);
+    assert.equal(r.entry.hooks[0].timeout, 99);
+  }
 });
 
 test('isSameOwnedScript: 같은 부품의 같은 파일만 같다', () => {
@@ -247,20 +318,19 @@ test('빈칸이 든 설치 경로: 따옴표 안을 한 덩이로 읽어 되풀�
 // 2.0.65 — 로그인 열쇠 알림 훅(클로드 SessionStart): 부품 iris-auth 의 `status.mjs --hook`
 // ---------------------------------------------------------------------------
 
-test('알림 훅: 클로드 SessionStart 에 따로 둔 항목 하나 — 파워셸 꼴 · 10초 · 코덱스에는 없다', () => {
+test('알림 훅: 클로드 SessionStart 에 따로 둔 항목 하나 — 파워셸 꼴 · 바깥 20초 · 코덱스에는 없다', () => {
   const groups = adapters.claudeHookGroups(ROOT);
   assert.equal(groups.SessionStart.length, 2);
   const h = groups.SessionStart[1].hooks[0];
   assert.equal(groups.SessionStart[1].hooks.length, 1);
   assert.equal(h.type, 'command');
   assert.equal(h.shell, 'powershell');
-  assert.equal(h.timeout, 10);
+  assert.equal(h.timeout, 20);
   assert.equal(h.timeout, adapters.AUTH_NOTICE_TIMEOUT_SEC);
-  // 알리기만 하는 훅: node 를 파워셸 안에서 직접 띄워 안쪽 제한(6초)만큼만 기다리고, 오류 글은 버리고, 못 띄워도 조용히, 늘 0 으로 끝난다.
+  // 알리기만 하는 훅: 파워셸이 뜨는 데 이미 10초를 넘겼으면 node 를 띄우지 않고, 띄웠으면 5초만 기다리고, 오류 글은 버리고,
+  // 못 띄워도 조용히, 늘 0 으로 끝난다.
   // 실리는 글자 전체를 여기 적어 둔다(꼴이 바뀌면 이 시험이 먼저 알린다 — 실제로 도는지는 아래 시험들이 파워셸로 잰다).
-  assert.equal(h.command, [
-    "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }",
-    "try { $ErrorActionPreference = 'Stop'",
+  const body = (wait, outWait) => [
     '$p = New-Object System.Diagnostics.Process',
     `$p.StartInfo.FileName = '${NODE}'`,
     `$p.StartInfo.Arguments = '"${path.win32.join(TOOLS, 'iris-auth', 'status.mjs')}" --hook'`,
@@ -272,13 +342,26 @@ test('알림 훅: 클로드 SessionStart 에 따로 둔 항목 하나 — 파워
     '[void]$p.Start()',
     '$o = $p.StandardOutput.ReadToEndAsync()',
     '$e = $p.StandardError.ReadToEndAsync()',
-    'if ($p.WaitForExit(6000)) { if ($o.Wait(2000) -and $o.Result) { $b = [Text.Encoding]::UTF8.GetBytes($o.Result); $s = [Console]::OpenStandardOutput(); $s.Write($b, 0, $b.Length); $s.Flush() } } else { try { $p.Kill() } catch { } }',
+    `if ($p.WaitForExit(${wait})) { if ($o.Wait(${outWait}) -and $o.Result) { $b = [Text.Encoding]::UTF8.GetBytes($o.Result); $s = [Console]::OpenStandardOutput(); $s.Write($b, 0, $b.Length); $s.Flush() } } else { try { $p.Kill() } catch { } }`,
+  ].join('; ');
+  const CA = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }";
+  assert.equal(h.command, [
+    CA,
+    "try { $ErrorActionPreference = 'Stop'",
+    '$t0 = [Diagnostics.Process]::GetCurrentProcess().StartTime',
+    `if (([DateTime]::Now - $t0).TotalMilliseconds -lt 10000) { ${body(5000, 1000)} }`,
     '} catch { }; exit 0',
   ].join('; '));
   assert.ok(!/^"/.test(h.command), '파워셸에서 "a" "b" 꼴은 문법 오류');
-  // 안쪽 제한은 바깥 제한보다 넉넉히 짧아야 한다(파워셸이 뜨는 시간을 더해도 바깥이 먼저 끊지 않게) — 적어도 3초 여유.
-  assert.equal(adapters.AUTH_NOTICE_INNER_TIMEOUT_MS, 6000);
-  assert.ok(adapters.AUTH_NOTICE_INNER_TIMEOUT_MS <= adapters.AUTH_NOTICE_TIMEOUT_SEC * 1000 - 3000);
+  // 거쳐 온 꼴 목록의 셋째(안쪽 6초 · 시작 한도 없음)는 그때 실제로 만들어 내던 글자와 같아야 한다 — 다르면 그 꼴을 못 알아본다.
+  assert.equal(adapters.historicalAuthNoticeCommands(NODE, path.win32.join(TOOLS, 'iris-auth', 'status.mjs'))[2],
+    [CA, "try { $ErrorActionPreference = 'Stop'", body(6000, 2000), '} catch { }; exit 0'].join('; '));
+  // 시간 셋: 바깥 20초 · 시작 한도 10초(바깥의 절반) · 안쪽 기다림 5초. 가장 늦은 경우(시작 한도 + 안쪽 + 출력 받기 1초)도
+  // 바깥보다 적어도 3초 먼저 끝나야 한다 — 바깥이 먼저 끊으면 `exit 0` 에 닿지 못한다.
+  assert.equal(adapters.AUTH_NOTICE_TIMEOUT_SEC, 20);
+  assert.equal(adapters.AUTH_NOTICE_INNER_TIMEOUT_MS, 5000);
+  assert.equal(adapters.AUTH_NOTICE_STARTUP_LIMIT_MS, adapters.AUTH_NOTICE_TIMEOUT_SEC * 1000 / 2);
+  assert.ok(adapters.AUTH_NOTICE_STARTUP_LIMIT_MS + adapters.AUTH_NOTICE_INNER_TIMEOUT_MS + 1000 <= adapters.AUTH_NOTICE_TIMEOUT_SEC * 1000 - 3000);
   // 작은따옴표가 든 경로는 파워셸 글 안에서 '' 로 적는다.
   assert.ok(adapters.authNoticeHookCommand("C:\\it's\\node.exe", "C:\\it's\\status.mjs").includes(`$p.StartInfo.FileName = 'C:\\it''s\\node.exe'; $p.StartInfo.Arguments = '"C:\\it''s\\status.mjs" --hook';`));
   // 막는 훅 넷은 그대로 스크립트의 종료 코드를 넘긴다 — 차단(2)이 살아야 한다.
@@ -386,9 +469,12 @@ test('알림 훅: 어떤 실패에도 종료 코드 0 · 오류 글 없음 · �
   blocks(runHookCommand(adapters.authNoticeHookCommand(path.join(noNode.tool, 'no-such-node.exe'), noNode.script), noNode.env), 'node 없음');
 });
 
-// 2026-11-27 코드 검토 "막아야 함": node 가 바깥(클로드코드)의 훅 제한 10초를 넘기면 바깥이 먼저 끊어 `exit 0` 에 닿지 못한다.
-// 그래서 훅 명령이 스스로 안쪽 제한(6초)에서 그 node 하나만 끝내고 0 으로 마친다. 실제 파워셸 + 오래 자는 가짜 도구로 잰다.
+// 2026-11-27 코드 검토 "막아야 함": node 가 바깥(클로드코드)의 훅 제한을 넘기면 바깥이 먼저 끊어 `exit 0` 에 닿지 못한다.
+// 그래서 훅 명령이 스스로 안쪽 제한(5초)에서 그 node 하나만 끝내고 0 으로 마친다 — 바깥 제한(20초)보다 넉넉히 먼저.
+// 실제 파워셸(윈도우 파워셸 5.1) + 오래 자는 가짜 도구로 잰다.
 test('알림 훅: 도구가 오래 걸리면 안쪽 제한에서 그 프로그램만 끝내고 종료 코드 0 · 오류 글 없음 · 출력 없음 — 남는 프로세스 없음', async () => {
+  const ver = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(String(ver.stdout).trim(), '5', '`powershell` 은 윈도우 파워셸 5.1 이다(훅이 도는 바로 그 껍데기)');
   const a = makeAuthRoot('slow');
   const pidFile = path.join(a.tool, 'slow.pid');
   // 30초 동안 끝나지 않는 가짜 도구: 자기 번호를 적고, 출력을 조금 낸 뒤, 잠든다.
@@ -400,14 +486,30 @@ test('알림 훅: 도구가 오래 걸리면 안쪽 제한에서 그 프로그�
   assert.equal(r.err, '');
   assert.equal(r.out, '', '제한을 넘겨 끊은 도구의 받다 만 출력은 내보내지 않는다');
   assert.ok(elapsed >= adapters.AUTH_NOTICE_INNER_TIMEOUT_MS - 500, `안쪽 제한만큼은 기다렸다(${elapsed}ms)`);
-  // 도구가 스스로 끝나는 30초보다 한참 앞에서 끝났다 = 우리가 끊었다. 마감은 넉넉히 둔다(PC 가 바쁠 때 파워셸이 늦게 뜬다).
-  assert.ok(elapsed < 25000, `도구가 끝나기를 기다리지 않았다(${elapsed}ms)`);
+  // 바깥 제한(20초)보다 넉넉히 먼저 끝나야 한다: 안쪽 5초 + 파워셸이 뜨는 시간. 12초 안이면 바깥까지 8초가 남는다.
+  assert.ok(elapsed < 12000, `바깥 제한(${adapters.AUTH_NOTICE_TIMEOUT_SEC}초)보다 넉넉히 먼저 끝나야 한다(${elapsed}ms)`);
+  assert.ok(elapsed < adapters.AUTH_NOTICE_TIMEOUT_SEC * 1000);
   // 남은 프로세스 없음: 그 도구(node)가 살아 있지 않다. 끝나는 데 잠깐 걸릴 수 있어 최대 10초 기다려 본다.
   const pid = Number(fs.readFileSync(pidFile, 'utf8'));
   assert.ok(Number.isInteger(pid) && pid > 0, '가짜 도구가 실제로 떴다');
   const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
   for (let i = 0; i < 100 && alive(); i += 1) await new Promise((res) => setTimeout(res, 100));
   assert.equal(alive(), false, `끊긴 도구(pid ${pid})가 남아 있으면 안 된다`);
+});
+
+// 파워셸이 뜨는 데 이미 오래 걸린 PC: 안쪽 기다림까지 더하면 바깥 제한에 닿을 수 있다. 시작 한도를 넘겼으면 도구를 띄우지 않는다.
+test('알림 훅: 시작이 한도보다 늦었으면 도구를 띄우지 않고 바로 0 으로 끝난다(알림 하나 때문에 더 늦어지지 않게)', () => {
+  const a = makeAuthRoot('late-start');
+  const mark = path.join(a.tool, 'started.txt');
+  fs.writeFileSync(a.script, `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(mark)}, 'x');\nprocess.stdout.write('[IRIS 인증] 떴다\\n');\n`);
+  // 시작 한도 0 = 어떤 PC 든 "이미 늦었다"(파워셸이 뜬 뒤로 흐른 시간은 늘 0 보다 크다).
+  const late = runHookCommand(adapters.authNoticeHookCommand(process.execPath, a.script, { startupLimitMs: 0 }), a.env);
+  assert.deepEqual([late.code, late.out, late.err], [0, '', '']);
+  assert.ok(!fs.existsSync(mark), '도구를 띄우지 않았다');
+  // 같은 도구, 보통의 한도 → 뜨고 한 줄이 그대로 나온다.
+  const ok = runHookCommand(adapters.authNoticeHookCommand(process.execPath, a.script), a.env);
+  assert.deepEqual([ok.code, ok.out, ok.err], [0, '[IRIS 인증] 떴다\n', '']);
+  assert.ok(fs.existsSync(mark));
 });
 
 test('알림 훅: 경로에 빈칸 · 한글 · 작은따옴표가 있어도 인용이 깨지지 않는다(정상 · 스크립트 없음 · node 없음)', () => {

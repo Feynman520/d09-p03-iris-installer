@@ -158,19 +158,21 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   const start = settings.hooks.SessionStart;
   assert.equal(start.length, 2);
   assert.ok(start[0].hooks[0].command.includes(path.join(root, '_ontology', 'check_fresh.py')));
-  // 2.0.65: 로그인 열쇠 알림 — 동봉 node 로 부품 iris-auth 의 status.mjs --hook 을 부른다(따로 둔 항목, 10초 제한)
+  // 2.0.65: 로그인 열쇠 알림 — 동봉 node 로 부품 iris-auth 의 status.mjs --hook 을 부른다(따로 둔 항목, 바깥 제한 20초)
   assert.equal(start[1].matcher, 'startup|resume|clear|compact');
   assert.equal(start[1].hooks.length, 1);
   // 알리기만 하는 훅이라 어떤 경우에도 종료 코드 0 · 오류 글 없음 — 세션 시작 화면에 오류 줄을 남기지 않는다.
-  // 오래 걸려도 그렇다: 바깥 제한(10초)보다 짧은 안쪽 제한(6초)으로 node 를 직접 끊고 0 으로 마친다.
+  // 오래 걸려도 그렇다: 바깥 제한(20초)보다 짧은 안쪽 기다림(5초)으로 node 를 직접 끊고 0 으로 마친다.
+  // 파워셸이 뜨는 데 이미 10초(바깥의 절반)를 넘겼으면 node 를 띄우지도 않는다.
   const notice = start[1].hooks[0].command;
   assert.ok(notice.includes(`$p.StartInfo.FileName = '${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}';`));
   assert.ok(notice.includes(`$p.StartInfo.Arguments = '"${under(root, `${LOCK.parts['iris-auth'].dest}/status.mjs`)}" --hook';`));
-  assert.ok(notice.includes('$p.WaitForExit(6000)') && notice.includes('$p.Kill()'));
+  assert.ok(notice.includes('$p.WaitForExit(5000)') && notice.includes('$p.Kill()'));
+  assert.ok(notice.includes('if (([DateTime]::Now - $t0).TotalMilliseconds -lt 10000) { $p = New-Object'));
   assert.ok(notice.endsWith('} catch { }; exit 0'));
-  assert.equal(start[1].hooks[0].timeout, 10);
+  assert.equal(start[1].hooks[0].timeout, 20);
   // Node 를 띄우는 자리: 윈도우 인증서 목록도 믿게 — 비어 있을 때만 채운다(사용자가 정한 값은 덮지 않는다)
-  assert.ok(notice.startsWith("if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; try { $ErrorActionPreference = 'Stop'; "));
+  assert.ok(notice.startsWith("if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; try { $ErrorActionPreference = 'Stop'; $t0 = "));
   // 2.0.42: 안 끈 배경 명령 가드(클로드 전용 Stop 훅, matcher 없음)
   const stop = settings.hooks.Stop;
   assert.equal(stop.length, 1);
@@ -683,6 +685,10 @@ test('adapters(업데이트 · 2.0.65): 다른 폴더의 check_fresh.py 를 부�
     `& "${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --hook session; "D:\\mine\\after-fresh.cmd"; exit $LASTEXITCODE`,
     // 인자를 더했다.
     `"${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --hook session --quiet`,
+    // 재검토에서 짚은 우회: 뒤에 붙인 그 사람 명령이 **설치 폴더의 프로그램**(동봉 node)을 쓴다. 명령에 설치기 소유 폴더가
+    // 들어 있다는 것만으로 "우리 줄"이 되면 붙인 명령까지 지워진다 — 신선도 훅은 명령 전체가 같을 때만 우리 줄이다.
+    `"${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --hook session; & "${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" my.js`,
+    `& "${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --hook session; & "${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" my.js; exit $LASTEXITCODE`,
   ];
   for (const command of cases) {
     const s0 = readJson(sPath);
@@ -731,52 +737,53 @@ test('adapters(2.0.65): 옛 판 설정에 세 번 되풀이 적용해도 로그�
   assert.equal(fs.readFileSync(codexHooksPath, 'utf8'), codexBefore, '코덱스 훅 파일은 바뀌지 않는다');
 });
 
-test('adapters(2.0.65): 옛 꼴로 남은 우리 알림 훅(시간 제한 · 껍데기가 다름)은 제자리에서 새 꼴로 — 하나 더 만들지 않는다', async () => {
+test('adapters(2.0.65): 알림 훅은 명령 전체가 우리 꼴과 같을 때만 갈아 끼운다 — 거쳐 온 꼴은 지금 꼴로, 손댄 줄은 그대로(중복 없음)', async () => {
   const ctx = makeCtx('auth-hook-refresh', { apps: { office: true, hancom: true } });
   const root = ctx.root;
   await adapters.run(ctx);
   const sPath = agentFile(root, 'claude', 'settings.json');
-  const s0 = readJson(sPath);
-  const ours = s0.hooks.SessionStart.find((e) => JSON.stringify(e).includes('status.mjs'));
-  const wanted = { ...ours.hooks[0] };
-  ours.hooks[0].command = `"${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" "${path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs')}" --hook`;
-  ours.hooks[0].timeout = 60;
-  delete ours.hooks[0].shell;
-  fs.writeFileSync(sPath, `${JSON.stringify(s0, null, 2)}\n`);
-
-  await adapters.run(ctx);
-
-  const s = readJson(sPath);
-  const after = s.hooks.SessionStart.filter((e) => JSON.stringify(e).includes('status.mjs'));
-  assert.equal(after.length, 1);
-  assert.equal(after[0].hooks[0].command, wanted.command);
-  assert.equal(after[0].hooks[0].shell, 'powershell');
-  assert.equal(after[0].hooks[0].timeout, 10);
-
-  // 꼴만 다른 것도 간다. 이 훅이 거쳐 온 꼴 둘: ① 종료 코드를 그대로 넘기던 꼴(실패 때 오류 한 줄이 남는다)
-  // ② 늘 0 이지만 안쪽 시간 제한이 없던 꼴(오래 걸리면 바깥 제한이 먼저 끊는다) → 지금의 꼴(안쪽 제한 + 늘 0).
   const node = path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe');
   const script = path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs');
-  const ca = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }";
-  for (const older of [
-    `${ca}; & "${node}" "${script}" --hook; exit $LASTEXITCODE`,
-    `${ca}; try { & "${node}" "${script}" --hook 2>$null } catch { }; exit 0`,
-  ]) {
-    const s1 = readJson(sPath);
-    const mine = s1.hooks.SessionStart.find((e) => JSON.stringify(e).includes('status.mjs'));
-    mine.hooks[0].command = older;
-    fs.writeFileSync(sPath, `${JSON.stringify(s1, null, 2)}\n`);
+  const wanted = { ...readJson(sPath).hooks.SessionStart.find((e) => JSON.stringify(e).includes('status.mjs')).hooks[0] };
+  assert.equal(wanted.timeout, 20);
+  const setNotice = (patch) => {
+    const s = readJson(sPath);
+    Object.assign(s.hooks.SessionStart.find((e) => JSON.stringify(e).includes('status.mjs')).hooks[0], patch);
+    fs.writeFileSync(sPath, `${JSON.stringify(s, null, 2)}\n`);
+  };
+  const notices = () => readJson(sPath).hooks.SessionStart.filter((e) => JSON.stringify(e).includes('status.mjs'));
+
+  // ① 이 훅이 거쳐 온 꼴 셋(종료 코드를 넘기던 꼴 · 안쪽 제한이 없던 꼴 · 안쪽 6초에 시작 한도가 없던 꼴) → 지금 꼴 · 바깥 20초.
+  const older = adapters.historicalAuthNoticeCommands(node, script);
+  assert.equal(older.length, 3);
+  for (const command of older) {
+    setNotice({ command, timeout: 10 });
     await adapters.run(ctx);
-    const s2 = readJson(sPath);
-    const again = s2.hooks.SessionStart.filter((e) => JSON.stringify(e).includes('status.mjs'));
-    assert.equal(again.length, 1, older);
-    assert.equal(again[0].hooks[0].command, wanted.command, older);
-    assert.ok(again[0].hooks[0].command.includes('$p.WaitForExit(6000)') && again[0].hooks[0].command.endsWith('} catch { }; exit 0'));
+    const now = notices();
+    assert.equal(now.length, 1, command.slice(0, 80));
+    assert.equal(now[0].hooks[0].command, wanted.command, command.slice(0, 80));
+    assert.equal(now[0].hooks[0].shell, 'powershell');
+    assert.equal(now[0].hooks[0].timeout, 20, '바깥 시간 제한도 새 값으로');
+    assert.ok(now[0].hooks[0].command.includes('$p.WaitForExit(5000)') && now[0].hooks[0].command.endsWith('} catch { }; exit 0'));
   }
   // 지금의 꼴 그대로면 다시 얹어도 변경 0(따옴표가 겹친 꼴에서도 우리 훅을 알아본다).
   const settled = fs.readFileSync(sPath, 'utf8');
   await adapters.run(ctx);
   assert.equal(fs.readFileSync(sPath, 'utf8'), settled);
+
+  // ② 그 사람이 손댄 줄: 우리 스크립트를 부르지만 명령 전체가 우리 꼴이 아니다 → 한 글자도 바꾸지 않고, 우리 것을 하나 더 더하지도 않는다.
+  //    (명령에 설치기 소유 폴더가 들어 있다는 것만으로 갈아 끼우면 뒤에 붙인 명령이 지워진다.)
+  for (const command of [
+    `"${node}" "${script}" --hook`,
+    `${wanted.command}; & "${node}" "D:\\mine\\after.js"`,
+    `${older[0]}; echo mine`,
+  ]) {
+    setNotice({ command, timeout: 77 });
+    const before = fs.readFileSync(sPath, 'utf8');
+    await adapters.run(ctx);
+    assert.equal(fs.readFileSync(sPath, 'utf8'), before, `설정이 바뀌면 안 된다: ${command.slice(0, 80)}`);
+    assert.equal(notices().length, 1);
+  }
 });
 
 test('adapters(업데이트): 플러그인은 새 판 캐시를 가리키고, 사람이 바꾼 source 는 그대로 둔다', async () => {

@@ -444,12 +444,14 @@ const psRun = (exe, ...args) => `${psCall(exe, ...args)}; exit $LASTEXITCODE`;
 //     제한을 넘겨 끊은 경우에는 받다 만 출력을 내보내지 않는다.
 //   · 프로그램을 못 띄웠을 때(node 없음)를 포함해 모든 오류는 `try { } catch { }` 가 삼킨다. 끝은 늘 `exit 0`.
 //   · 경로는 파워셸 작은따옴표 글(안의 ' 는 '' 로)과 그 안의 큰따옴표로 감싼다 — 빈칸 · 한글이 있어도 깨지지 않는다.
-// 윈도우 파워셸 5.1 에서 돈다(.NET 의 Process · ReadToEndAsync 만 쓴다). 시험이 실제 파워셸로 잰다(20초 자는 가짜 도구 포함).
+//   · 안쪽 제한은 프로그램을 띄운 **뒤의 기다림**만 잰다. 파워셸이 뜨는 데 이미 오래 걸린 PC 에서는 그 기다림까지 더하면 바깥 제한에
+//     닿을 수 있다. 그래서 맨 앞에서 이 파워셸이 뜬 시각을 읽어, 프로그램을 띄우기 전에 이미 `startupLimitMs` 를 넘겼으면 띄우지 않고
+//     바로 0 으로 끝낸다 — 시작이 비정상적으로 느린 PC 에서 알림 하나 때문에 더 늦어지지 않게(그 세션은 알림을 한 번 거른다).
+// 윈도우 파워셸 5.1 에서 돈다(.NET 의 Process · ReadToEndAsync 만 쓴다). 시험이 실제 파워셸로 잰다(30초 자는 가짜 도구 포함).
 const psLiteral = (s) => `'${String(s).replace(/'/g, "''")}'`;
-function psRunQuietTimed(timeoutMs, exe, ...args) {
+function psRunQuietTimed({ waitMs, startupLimitMs }, exe, ...args) {
   const argLine = args.map((a) => (/[\\/:\s]/.test(a) ? `"${a}"` : a)).join(' ');
-  return [
-    "try { $ErrorActionPreference = 'Stop'",
+  const run = [
     '$p = New-Object System.Diagnostics.Process',
     `$p.StartInfo.FileName = ${psLiteral(exe)}`,
     `$p.StartInfo.Arguments = ${psLiteral(argLine)}`,
@@ -461,7 +463,12 @@ function psRunQuietTimed(timeoutMs, exe, ...args) {
     '[void]$p.Start()',
     '$o = $p.StandardOutput.ReadToEndAsync()',
     '$e = $p.StandardError.ReadToEndAsync()',
-    `if ($p.WaitForExit(${Number(timeoutMs)})) { if ($o.Wait(2000) -and $o.Result) { $b = [Text.Encoding]::UTF8.GetBytes($o.Result); $s = [Console]::OpenStandardOutput(); $s.Write($b, 0, $b.Length); $s.Flush() } } else { try { $p.Kill() } catch { } }`,
+    `if ($p.WaitForExit(${Number(waitMs)})) { if ($o.Wait(1000) -and $o.Result) { $b = [Text.Encoding]::UTF8.GetBytes($o.Result); $s = [Console]::OpenStandardOutput(); $s.Write($b, 0, $b.Length); $s.Flush() } } else { try { $p.Kill() } catch { } }`,
+  ].join('; ');
+  return [
+    "try { $ErrorActionPreference = 'Stop'",
+    '$t0 = [Diagnostics.Process]::GetCurrentProcess().StartTime',
+    `if (([DateTime]::Now - $t0).TotalMilliseconds -lt ${Number(startupLimitMs)}) { ${run} }`,
     '} catch { }; exit 0',
   ].join('; ');
 }
@@ -470,15 +477,32 @@ function psRunQuietTimed(timeoutMs, exe, ...args) {
 // IRIS 열쇠가 곧 끝나거나 끝났을 때만 한 줄을 내고, 알릴 것이 없으면 아무것도 내지 않는다(이 PC 의 파일만 읽는다).
 //   · Node 를 띄우는 자리라 윈도우 인증서 목록도 믿게 한다(정적 검사 ㉒) — 값이 비어 있을 때만 채운다.
 //   · 알림일 뿐이다: 스크립트가 없거나 깨져 있거나 node 가 없거나 오래 걸려도 종료 코드 0 · 오류 글 없음(psRunQuietTimed).
-//   · 시간 제한은 둘이다: 바깥 = 클로드코드가 훅을 끊는 시간(AUTH_NOTICE_TIMEOUT_SEC), 안쪽 = 우리가 node 를 끊는 시간
-//     (AUTH_NOTICE_INNER_TIMEOUT_MS). **안쪽이 반드시 더 짧아야 한다** — 파워셸이 뜨는 시간까지 더해도 바깥보다 먼저 끝나게.
+//   · 시간은 셋이다(전부 "바깥이 먼저 끊지 않게"를 위한 것):
+//       바깥 = 클로드코드가 훅을 끊는 시간                          AUTH_NOTICE_TIMEOUT_SEC      20초
+//       시작 한도 = 파워셸이 뜨는 데 이만큼 넘게 걸렸으면 node 를 띄우지 않는다   AUTH_NOTICE_STARTUP_LIMIT_MS 10초(바깥의 절반)
+//       안쪽 = node 를 띄운 뒤 기다리는 시간(넘으면 그 node 만 끝낸다)       AUTH_NOTICE_INNER_TIMEOUT_MS  5초
+//     가장 늦은 경우 = 시작 한도 직전에 띄움(10초) + 안쪽 기다림(5초) + 출력 받기(1초) ≈ 16초 < 바깥 20초.
 //   · 클로드 전용. 코덱스 hooks.json 에는 넣지 않는다(코덱스 훅을 바꾸면 첫 실행 신뢰 확인에 닿는다).
-export const AUTH_NOTICE_TIMEOUT_SEC = 10;
-export const AUTH_NOTICE_INNER_TIMEOUT_MS = 6000;
+export const AUTH_NOTICE_TIMEOUT_SEC = 20;
+export const AUTH_NOTICE_STARTUP_LIMIT_MS = 10000;
+export const AUTH_NOTICE_INNER_TIMEOUT_MS = 5000;
 export const PS_TRUST_SYSTEM_CA = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }";
 export const authToolDir = (root) => path.join(root, '_agent', 'shared', 'tools', 'iris-auth');
-export function authNoticeHookCommand(node, script, { innerTimeoutMs = AUTH_NOTICE_INNER_TIMEOUT_MS } = {}) {
-  return `${PS_TRUST_SYSTEM_CA}; ${psRunQuietTimed(innerTimeoutMs, node, script, '--hook')}`;
+export function authNoticeHookCommand(node, script, { innerTimeoutMs = AUTH_NOTICE_INNER_TIMEOUT_MS, startupLimitMs = AUTH_NOTICE_STARTUP_LIMIT_MS } = {}) {
+  return `${PS_TRUST_SYSTEM_CA}; ${psRunQuietTimed({ waitMs: innerTimeoutMs, startupLimitMs }, node, script, '--hook')}`;
+}
+
+// 이 훅이 이 판(2.0.65)을 만드는 동안 거쳐 온 꼴 — 지금 꼴과 함께, **명령 전체가 이 가운데 하나와 글자가 같을 때만** 우리 줄로 보고
+// 갈아 끼운다(updateOwnedHook 의 knownCommands). 처음 싣는 판이라 밖에 깔린 옛 꼴은 없지만, 판을 만드는 동안 시험 설치한 곳에는 있을 수 있다.
+// 그 사람이 손댄 줄(뒤에 자기 명령을 붙임 · 인자를 바꿈)은 어느 것과도 같지 않으므로 그대로 둔다.
+export function historicalAuthNoticeCommands(node, script) {
+  const call = `& "${node}" "${script}" --hook`;
+  return [
+    `${PS_TRUST_SYSTEM_CA}; ${call}; exit $LASTEXITCODE`,                 // 종료 코드를 그대로 넘기던 꼴
+    `${PS_TRUST_SYSTEM_CA}; try { ${call} 2>$null } catch { }; exit 0`,   // 늘 0 이지만 안쪽 시간 제한이 없던 꼴
+    // 안쪽 제한 6초 · 시작 한도 없음 · 출력 받기 2초이던 꼴
+    `${PS_TRUST_SYSTEM_CA}; try { $ErrorActionPreference = 'Stop'; $p = New-Object System.Diagnostics.Process; $p.StartInfo.FileName = ${psLiteral(node)}; $p.StartInfo.Arguments = ${psLiteral(`"${script}" --hook`)}; $p.StartInfo.UseShellExecute = $false; $p.StartInfo.CreateNoWindow = $true; $p.StartInfo.RedirectStandardOutput = $true; $p.StartInfo.RedirectStandardError = $true; $p.StartInfo.StandardOutputEncoding = [Text.Encoding]::UTF8; [void]$p.Start(); $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync(); if ($p.WaitForExit(6000)) { if ($o.Wait(2000) -and $o.Result) { $b = [Text.Encoding]::UTF8.GetBytes($o.Result); $s = [Console]::OpenStandardOutput(); $s.Write($b, 0, $b.Length); $s.Flush() } } else { try { $p.Kill() } catch { } }; } catch { }; exit 0`,
+  ];
 }
 
 // `authDir` = 잠금표가 정한 `iris-auth` 부품 폴더(없으면 기본 자리).
@@ -695,24 +719,32 @@ export function historicalFreshnessCommands(root) {
     `& "${shim}" "${fresh}" --hook session; exit $LASTEXITCODE`,  // 2.0.55 ~ 2.0.64 (shell: powershell)
   ];
 }
-export function isOurFreshnessHook(root, command) {
-  if (!root) return false;
-  const c = String(command ?? '').trim().toLowerCase(); // 윈도우 경로라 대소문자만 무시한다. 그 밖에는 글자 그대로.
-  return c !== '' && historicalFreshnessCommands(root).some((h) => h.toLowerCase() === c);
+// 명령 전체가 알려진 꼴 가운데 하나와 같은가. 윈도우 경로라 대소문자만 무시하고(앞뒤 빈칸도), 그 밖에는 글자 그대로 본다.
+export function matchesKnownCommand(command, forms) {
+  const c = String(command ?? '').trim().toLowerCase();
+  return c !== '' && (forms ?? []).some((f) => String(f ?? '').trim().toLowerCase() === c);
 }
+const isFreshnessHook = (root, w) => normPath(hookScriptPath(w)) === normPath(checkFreshPath(root));
 
-// 업데이트 예외: 이미 있는 우리 훅의 명령이 **설치기 소유 폴더**를 가리키면서
-// 새 판의 명령과 다르면 그 한 줄만 갈아 끼운다(판 폴더가 바뀌면 옛 경로는 없다).
-// 그 사람이 다른 곳의 스크립트를 부르도록 바꿔 두었으면 손대지 않는다.
-// `extraOwned(cmd, w)` = 소유 폴더로는 안 잡히지만 우리 줄인 것을 더 알아보는 판정(클로드 설정의 신선도 훅 — 위).
-function updateOwnedHook(root, existing, wanted, extraOwned = null) {
+// 업데이트 예외: 이미 있는 **우리** 훅의 명령이 새 판의 명령과 다르면 그 한 줄만 갈아 끼운다(판 폴더가 바뀌면 옛 경로는 없다).
+// "우리 줄"인지는 두 가지 가운데 하나로 본다 — 한 훅에 둘을 섞지 않는다:
+//   ⓐ 전체 일치(`knownCommands(w)` 가 목록을 준 훅, 그리고 신선도 훅은 **언제나**): 명령 전체가 그 목록의 꼴이나 지금 꼴과 글자가 같을 때만.
+//      신선도 훅 · 로그인 열쇠 알림 훅이 이 길이다. 소유 폴더 판정으로 넘어가지 않는다 — 넘어가면 그 사람이 뒤에 붙인 명령이
+//      설치 폴더의 프로그램(예: 동봉 node)을 쓰는 것만으로 "우리 줄"이 되어 붙인 명령까지 지워진다(2026-11-27 재검토 "막아야 함").
+//   ⓑ 소유 폴더(그 밖의 훅 — 2.0.x 부터의 동작 그대로): 명령이 설치기 소유 폴더를 가리키면 우리 줄.
+//      알려진 한계(이 판에서 바꾸지 않음): 이 길의 훅에 그 사람이 `; 자기 명령` 을 붙여 두었으면 갈아 끼울 때 함께 지워진다.
+// 그 사람이 다른 곳의 스크립트를 부르도록 바꿔 두었으면 어느 길에서도 손대지 않는다.
+function updateOwnedHook(root, existing, wanted, knownCommands = null) {
   let changed = false;
   for (const w of wanted.hooks ?? []) {
     if (!hookScriptPath(w)) continue;
+    const listed = typeof knownCommands === 'function' ? knownCommands(w) : null;
+    const exact = Array.isArray(listed) ? listed : (isFreshnessHook(root, w) ? [] : null);
     for (const h of existing.hooks ?? []) {
       const cmd = String(h?.command ?? '');
       if (!hookMatches(root, h, w)) continue;
-      if (!isInstallerOwnedPath(root, cmd) && !(typeof extraOwned === 'function' && extraOwned(cmd, w) === true)) continue; // 그 사람 사본 — 그대로
+      const ours = exact ? matchesKnownCommand(cmd, [...exact, w.command]) : isInstallerOwnedPath(root, cmd);
+      if (!ours) continue; // 그 사람 사본이거나 그 사람이 손댄 줄 — 그대로
       // 2.0.55: 명령과 함께 실행 껍데기(shell)도 우리 값으로 — 옛 판 훅은 shell 이 없어 Git Bash 없는 PC 에서 깨졌다.
       // 2.0.65: 시간 제한(timeout)도 우리 값으로 — 판이 제한을 바꿔도 이미 깔린 PC 에는 옛 값이 남았다.
       const sameShell = w.shell === undefined || h.shell === w.shell;
@@ -730,7 +762,8 @@ function updateOwnedHook(root, existing, wanted, extraOwned = null) {
 // hooks 블록에 우리 항목을 **더하기만** 한다(기존 항목은 순서까지 그대로).
 // 예외는 하나 — 위 updateOwnedHook 의 "우리 훅 경로 갱신".
 // (시험이 되풀이 적용을 직접 재려고 export 한다 — 설치 흐름은 아래 두 쓰기 함수로만 부른다.)
-export function mergeHooks(data, groups, added, prefix, root = null, { extraOwned = null } = {}) {
+// `knownCommands(w)` = 그 훅을 "명령 전체가 같을 때만" 갈아 끼우게 하는 꼴 목록(없으면 null — updateOwnedHook 머리말).
+export function mergeHooks(data, groups, added, prefix, root = null, { knownCommands = null } = {}) {
   const hooks = objectAt(data, 'hooks');
   for (const [event, entries] of Object.entries(groups)) {
     if (!Array.isArray(hooks[event])) {
@@ -740,7 +773,7 @@ export function mergeHooks(data, groups, added, prefix, root = null, { extraOwne
     for (const entry of entries) {
       const existing = findHookEntry(hooks[event], entry, root);
       if (existing) {
-        if (root && updateOwnedHook(root, existing, entry, extraOwned)) {
+        if (root && updateOwnedHook(root, existing, entry, knownCommands)) {
           added.push(`${prefix}${event}[${entry.matcher ?? '*'}](updated)`);
         }
         continue;
@@ -1068,11 +1101,20 @@ function writeClaudeSettings(ctx, { fs, root, recorded, note, log }) {
       added.push('cleanupPeriodDays');
     }
 
-    // 훅. 클로드 설정에서만: 옛 꼴로 남은 신선도 훅도 우리 줄로 알아보고 새 꼴로 간다(isOurFreshnessHook).
-    // 코덱스 hooks.json 에는 걸지 않는다 — 코덱스 쪽 세 훅은 2.0.0 부터 명령 글자가 같아 갈 것이 없고, 그 파일을 바꾸면 훅 신뢰 확인에 닿는다.
-    const freshScript = checkFreshPath(root).toLowerCase();
+    // 훅. 두 훅은 "명령 전체가 알려진 꼴과 같을 때만" 갈아 끼운다(updateOwnedHook ⓐ):
+    //   · 신선도 훅 — 2.0.54 이전 판이 놓은 옛 꼴(껍데기 없음)을 파워셸 꼴로. 과거 설치기가 쓴 두 꼴뿐이다.
+    //   · 로그인 열쇠 알림 훅 — 이 판을 만드는 동안 거쳐 온 꼴들을 지금 꼴로.
+    // 코덱스 hooks.json 에는 목록을 주지 않는다 — 코덱스 쪽 세 훅은 2.0.0 부터 명령 글자가 같아 갈 것이 없고, 그 파일을 바꾸면 훅 신뢰 확인에 닿는다
+    // (신선도 훅은 목록이 없어도 전체 일치로만 보므로, 코덱스 쪽에서는 지금 꼴과 같을 때 말고는 건드리지 않는다).
+    const freshScript = normPath(checkFreshPath(root));
+    const noticeScript = path.join(toolDir(ctx, 'iris-auth') ?? authToolDir(root), 'status.mjs');
     mergeHooks(data, groups, added, 'hooks.', root, {
-      extraOwned: (cmd, w) => String(w?.command ?? '').toLowerCase().includes(freshScript) && isOurFreshnessHook(root, cmd),
+      knownCommands: (w) => {
+        const script = normPath(hookScriptPath(w));
+        if (script === freshScript) return historicalFreshnessCommands(root);
+        if (script === normPath(noticeScript)) return historicalAuthNoticeCommands(nodeExePath(root), noticeScript);
+        return null;
+      },
     });
 
     // 로컬 마켓플레이스 알리기. 플러그인 개별 켜기(enabledPlugins)는

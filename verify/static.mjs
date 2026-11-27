@@ -734,7 +734,7 @@ async function main() {
       const adaptersSrc = read('installer/setup/adapters.mjs');
       if (!adaptersSrc.includes(`PS_TRUST_SYSTEM_CA = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }"`)) problems.push('setup/adapters.mjs lacks the only-when-empty NODE_USE_SYSTEM_CA line for hooks');
       // The notice hook is built with psRunQuietTimed (inner time limit, always exit 0, no error text) -- not psRun, which the four blocking hooks keep.
-      if (!adaptersSrc.includes("return `${PS_TRUST_SYSTEM_CA}; ${psRunQuietTimed(innerTimeoutMs, node, script, '--hook')}`") || !/command: authNoticeHookCommand\(nodeExePath\(root\), authStatus\)/.test(adaptersSrc)) problems.push('setup/adapters.mjs: the login-key notice hook (node status.mjs --hook) is not built with the NODE_USE_SYSTEM_CA line');
+      if (!adaptersSrc.includes("return `${PS_TRUST_SYSTEM_CA}; ${psRunQuietTimed({ waitMs: innerTimeoutMs, startupLimitMs }, node, script, '--hook')}`") || !/command: authNoticeHookCommand\(nodeExePath\(root\), authStatus\)/.test(adaptersSrc)) problems.push('setup/adapters.mjs: the login-key notice hook (node status.mjs --hook) is not built with the NODE_USE_SYSTEM_CA line');
       const updZip = path.join(payloadDir, 'updater', 'iris-updater.zip');
       if (!fs.existsSync(updZip)) problems.push('missing payload/updater/iris-updater.zip');
       else {
