@@ -28,6 +28,8 @@
 #   -StartMenuDir <dir>    Start menu Programs folder to look in (tests; with -DesktopDir and
 #                          no -StartMenuDir the real Start menu is not looked at)
 #   -WorkDir <dir>         instead of %LOCALAPPDATA%\IRIS-Installer (tests)
+#   -DoctorWorkDir <dir>   instead of %LOCALAPPDATA%\IRIS Doctor (tests; with -WorkDir, -DesktopDir
+#                          or -ScanRoots and no -DoctorWorkDir the real one is not looked at)
 #   -ScanRoots "a;b"       parent folders to look for installs in instead of every fixed drive
 #   -Scan                  print what was found as JSON and exit
 #   -Screenshot <dir>      draw every screen into PNG files and exit (layout check)
@@ -43,6 +45,7 @@ param(
   [string]$DesktopDir,
   [string]$StartMenuDir,
   [string]$WorkDir,
+  [string]$DoctorWorkDir,
   [string]$ScanRoots,
   [switch]$DryRun,
   [string]$Json,
@@ -490,7 +493,91 @@ function Get-StartMenuDirs {
   return @()
 }
 
-# Desktop and Start menu shortcuts whose target is inside the root (the installer makes "<name>.lnk").
+# ---- IRIS Doctor (2.0.66) -------------------------------------------------------------------
+# Doctor is the program a user opens when IRIS is stuck. Under the root it has two places:
+#   _agent\shared\tools\iris-doctor   the program (a part, goes with _agent)
+#   _agent\doctor                     its home: cards\ claude-home\ codex-home\ hold LOGIN KEYS,
+#                                     records\ holds the journal, check-up sheets and treatment
+#                                     records with their backups (no key and no account name)
+# and two outside: the "IRIS Doctor" shortcuts (desktop + Start menu) and the run folders of
+# agent treatment in %LOCALAPPDATA%\IRIS Doctor.
+# Keep mode keeps the RECORDS only (moved into the archive); the keys never stay on disk.
+
+function Get-DoctorHome([string]$root) { return (Join-Path $root '_agent\doctor') }
+function Get-DoctorStartFile([string]$root) { return (Join-Path $root '_agent\shared\tools\iris-doctor\IRIS Doctor.cmd') }
+
+# The records folder when there is something in it to keep (never a link to another place).
+function Get-DoctorRecords([string]$root) {
+  $d = Join-Path (Get-DoctorHome $root) 'records'
+  if (-not [IO.Directory]::Exists($d)) { return $null }
+  if (Test-Reparse $d) { return $null }
+  if (Test-DirEmpty $d) { return $null }
+  return $d
+}
+
+# Is a Doctor treatment running in this root right now? Same rule as Doctor's own lock
+# (its lib\lock.mjs + lib\treat\flow.mjs): <home>\treat.lock = { id, pid, at } is live while its
+# owner process exists and the last heartbeat ("at", ms since 1970; rewritten every 5 minutes) is
+# younger than 20 minutes. A lock that cannot be read counts as live only for the first minute
+# after it was written. A live lock means: do not stop Doctor and do not delete under it.
+$script:DoctorTreatAbandonMs = 20 * 60 * 1000
+function Test-DoctorTreating([string]$root) {
+  $f = Join-Path (Get-DoctorHome $root) 'treat.lock'
+  if (-not [IO.File]::Exists($f)) { return $false }
+  $j = $null
+  try { $j = Read-JsonFile $f } catch { }
+  $ownerPid = 0
+  $wellFormed = $false
+  if ($j -and $j.PSObject.Properties['pid'] -and $j.PSObject.Properties['id'] -and ($j.id -is [string])) {
+    if (([string]$j.pid -match '^\d{1,9}$') -and [int]::TryParse([string]$j.pid, [ref]$ownerPid)) { $wellFormed = $true }
+  }
+  if (-not $wellFormed) {
+    try { return (([DateTime]::UtcNow - [IO.File]::GetLastWriteTimeUtc($f)).TotalMilliseconds -le 60000) } catch { return $false }
+  }
+  $alive = $false
+  try {
+    $p = [Diagnostics.Process]::GetProcessById($ownerPid)
+    $alive = $true
+    # a process of another user cannot be asked whether it has exited: it is there, so it counts
+    try { if ($p.HasExited) { $alive = $false } } catch { }
+  } catch { $alive = $false }
+  if (-not $alive) { return $false }
+  $at = 0.0
+  $num = [Globalization.NumberStyles]::Float
+  $inv = [Globalization.CultureInfo]::InvariantCulture
+  if (-not $j.PSObject.Properties['at'] -or -not [double]::TryParse(([string]$j.at), $num, $inv, [ref]$at)) { return $false }
+  $epoch = New-Object DateTime(1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc))
+  $nowMs = ([DateTime]::UtcNow - $epoch).TotalMilliseconds
+  return (($nowMs - $at) -lt $script:DoctorTreatAbandonMs)
+}
+
+# The Doctor start file named by a shortcut's arguments, when they have exactly the shape the
+# installer writes:  /d /c ""<path>""  -- nothing before, nothing after, one quoted path.
+function Get-DoctorArgPath([string]$arguments) {
+  if (-not $arguments) { return $null }
+  $m = [regex]::Match($arguments, '^\s*/d\s+/c\s+""([^"]+)""\s*$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  if (-not $m.Success) { return $null }
+  try { return (Normalize-Dir $m.Groups[1].Value) } catch { return $null }
+}
+
+# An "IRIS Doctor" shortcut of one of these roots: the target is cmd.exe in System32 (the whole
+# normalized path is compared) AND the arguments name exactly <root>\_agent\shared\tools\
+# iris-doctor\IRIS Doctor.cmd (the whole normalized path again). The file name of the shortcut
+# is not looked at, and a path that merely contains the root or the start file is not enough.
+function Test-DoctorLnk($shortcut, $roots) {
+  $t = $null
+  try { $t = Normalize-Dir ([string]$shortcut.TargetPath) } catch { return $false }
+  if (-not $t -or -not $env:SystemRoot) { return $false }
+  $cmd = Normalize-Dir (Join-Path $env:SystemRoot 'System32\cmd.exe')
+  if (-not (Test-SamePath $t $cmd)) { return $false }
+  $start = Get-DoctorArgPath ([string]$shortcut.Arguments)
+  if (-not $start) { return $false }
+  foreach ($r in $roots) { if (Test-SamePath $start (Get-DoctorStartFile $r)) { return $true } }
+  return $false
+}
+
+# Desktop and Start menu shortcuts whose target is inside the root (the installer makes "<name>.lnk"),
+# and the "IRIS Doctor" shortcuts of the root (target cmd.exe, see Test-DoctorLnk).
 function Get-LnkPlan($roots) {
   $out = New-Object System.Collections.ArrayList
   $sh = $null
@@ -499,10 +586,16 @@ function Get-LnkPlan($roots) {
     $files = @()
     try { $files = [IO.Directory]::GetFiles($d, '*.lnk') } catch { }
     foreach ($f in $files) {
+      $sc = $null
+      try { $sc = $sh.CreateShortcut($f) } catch { }
+      if (-not $sc) { continue }
       $t = $null
-      try { $t = $sh.CreateShortcut($f).TargetPath } catch { }
+      try { $t = $sc.TargetPath } catch { }
       if (-not $t) { continue }
-      foreach ($r in $roots) { if (Test-Inside $t $r) { [void]$out.Add($f); break } }
+      $hit = $false
+      foreach ($r in $roots) { if (Test-Inside $t $r) { $hit = $true; break } }
+      if (-not $hit) { try { $hit = (Test-DoctorLnk $sc $roots) } catch { $hit = $false } }
+      if ($hit) { [void]$out.Add($f) }
     }
   }
   return $out
@@ -512,6 +605,16 @@ function Get-WorkDirPath {
   if ($WorkDir) { return (Normalize-Dir $WorkDir) }
   if (-not $env:LOCALAPPDATA) { return $null }
   return (Join-Path $env:LOCALAPPDATA 'IRIS-Installer')
+}
+
+# Run folders of Doctor's agent treatment, outside the root. A run that redirects any outside
+# place (tests, rehearsals: -WorkDir / -DesktopDir / -ScanRoots) never gets the real folder
+# unless it names one itself.
+function Get-DoctorWorkPath {
+  if ($DoctorWorkDir) { return (Normalize-Dir $DoctorWorkDir) }
+  if ($WorkDir -or $DesktopDir -or $ScanRoots) { return $null }
+  if (-not $env:LOCALAPPDATA) { return $null }
+  return (Join-Path $env:LOCALAPPDATA 'IRIS Doctor')
 }
 
 function New-Plan($inst, [string]$archive) {
@@ -528,9 +631,14 @@ function New-Plan($inst, [string]$archive) {
   foreach ($it in @(Get-TopItems $inst.Root)) {
     if (Test-SystemItem $it) { [void]$system.Add($it) } else { [void]$user.Add($it) }
   }
-  if (-not $archive -and $user.Count -gt 0) { $archive = Get-ArchivePath $inst.Root }
+  # Doctor's records are kept in keep mode even when the user made nothing else, so they need
+  # the archive folder too.
+  $doctorRecords = Get-DoctorRecords $inst.Root
+  if (-not $archive -and ($user.Count -gt 0 -or $doctorRecords)) { $archive = Get-ArchivePath $inst.Root }
   $wd = Get-WorkDirPath
   if ($othersRemain -or -not $wd -or -not (Test-Path -LiteralPath $wd)) { $wd = $null }
+  $dw = Get-DoctorWorkPath
+  if ($othersRemain -or -not $dw -or -not (Test-Path -LiteralPath $dw)) { $dw = $null }
   return [pscustomobject]@{
     Kind         = 'install'
     Root         = $inst.Root
@@ -546,6 +654,9 @@ function New-Plan($inst, [string]$archive) {
     Lnks         = @(Get-LnkPlan $roots)
     WorkDir      = $wd
     OthersRemain = $othersRemain
+    DoctorRecords = $doctorRecords
+    DoctorWork    = $dw
+    DoctorBusy    = (Test-DoctorTreating $inst.Root)
   }
 }
 
@@ -589,6 +700,9 @@ function New-TracePlan($roots) {
     Lnks         = @(Get-LnkPlan $roots)
     WorkDir      = $wd
     OthersRemain = $othersRemain
+    DoctorRecords = $null
+    DoctorWork    = $null
+    DoctorBusy    = $false
   }
   return $plan
 }
@@ -879,6 +993,7 @@ function New-Result($plan, [string]$mode) {
     ok = $false; status = $null; kind = $plan.Kind; root = $plan.Root; mode = $mode; version = $plan.Version
     archive = $null; moved = @(); moveFailed = @(); removed = @(); remaining = @(); holders = @()
     killed = @(); env = @(); path = @(); run = @(); lnks = @(); workDir = $null
+    doctorRecords = $null; doctorWork = $null
     leftEmpty = $false; dryRun = [bool]$DryRun; log = $script:LogPath; error = $null; reason = $null
   }
 }
@@ -890,10 +1005,18 @@ function Get-DryRunResult($plan, [string]$mode) {
   $res.ok = $true
   $users = @($plan.UserItems | ForEach-Object { $_.Name })
   if ($plan.Kind -eq 'install') {
-    if ($mode -eq 'keep') { $res.moved = $users; if ($users.Count -gt 0) { $res.archive = $plan.Archive } }
+    if ($mode -eq 'keep') {
+      $res.moved = $users
+      if ($users.Count -gt 0) { $res.archive = $plan.Archive }
+      if ($plan.DoctorRecords -and $plan.Archive) {
+        $res.archive = $plan.Archive
+        $res.doctorRecords = (Join-Path $plan.Archive (T 'doctorRecordsDir'))
+      }
+    }
     else { $res.removed += $users }
     $res.removed += @($plan.SystemItems | ForEach-Object { $_.Name })
   }
+  $res.doctorWork = $plan.DoctorWork
   $res.killed = @(Get-KillTargets $plan.Roots $plan.WorkDir | ForEach-Object { '{0} (pid {1})' -f $_.Name, $_.Pid })
   $res.env = @($plan.Env | ForEach-Object { '{0}:{1}' -f $_.Name, $_.Action })
   if ($plan.PathPlan) { $res.path = @($plan.PathPlan.Removed) }
@@ -928,6 +1051,16 @@ function Invoke-Plan($plan, [string]$mode) {
     if ($danger) { throw ('refused location: ' + $danger) }
     if (Test-Reparse $plan.Root) { throw 'refused: the IRIS folder is a link to another place' }
     if (-not [IO.File]::Exists((Get-ReceiptPath $plan.Root))) { throw 'the receipt disappeared before the run' }
+    # Doctor is treating in this root right now (checked again here, right before the first
+    # change: a treatment may have started while the window was open). Stop before anything is
+    # stopped, moved or deleted -- the caller shows "run this again when Doctor is done".
+    if (Test-DoctorTreating $plan.Root) {
+      $res.status = 'refused'
+      $res.reason = 'doctorTreating'
+      $res.ok = $false
+      Write-Log 'refused: IRIS Doctor is treating (live treat.lock) -- nothing was changed'
+      return $res
+    }
   }
   Write-Log ('run kind={0} root={1} mode={2} version={3}' -f $plan.Kind, $plan.Root, $mode, $plan.Version)
 
@@ -980,7 +1113,9 @@ function Invoke-Plan($plan, [string]$mode) {
   Set-Step 5 'ok' (Get-CountLabel $res.lnks.Count)
 
   # 6 -- keep mode: user items move next to the root (a failed move stays in place, never deleted)
-  if ($isInstall -and $mode -eq 'keep' -and @($plan.UserItems).Count -gt 0) {
+  $keepRecords = ($isInstall -and $mode -eq 'keep' -and $plan.DoctorRecords -and [IO.Directory]::Exists($plan.DoctorRecords))
+  $recordsFailed = $false
+  if ($isInstall -and $mode -eq 'keep' -and (@($plan.UserItems).Count -gt 0 -or $keepRecords)) {
     Set-Step 6 'run' ''
     $arch = $plan.Archive
     if (-not $arch -or (Test-Inside $arch $plan.Root)) { throw 'bad archive folder' }
@@ -1017,10 +1152,29 @@ function Invoke-Plan($plan, [string]$mode) {
           if (-not $have) { [IO.File]::Copy($ag, $agDest) }
         } catch { Write-Log ('AGENTS.md copy failed: ' + $_.Exception.Message) }
       }
-    } elseif (Test-DirEmpty $arch) {
+    }
+    # IRIS Doctor: the records (journal, check-up sheets, treatment records with their backups)
+    # are the user's history, so keep mode moves them into the archive. Only that folder: the
+    # rest of the Doctor home holds login keys and is deleted in step 7. A move that fails
+    # leaves the records where they are and step 7 will not delete them (rule 6).
+    if ($keepRecords) {
+      $rdest = Get-UniqueDest $arch (T 'doctorRecordsDir') $true
+      try {
+        [IO.Directory]::Move($plan.DoctorRecords, $rdest)
+        $res.doctorRecords = $rdest
+        $res.archive = $arch
+        Write-Log ('moved ' + $plan.DoctorRecords + ' -> ' + $rdest)
+      } catch {
+        $recordsFailed = $true
+        $res.moveFailed += '_agent\doctor\records'
+        Write-Log ('move failed (left in place): ' + $plan.DoctorRecords + ' -- ' + $_.Exception.Message)
+      }
+      Invoke-Pump
+    }
+    if (-not $res.archive -and (Test-DirEmpty $arch)) {
       try { [IO.Directory]::Delete($arch, $false) } catch { }
     }
-    Set-Step 6 $(if ($res.moveFailed.Count -gt 0) { 'fail' } else { 'ok' }) (Get-CountLabel $res.moved.Count)
+    Set-Step 6 $(if ($res.moveFailed.Count -gt 0) { 'fail' } else { 'ok' }) (Get-CountLabel ($res.moved.Count + $(if ($res.doctorRecords) { 1 } else { 0 })))
   } else {
     Set-Step 6 'skip' (T 'stepSkip')
   }
@@ -1042,7 +1196,18 @@ function Invoke-Plan($plan, [string]$mode) {
         [void](Remove-InsideItem $agent $root)
       } else {
         foreach ($c in Get-ChildNames $agent) {
-          if ($c -ne 'setup') { [void](Remove-InsideItem (Join-Path $agent $c) $root) }
+          if ($c -eq 'setup') { continue }
+          if ($recordsFailed -and [string]::Equals($c, 'doctor', $script:IgnoreCase)) {
+            # Doctor's records could not be moved to the archive: they are not deleted (rule 6).
+            # Everything else in the Doctor home -- the login keys first of all -- still goes,
+            # so _agent\doctor\records is all that stays; the rerun moves it.
+            $dhome = Join-Path $agent $c
+            foreach ($dc in Get-ChildNames $dhome) {
+              if (-not [string]::Equals($dc, 'records', $script:IgnoreCase)) { [void](Remove-InsideItem (Join-Path $dhome $dc) $root) }
+            }
+            continue
+          }
+          [void](Remove-InsideItem (Join-Path $agent $c) $root)
         }
         $setup = Join-Path $agent 'setup'
         foreach ($c in Get-ChildNames $setup) {
@@ -1086,6 +1251,21 @@ function Invoke-Plan($plan, [string]$mode) {
     else { Write-Log ('work folder left: ' + $wd); Set-Step 8 'fail' (T 'stepFail') }
   } else {
     Set-Step 8 'skip' (T 'stepSkip')
+  }
+
+  # 8b -- IRIS Doctor's run folders outside the root (%LOCALAPPDATA%\IRIS Doctor), under the same
+  # rule as the installer work folder: only when no other IRIS remains and the root is gone.
+  # It is not a step of its own on the progress screen; a folder that stays is only logged
+  # (it holds scratch run folders, no key and no user data).
+  if ($plan.DoctorWork -and $res.remaining.Count -eq 0) {
+    $dw = $plan.DoctorWork
+    $okName = ($DoctorWorkDir -or [string]::Equals([IO.Path]::GetFileName($dw), 'IRIS Doctor', $script:IgnoreCase))
+    if ($okName -and -not (Get-DangerReason $dw)) {
+      if (Test-Reparse $dw) { try { [IO.Directory]::Delete($dw, $false) } catch { } }
+      else { Clear-Attributes $dw; Invoke-Rd $dw }
+    }
+    if (-not (Test-Path -LiteralPath $dw)) { $res.doctorWork = $dw; Write-Log ('doctor run folder removed: ' + $dw) }
+    else { Write-Log ('doctor run folder left: ' + $dw) }
   }
 
   if (-not $isInstall) { $res.status = 'traces-done' }
@@ -1163,10 +1343,17 @@ function Invoke-Headless {
         $res = New-StatusResult 'confirm-required' $t.Root 'mode all needs -Yes'
       } else {
         $plan = New-Plan $t.Install $null
-        # headless: never waits for a person -- the outside holders are only recorded (preHolders)
-        $pre = @(Get-OutsideHolders $plan)
-        if ($DryRun) { $res = @(Get-DryRunResult $plan $Mode)[-1] } else { $res = @(Invoke-Plan $plan $Mode)[-1] }
-        if ($res -is [System.Collections.IDictionary]) { $res['preHolders'] = $pre } else { $res | Add-Member -NotePropertyName preHolders -NotePropertyValue $pre -Force }
+        if ($plan.DoctorBusy) {
+          # IRIS Doctor is treating in this folder: nothing is stopped or deleted, not even
+          # looked at further (a dry run answers the same -- the plan cannot run now)
+          Write-Log 'refused: IRIS Doctor is treating (live treat.lock) -- nothing was changed'
+          $res = New-StatusResult 'refused' $t.Root 'doctorTreating'
+        } else {
+          # headless: never waits for a person -- the outside holders are only recorded (preHolders)
+          $pre = @(Get-OutsideHolders $plan)
+          if ($DryRun) { $res = @(Get-DryRunResult $plan $Mode)[-1] } else { $res = @(Invoke-Plan $plan $Mode)[-1] }
+          if ($res -is [System.Collections.IDictionary]) { $res['preHolders'] = $pre } else { $res | Add-Member -NotePropertyName preHolders -NotePropertyValue $pre -Force }
+        }
       }
     }
     'traces' {
@@ -1204,6 +1391,9 @@ function Invoke-Scan {
       run     = @($plan.Run | ForEach-Object { $_.Name })
       lnks    = @($plan.Lnks)
       workDir = $plan.WorkDir
+      doctorRecords  = $plan.DoctorRecords
+      doctorWork     = $plan.DoctorWork
+      doctorTreating = [bool]$plan.DoctorBusy
     }
   }
   $txt = $out | ConvertTo-Json -Depth 6
@@ -1552,6 +1742,8 @@ function Start-Run($plan, [string]$mode) {
     $script:OnStep = $null
   }
   if ($err) { Show-Error $err; return }
+  # Doctor started treating between the plan and the run: nothing was changed
+  if ($res.status -eq 'refused') { Show-DoctorBusy; return }
   # let the last check marks show for a moment
   for ($i = 0; $i -lt 6; $i++) { Invoke-Pump; Start-Sleep -Milliseconds 100 }
   $u.Result = $res
@@ -1569,8 +1761,30 @@ function Get-VersionText($plan) {
 }
 
 function Get-KeepDesc($plan) {
+  # IRIS Doctor's records are kept too (moved into the same archive folder); its login keys are not
+  if ($plan.DoctorRecords) {
+    if (@($plan.UserItems).Count -gt 0) { return ((T 'optKeepDesc' $plan.Archive) + "`n" + (T 'optKeepDoctor')) }
+    return (T 'optKeepDoctorOnly' $plan.Archive)
+  }
   if (@($plan.UserItems).Count -gt 0) { return (T 'optKeepDesc' $plan.Archive) }
   return (T 'optKeepNone')
+}
+
+# IRIS Doctor is treating in the folder (a live treat.lock): the uninstaller stops here. It does
+# not stop Doctor and deletes nothing; the person runs it again when Doctor is done.
+function Show-DoctorBusy {
+  $u = $script:Ui
+  $u.ExitCode = 2
+  Clear-Screen (T 'doctorBusyHeading') $script:Amber
+  Add-Text (T 'doctorBusyBody') -Gap 12
+  if ($u.Plan -and $u.Plan.Root) { Add-PathBox $u.Plan.Root }
+  Add-Button (T 'btnClose') { $script:Ui.ExitCode = 2; Close-Ui } -Cancel
+  Add-Button (T 'holdersRecheck') {
+    $v = $script:Ui
+    $v.Plan = New-Plan $v.Plan.Install $null
+    if ($v.Plan.DoctorBusy) { Show-DoctorBusy } else { Show-Intro }
+  } -Primary
+  Complete-Screen
 }
 
 function Show-Intro {
@@ -1644,6 +1858,7 @@ function Start-FromIntro {
   $u.Mode = if ($u.RbAll.Checked) { 'all' } else { 'keep' }
   # plan again right before running: the folder may have changed while the window was open
   $u.Plan = New-Plan $u.Plan.Install $null
+  if ($u.Plan.DoctorBusy) { Show-DoctorBusy; return }
   if ($u.Mode -eq 'all') { Show-Confirm } else { Start-Checked 'keep' }
 }
 
@@ -1692,6 +1907,7 @@ function Show-Done($res) {
   if ($res.kind -eq 'traces') { Add-Text (T 'doneTraces') -Gap 14 }
   elseif ($u.Archive) { Add-ArchiveInfo }
   elseif ($res.mode -eq 'keep') { Add-Text (T 'doneNoArchive') -Gap 14 }
+  if ($res.doctorRecords) { Add-Text (T 'doneDoctorRecords') $script:Gray -Gap 14 }
   if ($res.leftEmpty) { Add-Text (T 'doneLeftEmpty' $res.root) $script:Amber -Gap 14 }
   Add-Text (T 'doneNotes') -Gap 14
   Add-Text (T 'logPath' $res.log) $script:Gray
@@ -1780,7 +1996,11 @@ function Invoke-Ui {
   $u = $script:Ui
   $t = Resolve-Target
   switch ($t.Status) {
-    'install' { $u.Plan = New-Plan $t.Install $null; $u.Fixed = [bool]$Root; Show-Intro }
+    'install' {
+      $u.Plan = New-Plan $t.Install $null
+      $u.Fixed = [bool]$Root
+      if ($u.Plan.DoctorBusy) { Show-DoctorBusy } else { Show-Intro }
+    }
     'traces' { $u.Plan = $t.Plan; Show-Traces }
     'refused' { Show-Refused $t.Reason $t.Root }
     default { Show-NotFound }
@@ -1869,6 +2089,8 @@ function Invoke-Screenshots([string]$dir) {
   Show-Traces; Save-Shot $dir '08-traces'
   Show-Refused 'danger' '%USERPROFILE%'; Save-Shot $dir '09-refused'
   Show-Error 'Access to the path is denied.'; Save-Shot $dir '10-error'
+  $u.Plan = $plan
+  Show-DoctorBusy; Save-Shot $dir '11-doctor-busy'
   $f.Close()
   $f.Dispose()
   return 0
