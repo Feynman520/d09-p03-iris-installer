@@ -3,7 +3,7 @@
 //   node status.mjs            사람용 요약 출력 + 상태 파일 갱신
 //   node status.mjs --json     판정 JSON 출력(IRIS-Face 데몬·대시보드용) + 상태 파일 갱신
 //   node status.mjs --notify   위와 같고, 곧 만료/만료가 있으면 윈도 알림 풍선(같은 내용은 12시간에 한 번)
-//   node status.mjs --hook     세션 시작 훅용: 알릴 것이 있을 때만 한 줄
+//   node status.mjs --hook     세션 시작 훅용: 알릴 것이 있을 때만 한 줄(읽기만 — 상태 파일을 쓰지 않고 풍선도 띄우지 않는다)
 //   … --skip-provider=google   그 공급자의 중계기 계정을 알림 · 상태 파일 · 출력에서 처음부터 뺀다(쉼표로 여럿)
 // 열쇠 값은 읽은 즉시 버리고 만료 시각·있음 여부만 남긴다.
 import { readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from 'node:fs';
@@ -134,6 +134,16 @@ function main(argv) {
   const now = Date.now();
   const skip = skipProvidersOf(argv);
   const result = gather(now, { skipProviders: skip });
+  if (argv.includes('--hook')) {
+    // 세션 시작 훅: **읽고 한 줄 내기만** 한다 — 상태 파일을 쓰지 않고 풍선 알림도 띄우지 않는다(2026-11-27).
+    // 훅과 창의 주기 점검이 같은 옛 알림 기록을 읽은 뒤 창이 새 기록을 저장하고 훅이 늦게 저장하면, 새 기록이 옛 기록으로
+    // 되돌아가 다음 점검에서 같은 알림이 되풀이된다. 상태 파일은 창의 점검(--json · --notify) 한쪽만 쓴다.
+    // 중계기 계정은 IRIS 창과 대시보드가 알리므로 여기서는 IRIS 열쇠만 — 같은 알림이 두 번 나오지 않게.
+    const iris = result.items.filter(i => i.group === 'iris');
+    const line = summaryLine({ ...result, items: iris, due: result.due.filter(id => id.startsWith('iris:')) });
+    if (line) process.stdout.write(`[IRIS 인증] ${line}. 사용자에게 알릴 것.\n`);
+    return;
+  }
   const memos = memosOf(readJson(STATUS_FILE));
   const field = memoField(skip); // 인자가 없으면 'notify' — 예전과 같은 칸
   let memo = memos[field] || null;
@@ -146,13 +156,6 @@ function main(argv) {
   try { writeStatus(result, memos); } catch { /* 상태 파일 실패는 점검을 막지 않는다 */ }
 
   if (argv.includes('--json')) { process.stdout.write(JSON.stringify(result) + '\n'); return; }
-  if (argv.includes('--hook')) {
-    // 중계기 계정은 IRIS 창과 대시보드가 알리므로 여기서는 IRIS 열쇠만 — 같은 알림이 두 번 나오지 않게.
-    const iris = result.items.filter(i => i.group === 'iris');
-    const line = summaryLine({ ...result, items: iris, due: result.due.filter(id => id.startsWith('iris:')) });
-    if (line) process.stdout.write(`[IRIS 인증] ${line}. 사용자에게 알릴 것.\n`);
-    return;
-  }
   for (const i of result.items) {
     const tail = i.optional ? ' (IRIS 창은 1년 열쇠 사용 — 손으로 연 터미널 전용)' : '';
     process.stdout.write(`${i.label.padEnd(16)} ${WORD[i.level].padEnd(5)} 만료 ${fmt(i.expiresAt)}${i.daysLeft != null ? ` (D-${i.daysLeft})` : ''}${tail}\n`);

@@ -145,10 +145,10 @@ test('알림 기록 보존: 뺀 조합마다 칸이 따로다 — 한쪽 호출�
   assert.deepEqual(readStatus(h).notify, memoAll);
 });
 
-test('상태 파일 쓰기: 여럿이 겹쳐 돌아도(세션 시작 훅 + 창의 주기 점검) 파일이 깨지지 않고 임시 파일이 남지 않는다', async () => {
+test('상태 파일 쓰기: 쓰는 호출 여럿이 겹쳐 돌아도(창이 여러 개 · 점검이 겹침) 파일이 깨지지 않고 임시 파일이 남지 않는다', async () => {
   const h = makeHome('overlap');
   const one = () => new Promise((resolve) => {
-    const c = spawn(process.execPath, [path.join(SRC, 'status.mjs'), '--hook'], { env: h.env, stdio: 'ignore', windowsHide: true });
+    const c = spawn(process.execPath, [path.join(SRC, 'status.mjs'), '--json'], { env: h.env, stdio: 'ignore', windowsHide: true });
     c.on('exit', (code) => resolve(code));
     c.on('error', () => resolve(-1));
   });
@@ -173,4 +173,36 @@ test('--hook: IRIS 열쇠에 알릴 것이 없으면 아무것도 내지 않는�
   assert.match(d.out, /^\[IRIS 인증\] .+\n$/);
   assert.equal(d.out.trim().split('\n').length, 1, '한 줄만');
   assert.ok(!d.out.includes('T"') && !/token/i.test(d.out), '열쇠 값은 내지 않는다');
+});
+
+// 2026-11-27 코드 검토: 훅과 창의 점검이 같은 옛 알림 기록을 읽은 뒤, 창이 새 기록을 저장하고 훅이 늦게 저장하면
+// 새 기록이 옛 기록으로 되돌아가 다음 점검에서 같은 알림이 되풀이된다. 그래서 --hook 은 읽기만 한다.
+test('--hook 은 상태 파일을 쓰지 않는다 — 없으면 만들지 않고, 있으면 한 글자도 바꾸지 않는다(알림 기록 포함)', () => {
+  // ① 상태 파일이 아직 없다 → 훅이 돌아도 생기지 않는다.
+  const fresh = makeHome('hook-nowrite-fresh');
+  fs.writeFileSync(fresh.env.IRIS_LONGKEY_FILE, JSON.stringify({ token: 'T', expiresAt: Date.now() + DAY, email: null }));
+  const a = runStatus(fresh, ['--hook']);
+  assert.equal(a.code, 0, a.err);
+  assert.match(a.out, /^\[IRIS 인증\] /, '알림 한 줄은 그대로 낸다');
+  assert.ok(!fs.existsSync(fresh.statusFile), '상태 파일을 만들지 않는다');
+  assert.deepEqual(fs.readdirSync(path.dirname(fresh.statusFile)), [], '임시 파일도 만들지 않는다');
+
+  // ② 창이 방금 새 알림 기록을 저장했다 → 뒤늦게 끝난 훅이 그것을 옛 값으로 되돌리지 않는다.
+  const h = makeHome('hook-nowrite-existing');
+  fs.writeFileSync(h.env.IRIS_LONGKEY_FILE, JSON.stringify({ token: 'T', expiresAt: Date.now() + DAY, email: null }));
+  const written = `${JSON.stringify({ updatedAt: 'by-the-window', items: [], notify: { key: 'new-key', at: 999 }, notify_skip_google: { key: 'k2', at: 2 } }, null, 2)}`;
+  fs.writeFileSync(h.statusFile, written);
+  const before = fs.statSync(h.statusFile).mtimeMs;
+  for (const args of [['--hook'], ['--hook', '--skip-provider=google'], ['--hook', '--notify']]) {
+    const r = runStatus(h, args);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(fs.readFileSync(h.statusFile, 'utf8'), written, `${args.join(' ')}: 상태 파일이 바뀌면 안 된다`);
+  }
+  assert.equal(fs.statSync(h.statusFile).mtimeMs, before, '다시 쓰지도 않았다(시각 그대로)');
+  assert.deepEqual(fs.readdirSync(path.dirname(h.statusFile)).filter((f) => f.endsWith('.tmp')), []);
+
+  // ③ 쓰는 쪽은 여전히 쓴다(창의 점검).
+  assert.equal(runStatus(h, ['--json']).code, 0);
+  assert.notEqual(fs.readFileSync(h.statusFile, 'utf8'), written);
+  assert.deepEqual(readStatus(h).notify, { key: 'new-key', at: 999 }, '창의 점검은 자기 알림 기록을 이어 간다');
 });
