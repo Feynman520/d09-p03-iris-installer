@@ -1237,9 +1237,11 @@ export function startServer({
   // 오프라인이면 부르지 않는다.
   // **결과는 기록 한 줄뿐이다.** 상태(state) · 영수증 · 인수 문서 · 응답 어디에도 싣지 않는다 — Doctor 의 준비 여부가
   // 설치 완료 판정(resumeVerdict · setupAllDone · onlineDone)에 섞이면 준비 실패가 "설치 미완료"로 읽혀 재로그인을 되풀이하게 된다.
-  // 이 호출은 기다린다 — 그래서 **뒤따르는 일(온라인 묶음의 응답 · 업데이트 끝의 IRIS 창 다시 열기)을 최대 20초 늦출 수 있다**
-  // (DOCTOR_PREPARE_TIMEOUT_MS = 부른 때부터 돌려줄 때까지의 전체 마감 · 끝내기와 그 확인까지 그 안 · 끝내기는 비동기라
-  // 그동안에도 서버는 요청을 받는다). 보통은 node 하나가 떴다 끝나는 시간이다. 무슨 일이 있어도 던지지 않는다.
+  // 이 호출은 기다린다 — 그래서 **뒤따르는 일(온라인 묶음의 응답 · 업데이트 끝의 IRIS 창 다시 열기)을 그만큼 늦출 수 있다:
+  // 진입부터 통상 20초 안에 돌아온다(시스템이 멈춘 시간은 제외)** (DOCTOR_PREPARE_TIMEOUT_MS = 그 함수에 들어온 때부터 돌려줄
+  // 때까지의 전체 마감 · 파일 확인 · 끝내기와 그 확인까지 그 안 · 끝내기는 비동기라 그동안에도 서버는 요청을 받는다. 마감은
+  // 타이머로 재므로 PC 가 절전에 들었거나 프로세스가 멈춰 있던 시간은 빠진다). 보통은 node 하나가 떴다 끝나는 시간이다.
+  // 무슨 일이 있어도 던지지 않는다.
   async function prepareDoctor(root, where) {
     try {
       const r = await (doctorPrepareFn ?? prepareDoctorAccounts)({ root, noUserEnv: userEnvSkipped });

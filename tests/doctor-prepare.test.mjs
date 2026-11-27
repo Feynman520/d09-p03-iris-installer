@@ -265,6 +265,25 @@ test('전체 마감 하나: 끝내기가 듣지 않고 끝났다는 신호도 �
   assert.equal(fs.existsSync(path.join(s.root, '_agent', 'doctor')), false);
 });
 
+// 2026-11-28 세 번째 코드 검토: 마감을 "파일 확인이 끝난 때"부터 쟀다 — 느린 디스크에서는 그 확인 시간이 마감 밖에 더해졌다.
+test('전체 마감의 시작 = 함수 진입: 파일 확인에 쓴 시간도 마감 안에서 뺀다(그 시간만큼 더 기다리지 않는다)', async () => {
+  const s = makeSoul('entry-clock', { mode: 'ok' });
+  // 느린 디스크 흉내: 파일 확인 두 번(실행 입구 · 동봉 node)이 0.6초씩 걸린다
+  const slowFs = { existsSync: (p) => { const end = Date.now() + 600; while (Date.now() < end) { /* 붙잡아 둔다 */ } return fs.existsSync(p); } };
+  const stuck = Object.assign(new EventEmitter(), { pid: undefined, stdout: new EventEmitter(), kill: () => false });
+  let spawnedAt = null;
+  const t0 = Date.now();
+  const r = await prepareDoctorAccounts({
+    root: s.root, env: clean(), timeoutMs: 3000, killGraceMs: 500, fs: slowFs,
+    spawnFn: () => { spawnedAt = Date.now() - t0; return stuck; }, killTree: () => null,
+  });
+  assert.ok(spawnedAt >= 1150, `파일 확인이 실제로 1.2초쯤 걸렸다(${spawnedAt}ms)`);
+  assert.equal(r.timedOut, true);
+  assert.ok(r.ms >= 2950, `ms 는 진입부터 잰다(${r.ms}ms)`);
+  // 전처럼 확인이 끝난 때부터 쟀다면 1.2 + 3 = 4.2초. 여유 0.9초는 바쁜 PC 의 타이머 몫이다.
+  assert.ok(r.ms < 3000 + 900, `진입부터 마감(3초) 안에 돌아온다 — 파일 확인 시간을 그 뒤에 더하지 않는다(${r.ms}ms)`);
+});
+
 test('전체 마감의 값: 20초 = 부른 때부터 돌려줄 때까지 · 그 가운데 끝내기 몫 5초 · 끝내기를 동기로 부르지 않는다(서버를 세우지 않는다)', () => {
   assert.equal(DOCTOR_PREPARE_TIMEOUT_MS, 20_000);
   assert.equal(DOCTOR_PREPARE_KILL_GRACE_MS, 5_000);
