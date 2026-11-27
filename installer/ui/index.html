@@ -1562,11 +1562,13 @@ async function loadReport() {
   const missing = handoff.nameEnMissing || (decisions && decisions.nameEnMissing) || [];
 
   const li = (arr) => '<ul>' + arr.map((x) => '<li>' + (typeof x === 'string' ? esc(x) : esc(JSON.stringify(x))) + '</li>').join('') + '</ul>';
-  // 「IRIS Doctor」 바탕화면 바로가기가 실제로 있을 때만 그 안내를 한다(서버가 실행기 단계의 기록으로 답한다).
+  // 「IRIS Doctor」 바로가기: 바탕화면과 시작 메뉴를 **각각** 사실대로 말한다(서버가 "기록에 있고 지금도 그 파일이 있다"일 때만 참).
+  // "시작 메뉴에도 …"는 둘 다 있을 때만 · 시작 메뉴에만 있으면 그렇게만 · 안내 한 줄(DOCTOR_HINT)은 바탕화면에 있을 때만.
   const doctorLnk = !!(rep.doctor && rep.doctor.desktopShortcut === true);
+  const doctorMenu = !!(rep.doctor && rep.doctor.startMenuShortcut === true);
   const madeOnDesktop = doctorLnk
-    ? '바탕화면에 만든 것은 「IRIS」와 「IRIS Doctor」 바로가기 둘뿐입니다(「IRIS Doctor」는 시작 메뉴에도 있습니다).'
-    : '바탕화면에 만든 것은 「IRIS」 바로가기 하나뿐입니다.';
+    ? '바탕화면에 만든 것은 「IRIS」와 「IRIS Doctor」 바로가기 둘뿐입니다' + (doctorMenu ? '(「IRIS Doctor」는 시작 메뉴에도 있습니다).' : '.')
+    : '바탕화면에 만든 것은 「IRIS」 바로가기 하나뿐입니다' + (doctorMenu ? '(「IRIS Doctor」 바로가기는 시작 메뉴에 있습니다).' : '.');
 
   $('report').innerHTML =
     '<h3>1. 하려던 일</h3><p>이 컴퓨터에 IRIS 한 벌을 설치하고, 비서가 바로 일할 수 있게 폴더·도구·계정 연결까지 마치는 것이었습니다.</p>' +

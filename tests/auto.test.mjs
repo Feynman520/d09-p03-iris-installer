@@ -1060,14 +1060,19 @@ test('auto (2.0.66): whatever the preparation answers -- or throws -- the update
   for (const name of Object.keys(outcomes)) assert.deepEqual(seen[name], seen.made, `${name} must end exactly like "made"`);
 });
 
-test('auto (2.0.66): the last event carries doctorShortcut only when the receipt says the desktop shortcut is really there', async () => {
+test('auto (2.0.66): the last event carries doctorShortcut only when the receipt says the desktop shortcut was made AND that file is there right now', async () => {
+  const lnk = path.join(tmp, 'doctor-lnk', 'IRIS Doctor.lnk'); // a stand-in file: the server only asks "is it there?"
+  fs.mkdirSync(path.dirname(lnk), { recursive: true });
+  fs.writeFileSync(lnk, 'lnk');
   const withShortcut = priorReceipt({ version: '1.9.0' });
-  withShortcut.setup.relay.recorded = { doctorShortcut: { status: 'created', desktop: { ok: true, path: 'X:\\d\\IRIS Doctor.lnk' }, startMenu: { ok: false, path: null, cause: 'x' } } };
+  withShortcut.setup.relay.recorded = { doctorShortcut: { status: 'created', desktop: { ok: true, path: lnk }, startMenu: { ok: false, path: null, cause: 'x' } } };
   const a = await runUpdate('hint-yes', { receipt: withShortcut, doctorPrepareFn: async () => ({ called: false, why: 'no-doctor' }) });
   const lastA = a.frames.find((f) => f.done);
   assert.equal(lastA.doctorShortcut, true);
-  // not made (a rehearsal, a failure, a foreign shortcut left alone, or an install from before 2.0.66 whose relay stage did not re-run)
-  for (const [label, recorded] of [['skipped', { doctorShortcut: { status: 'skipped', reason: 'x' } }], ['foreign', { doctorShortcut: { status: 'failed', desktop: { ok: false, path: null, foreign: true, cause: 'x' }, startMenu: { ok: false, path: null, cause: 'x' } } }], ['none', {}]]) {
+  // not made (a rehearsal, a failure, a foreign shortcut left alone, or an install from before 2.0.66 whose relay stage did not re-run),
+  // or made once but deleted since -- the record alone is not believed
+  const deleted = { doctorShortcut: { status: 'created', desktop: { ok: true, path: path.join(tmp, 'doctor-lnk', 'deleted', 'IRIS Doctor.lnk') }, startMenu: { ok: false, path: null, cause: 'x' } } };
+  for (const [label, recorded] of [['deleted-since', deleted], ['skipped', { doctorShortcut: { status: 'skipped', reason: 'x' } }], ['foreign', { doctorShortcut: { status: 'failed', desktop: { ok: false, path: null, foreign: true, cause: 'x' }, startMenu: { ok: false, path: null, cause: 'x' } } }], ['none', {}]]) {
     const r = priorReceipt({ version: '1.9.0' });
     r.setup.relay.recorded = recorded;
     const b = await runUpdate(`hint-${label}`, { receipt: r, doctorPrepareFn: async () => ({ called: false, why: 'no-doctor' }) });

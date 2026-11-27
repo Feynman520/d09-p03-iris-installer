@@ -1453,22 +1453,35 @@ test('doctor prepare (2.0.66): a rehearsal (--no-user-env) passes that on; and w
   }
 });
 
-test('report (2.0.66): doctor.desktopShortcut is true only when the relay stage really made (or kept) the desktop shortcut', async () => {
+test('report (2.0.66): doctor.desktopShortcut / startMenuShortcut are answered one by one -- true only when the relay stage recorded that place as made (or kept) AND that file is there right now', async () => {
+  // stand-ins for the two shortcut files (plain files in the temp folder; the report only asks "is it there?")
+  const dir = fs.mkdtempSync(path.join(tmp, 'doctor-lnk-'));
+  const desk = path.join(dir, 'd', 'IRIS Doctor.lnk');
+  const menu = path.join(dir, 'p', 'IRIS Doctor.lnk');
+  const gone = path.join(dir, 'gone', 'IRIS Doctor.lnk');       // recorded, but deleted after the install
+  const folder = path.join(dir, 'folder', 'IRIS Doctor.lnk');   // something else sits at the recorded place
+  for (const f of [desk, menu]) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'lnk'); }
+  fs.mkdirSync(folder, { recursive: true });
   const cases = [
-    [{ doctorShortcut: { status: 'created', desktop: { ok: true, path: 'X:\\d\\IRIS Doctor.lnk' }, startMenu: { ok: true, path: 'X:\\p\\IRIS Doctor.lnk' } } }, true],
-    [{ doctorShortcut: { status: 'kept', desktop: { ok: true, path: 'X:\\d\\IRIS Doctor.lnk', kept: true }, startMenu: { ok: true, path: 'X:\\p\\IRIS Doctor.lnk', kept: true } } }, true],
-    [{ doctorShortcut: { status: 'partial', desktop: { ok: false, path: null, foreign: true, cause: 'x' }, startMenu: { ok: true, path: 'X:\\p\\IRIS Doctor.lnk' } } }, false],
-    [{ doctorShortcut: { status: 'skipped', reason: 'IRIS_INSTALLER_NO_USER_ENV=1' } }, false],
-    [{ doctorShortcut: { status: 'absent', reason: 'x' } }, false],
-    [{}, false],
+    ['both made', { doctorShortcut: { status: 'created', desktop: { ok: true, path: desk }, startMenu: { ok: true, path: menu } } }, { desktopShortcut: true, startMenuShortcut: true }],
+    ['both kept', { doctorShortcut: { status: 'kept', desktop: { ok: true, path: desk, kept: true }, startMenu: { ok: true, path: menu, kept: true } } }, { desktopShortcut: true, startMenuShortcut: true }],
+    ['desktop only (start menu failed)', { doctorShortcut: { status: 'partial', desktop: { ok: true, path: desk }, startMenu: { ok: false, path: null, cause: 'x' } } }, { desktopShortcut: true, startMenuShortcut: false }],
+    ['start menu only (a foreign shortcut left on the desktop)', { doctorShortcut: { status: 'partial', desktop: { ok: false, path: null, foreign: true, cause: 'x' }, startMenu: { ok: true, path: menu } } }, { desktopShortcut: false, startMenuShortcut: true }],
+    ['recorded, but the desktop one was deleted since', { doctorShortcut: { status: 'created', desktop: { ok: true, path: gone }, startMenu: { ok: true, path: menu } } }, { desktopShortcut: false, startMenuShortcut: true }],
+    ['recorded, but the start menu one was deleted since', { doctorShortcut: { status: 'created', desktop: { ok: true, path: desk }, startMenu: { ok: true, path: gone } } }, { desktopShortcut: true, startMenuShortcut: false }],
+    ['a folder at the recorded place is not a shortcut', { doctorShortcut: { status: 'created', desktop: { ok: true, path: folder }, startMenu: { ok: true, path: folder } } }, { desktopShortcut: false, startMenuShortcut: false }],
+    ['ok without a path', { doctorShortcut: { status: 'created', desktop: { ok: true, path: null }, startMenu: { ok: true } } }, { desktopShortcut: false, startMenuShortcut: false }],
+    ['rehearsal', { doctorShortcut: { status: 'skipped', reason: 'IRIS_INSTALLER_NO_USER_ENV=1' } }, { desktopShortcut: false, startMenuShortcut: false }],
+    ['no Doctor part', { doctorShortcut: { status: 'absent', reason: 'x' } }, { desktopShortcut: false, startMenuShortcut: false }],
+    ['an install from before 2.0.66', {}, { desktopShortcut: false, startMenuShortcut: false }],
   ];
-  for (const [relayRecorded, want] of cases) {
+  for (const [label, relayRecorded, want] of cases) {
     const s = await start({ doctorPrepareFn: async () => ({ called: false, why: 'no-doctor' }) });
     try {
       await toRelay(s, { relayRecorded });
       await post(s.url, '/api/online/relay');
       const rep = await getJson(s.url, '/api/report');
-      assert.deepEqual(rep.doctor, { desktopShortcut: want }, JSON.stringify(relayRecorded));
+      assert.deepEqual(rep.doctor, want, label);
     } finally {
       await s.close();
     }

@@ -10,6 +10,7 @@
 //   --reinstall  1.x 영수증을 자동 업데이트로 연 상태     --speed     단계 하나에 걸리는 시간(기본 700ms)
 //   --login-reason window-closed|page-blocked|import-failed   로그인이 그 까닭으로 실패한다
 //   --no-doctor-shortcut   「IRIS Doctor」 바로가기를 만들지 못한 설치의 완료 화면
+//   --no-doctor-startmenu  「IRIS Doctor」 바로가기가 바탕화면에만 있는 설치의 완료 화면
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -278,7 +279,8 @@ const server = createServer(async (req, res) => {
         pendingCapabilities: ['edge', 'office'],
         // 2.0.66: 「IRIS Doctor」 바탕화면 바로가기가 만들어졌는가 — 참이면 완료 화면에 "IRIS가 열리지 않을 때는…" 한 줄이 보인다.
         // --no-doctor-shortcut 으로 못 만든 경우(그 줄이 없고 "바로가기 하나뿐"으로 나오는 화면)를 본다.
-        doctor: { desktopShortcut: !flag('no-doctor-shortcut') },
+        // --no-doctor-startmenu 는 시작 메뉴 것만 없는 경우("시작 메뉴에도 있습니다"가 빠진 화면).
+        doctor: { desktopShortcut: !flag('no-doctor-shortcut'), startMenuShortcut: !flag('no-doctor-shortcut') && !flag('no-doctor-startmenu') },
       });
     }
 

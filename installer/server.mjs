@@ -1248,13 +1248,23 @@ export function startServer({
       log(`doctor prepare (${where}) failed: ${String(err?.name ?? 'Error')}`);
     }
   }
-  // 「IRIS Doctor」 바탕화면 바로가기가 실제로 있는가(실행기 단계의 기록: 새로 만들었거나, 이미 이 설치의 것이 있어 그대로 둠).
-  // 완료 화면 · 업데이트 완료 글이 "바탕화면의 「IRIS Doctor」"를 말해도 되는지를 가른다 — 못 만들었거나 연습 실행이면 말하지 않는다.
-  function doctorShortcutMade(root) {
+  // 「IRIS Doctor」 바로가기가 **지금** 있는가 — 바탕화면과 시작 메뉴를 **각각** 답한다.
+  // 참 = 실행기 단계가 그 자리를 "만들었다 / 이 설치의 것이 이미 있어 그대로 뒀다"고 적었고(ok) **그 기록의 파일이 지금도 있다**.
+  // 기록만 믿지 않는다: 설치 뒤에 사람이 지웠거나 옮겼으면 "바탕화면의 「IRIS Doctor」를 여세요"는 거짓말이 된다.
+  // 못 만들었거나(실패 · 남의 바로가기를 그대로 둠) 연습 실행이면 거짓. 완료 화면 · 업데이트 완료 글이 이 답대로만 말한다.
+  function doctorShortcutsNow(root) {
+    const out = { desktop: false, startMenu: false };
     try {
-      return readReceiptFn(root)?.setup?.relay?.recorded?.doctorShortcut?.desktop?.ok === true;
-    } catch { return false; }
+      const rec = readReceiptFn(root)?.setup?.relay?.recorded?.doctorShortcut;
+      for (const where of ['desktop', 'startMenu']) {
+        const one = rec?.[where];
+        if (one?.ok !== true || typeof one.path !== 'string' || !one.path) continue;
+        try { out[where] = fs.lstatSync(one.path).isFile(); } catch { out[where] = false; }
+      }
+    } catch { /* 읽지 못하면 둘 다 "없다" */ }
+    return out;
   }
+  const doctorShortcutMade = (root) => doctorShortcutsNow(root).desktop;
 
   routes.set('POST /api/online/relay', withBody(async (body, req, res) => {
     if (!requireLocated(res)) return;
@@ -1364,8 +1374,9 @@ export function startServer({
     state.report = { markdownPath, handoffPath: handoff ? path.join(setupDir, 'handoff.json') : null, pendingCapabilities };
     save();
     // 2.0.66: 완료 화면이 "IRIS 가 열리지 않을 때는 바탕화면의 「IRIS Doctor」"를 안내해도 되는가(바로가기가 실제로 있을 때만 참).
-    // 인수 문서(handoff.json)에는 싣지 않는다 — 화면 안내용 한 칸이다.
-    sendJson(res, 200, { ok: true, markdown, handoff, pendingCapabilities, doctor: { desktopShortcut: doctorShortcutMade(root) } });
+    // 인수 문서(handoff.json)에는 싣지 않는다 — 화면 안내용 칸이다. 바탕화면과 시작 메뉴를 각각 답한다(지금 있는 것만 참).
+    const doctorLnk = doctorShortcutsNow(root);
+    sendJson(res, 200, { ok: true, markdown, handoff, pendingCapabilities, doctor: { desktopShortcut: doctorLnk.desktop, startMenuShortcut: doctorLnk.startMenu } });
   });
 
   routes.set('POST /api/open-face', withBody(async (body, req, res) => {
