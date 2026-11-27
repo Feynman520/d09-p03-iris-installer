@@ -1,44 +1,62 @@
-// verify/firstrun-probe.mjs -- 오프라인 첫 실행 재현 (2026-11-27, 잠금 판 올림 W9)
+// verify/firstrun-probe.mjs -- 첫 실행 재현 (2026-11-27, 잠금 판 올림 W9 · 11-28 코덱스 코드 검토 반영)
 //
 // 배경: 2026-11-09 학교 컴퓨터실에서 새 PC 의 클로드가 시작 안내창(크롬 안내 · 전체화면 권유 · 자동 모드 권유)에
 // 걸려 대화창이 비고 권한이 auto 로 바뀌었다(검증기록 5-71). 그 뒤 "잠금 판을 올릴 때는 설치기 씨앗을 넣은
 // 오프라인 첫 실행 재현을 거친다"가 규칙이 됐지만(AGENTS.md 「비서 자동 업데이트」, 검증기록 5-74) 재현은 그때그때
-// 손으로 했다. 이 스크립트가 그 손 절차를 그대로 밟는다:
+// 손으로 했다. 이 스크립트가 그 손 절차를 밟는다:
 //
-//   ① 가짜 영혼   임시 폴더에 영혼 루트를 만들고, 설치기가 쓰는 설정을 **설치기 함수로** 넣는다
+//   ⓞ 준비        잠금표의 CLI 를 구한다 — **이 단계는 네트워크를 쓴다**(클로드 = 설치기 함수 installClaude 로 받고 지문 검증,
+//                 코덱스 = 빌드 캐시). 띄울 실행 파일의 `--version` 이 잠금표의 판과 같지 않으면 띄우지 않는다.
+//   ① 가짜 영혼   실행마다 새 임시 폴더에 영혼 루트를 만들고, 설치기가 쓰는 설정을 **설치기 함수로** 넣는다
 //                 (setup/adapters.mjs run() = settings.json · 훅 · .claude.json 씨앗 · config.toml · hooks.json).
-//   ② 죽은 주소   127.0.0.1 의 임의 포트에 "무엇이 와도 503" 서버를 띄우고, API 주소와 프록시를 전부 그리로 돌린다.
-//                 살아 있는 중계기(3456)와 바깥 서버에는 한 번도 닿지 않는다. 요청문을 보내지 않는다(모델 호출 0).
-//   ③ 첫 화면     잠금 판의 실제 CLI 를 IRIS 창과 같은 인수 · 같은 크기의 가상 터미널로 띄워 첫 화면이 가라앉을 때까지 본다.
-//   ④ 판정        묻는 창 없이 입력 칸까지 갔는가 · 권한 표시가 bypass 인가 · 시작 안내창이 없는가 · 대화 번호가
-//                 그대로인가(다른 번호의 기록이 생기지 않았는가) · 시작 훅이 오류 없이 불렸는가. 코덱스는 설치 PC 꼴
-//                 설정(model_provider · multi_agent · 신뢰 표)으로 물음 없이 입력 칸이 보이는가 + 경고 줄 수집
-//                 (접힌 경고는 판정이 끝난 뒤 보기 키 F2 로 펼쳐 기록에 남긴다 — 요청문이 아니다).
+//   ② 죽은 주소   127.0.0.1 의 임의 포트에 "무엇이 와도 503" 서버를 띄우고, 관측할 CLI 의 API 주소 · 프록시 변수 ·
+//                 코덱스 연결 주소를 전부 그리로 준다. 요청문을 보내지 않는다(이 스크립트가 시키는 모델 호출 0).
+//   ③ 첫 화면     그 CLI 를 IRIS 창과 같은 크기의 가상 터미널 · 창과 같은 인수(클로드는 `--chrome` 만 뺌 — claudeArgs)로
+//                 띄워 첫 화면이 가라앉을 때까지 본다. 한도 시간까지 가라앉지 않으면 통과가 아니다.
+//   ④ 판정        묻는 창 없이 입력 칸까지 갔는가 · 권한 표시가 bypass 인가 · 시작 안내창이 없는가 · 다른 번호의 기록이
+//                 생기지 않았는가 · 시작 훅이 오류 없이 불렸는가 · 띄운 프로세스가 끝났는가. 코덱스는 설치 PC 꼴 설정
+//                 (model_provider · multi_agent · 신뢰 표)으로 물음 없이 입력 칸이 보이는가 + 접힌 경고 수집
+//                 (판정이 끝난 뒤 보기 키 F2 로 펼쳐 기록에 남긴다 — 요청문이 아니다).
+//
+// "네트워크 없이"의 정확한 뜻: 관측 단계의 CLI 에게 환경 변수(API 주소 · 프록시)와 설정 파일로 죽은 주소를 **준다**.
+// 방화벽으로 막는 강제 격리가 아니다 — 프록시 변수를 따르지 않고 직접 나가는 연결이 있다면 이 스크립트는 막지도 보지도
+// 못한다. 확인할 수 있는 것은 죽은 주소에 실제로 온 요청(결과 파일의 deadServer)뿐이다. 바깥 연결 0 을 입증해야 하면
+// 네트워크가 끊긴 곳에서 `--claude-exe` · `--codex-cmd` 로 돌린다.
 //
 // 이 검사가 못 보는 것(실제 PC 시험의 몫): 서버 깃발 · 로그인 계정에 달린 안내창 / 요청 뒤의 일(첫 답 · 기록 파일 ·
 // 옛 대화 재개 · 작업 도중 물음) / 코덱스의 ChatGPT 로그인으로 시작하는 길(writeFakeCodexAuth 의 설명) / 코덱스
-// 업데이트 물음(네트워크가 있어야 뜬다) / 실제 MCP 서버가 뜨는 동안의 화면(가짜 영혼에는 MCP 실행 파일이 없다).
+// 업데이트 물음(네트워크가 있어야 뜬다) / 실제 MCP 서버가 뜨는 동안의 화면(가짜 영혼에는 MCP 실행 파일이 없다) /
+// 크롬 연동 안내창(`--chrome` 을 빼고 띄운다).
 //
 // 화면 판정식은 IRIS 창 `daemon/sessions.mjs` 의 것을 쓴다 — 옆 폴더의 창 소스가 있으면 거기서 읽고(달라졌으면 알린다),
 // 없으면 이 파일의 사본(BUILTIN_SCREEN_RE)을 쓴다. 가상 터미널(node-pty · @xterm/headless)도 창의 것을 빌린다.
 //
 // 안전 규칙:
-//   · 쓰는 곳은 작업 폴더(기본 _build/firstrun-probe/, --work 로 바꿈) 하나. CLAUDE_CONFIG_DIR · CODEX_HOME · HOME ·
-//     USERPROFILE · APPDATA · LOCALAPPDATA · TEMP 를 전부 그 안으로 준다. 자식 환경은 허용 목록으로 새로 짠다
-//     (이 PC 의 열쇠 · 주소 · 세션 표식이 새지 않는다).
+//   · 쓰는 곳은 작업 폴더(기본 _build/firstrun-probe/, --work 로 바꿈) **아래에 실행마다 새로 만드는 폴더 하나**
+//     (run-XXXXXX)와 기록 폴더. 받은 폴더 자체는 지우지 않고, 정리도 자기가 만든 그 폴더만 한다.
+//     CLAUDE_CONFIG_DIR · CODEX_HOME · HOME · USERPROFILE · APPDATA · LOCALAPPDATA · TEMP 를 전부 그 안으로 준다.
+//     자식 환경은 허용 목록으로 새로 짠다(이 PC 의 열쇠 · 주소 · 세션 표식을 넘기지 않는다).
+//   · **레지스트리를 읽지도 쓰지도 않는다.** 클로드는 `--chrome` 으로 뜰 때 HKCU 의 브라우저 연동 등록을 건드릴 수
+//     있어서 그 인수를 빼고 띄운다(claudeArgs 의 설명).
 //   · 에이전트 심(shims\claude.cmd · codex.cmd)은 쓰지 않는다 — 심은 살아 있는 중계기 주소를 박아 넣는다.
 //     같은 까닭으로 config.toml 의 중계기 주소만 죽은 주소로 바꾼다(그 밖의 글자는 설치기가 쓴 그대로).
 //   · 로그인하지 않는다. 열쇠는 형식만 갖춘 가짜다. 프로세스는 이 스크립트가 띄운 PID 만 PID 로 끝낸다.
-//   · 돌릴 수 없는 한 곳 = 레지스트리: 클로드가 `--chrome` 으로 건드릴 수 있는 HKCU 브라우저 연동 등록은 떠 두었다가
-//     달라진 자리만 되돌린다(아래 「브라우저 연동 등록 지키기」).
-//   · 종료 코드: 0 = 본 것 전부 통과 · 1 = 실패 · 2 = 준비물(창의 가상 터미널 · CLI)이 없어 못 본 에이전트가 있음.
+//   · 정리 순서 = 자식 종료 → 폴더 정리(예외가 나도 finally 로). 자식이 끝나지 않았으면 폴더를 지우지 않고 실패로 끝낸다.
+//
+// 종료 코드:
+//   0 = 잠금 판 검증 통과(본 에이전트 전부: 판 일치 · 가라앉음 · 판정 전부 · 자식 종료 · 폴더 정리)
+//   1 = 실패(판정 실패 · 띄울 판이 잠금표와 다름 · 자식이 끝나지 않음 · 작업 폴더를 지우지 못함 · 예외)
+//   2 = 준비물이 없어 못 본 에이전트가 있음(창의 가상 터미널 · CLI · 판을 읽지 못함) — 통과로 읽지 않는다
+//   3 = 견주기(`--compare`)로 돌았고 본 것은 전부 맞음 — 다른 판 · 대조군을 보는 용도이며 잠금 판 검증이 아니다
 //
 // Usage:
 //   node verify/firstrun-probe.mjs [--agent claude|codex|both] [--face <IRIS 창 소스 폴더>]
-//        [--claude-exe <claude.exe>] [--codex-cmd <codex.cmd>] [--work <dir>] [--log-dir <dir>] [--label <이름>]
-//        [--control no-nudges|no-permissions] [--codex-auth apikey|chatgpt] [--keep]
-//   인수 없이 = 잠금표의 두 CLI. 클로드는 설치기 함수로 내려받고(인터넷 필요), 코덱스는 빌드 캐시
-//   (_build/cache/npm/codex — 판이 잠금표와 같을 때)를 쓴다. 준비물이 없어 못 본 에이전트가 있으면 종료 코드 2.
+//        [--claude-exe <claude.exe>] [--codex-cmd <codex.cmd>] [--work <dir>] [--log-dir <dir>] [--label <이름>] [--keep]
+//        [--compare] [--control no-nudges|no-permissions] [--codex-auth apikey|chatgpt]
+//   인수 없이 = 잠금 판 검증: 잠금표의 두 CLI. 클로드는 설치기 함수로 내려받고(인터넷 필요), 코덱스는 빌드 캐시
+//   (_build/cache/npm/codex — 판이 잠금표와 같을 때)를 쓴다. `--claude-exe` · `--codex-cmd` 로 준 것도 잠금 판이어야 한다.
+//   --compare = 잠금표와 다른 판을 견줘 본다(판 일치를 요구하지 않음). --control(씨앗을 뺀 대조군) · --codex-auth chatgpt 는
+//   언제나 견주기다.
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -145,6 +163,8 @@ export function judgeClaude(obs) {
   const final = obs.final ?? classifyScreen([]);
   const all = obs.timelineText ?? '';
   const dialogs = findDialogs(all, 'claude');
+  // 관측이 끝났어야 판정이다: 입력 칸이 보여도 출력이 멈추지 않아 한도 시간에 닿았으면 "가라앉은 첫 화면"을 본 것이 아니다.
+  add('⓪ 첫 화면이 가라앉음(관측 완료)', obs.settled === true, `settled=${obs.settled === true} ms=${obs.ms ?? '-'}`);
   add('① 살아 있음', obs.alive && !obs.exited, `pid=${obs.pid ?? '-'} exited=${!!obs.exited}${obs.exited ? ` code=${obs.exitCode}` : ''}`);
   add('② 묻는 창 없이 입력 칸까지', final.status === 'idle' && final.promptNear && !final.attention, `status=${final.status} emptyPrompt=${final.promptNear} attention=${final.attention}`);
   add('③ 시작 안내창 없음', dialogs.length === 0, dialogs.length ? `떴음: ${dialogs.join(', ')}` : '0');
@@ -158,6 +178,7 @@ export function judgeClaude(obs) {
   if (obs.expectHookCall) add('⑦ 시작 훅이 실제로 불림', (obs.hookCalls ?? 0) > 0, `훅 호출 ${obs.hookCalls ?? 0}회`);
   add('⑧ 기록 저장 꺼짐 표시 없음', !/Transcript saving is off/i.test(all), /Transcript saving is off/i.test(all) ? '세션 표식이 자식 환경에 샜다' : 'ok');
   if (obs.expectDefaultMode !== undefined) add('⑨ 설정의 기본 권한이 씨앗 그대로', obs.defaultModeAfter === obs.expectDefaultMode, `settings.json permissions.defaultMode=${obs.defaultModeAfter ?? '없음'}`);
+  if (obs.childGone !== undefined) add('⑩ 띄운 프로세스가 끝남', obs.childGone === true, `pid=${obs.pid ?? '-'} stop=${obs.stopped ?? '-'}`);
   return out;
 }
 
@@ -167,6 +188,7 @@ export function judgeCodex(obs) {
   const final = obs.final ?? classifyScreen([]);
   const all = obs.timelineText ?? '';
   const dialogs = findDialogs(all, 'codex');
+  add('⓪ 첫 화면이 가라앉음(관측 완료)', obs.settled === true, `settled=${obs.settled === true} ms=${obs.ms ?? '-'}`);
   add('① 살아 있음', obs.alive && !obs.exited, `pid=${obs.pid ?? '-'} exited=${!!obs.exited}${obs.exited ? ` code=${obs.exitCode}` : ''}`);
   add('② 묻는 창 없이 입력 칸까지', final.status === 'idle' && !final.attention && !final.updatePrompt && /(^|\n)\s*(›|»)(\s|$)/.test(final.tail ?? ''),
     `status=${final.status} attention=${final.attention} updatePrompt=${final.updatePrompt}`);
@@ -183,6 +205,7 @@ export function judgeCodex(obs) {
   const removed = obs.configDiff?.removed ?? [];
   add('⑤ 설치기가 쓴 설정 줄을 CLI 가 지우지 않음', removed.length === 0,
     removed.length ? `없어진 줄: ${removed.slice(0, 3).join(' | ')}` : `ok${obs.configChanged ? ` (CLI 가 더한 줄 ${(obs.configDiff?.added ?? []).length})` : ''}`);
+  if (obs.childGone !== undefined) add('⑥ 띄운 프로세스가 끝남', obs.childGone === true, `pid=${obs.pid ?? '-'} stop=${obs.stopped ?? '-'}`);
   return { checks: out, warnings: startup, mcpArtifacts: mcp, warningBadge: badge };
 }
 
@@ -223,7 +246,8 @@ export const ENV_PASS = Object.freeze(['SystemRoot', 'SystemDrive', 'windir', 'C
   'CommonProgramFiles(x86)', 'CommonProgramW6432', 'PUBLIC', 'ALLUSERSPROFILE', 'DriverData']);
 
 /**
- * isolatedEnv -- 새 PC 꼴의 자식 환경. 설정 · 홈 · 임시 폴더는 전부 home(작업 폴더 안)으로, 나가는 길은 전부 죽은 주소로.
+ * isolatedEnv -- 새 PC 꼴의 자식 환경. 설정 · 홈 · 임시 폴더는 전부 home(작업 폴더 안)으로, API 주소와 프록시 변수는 전부
+ * 죽은 주소로(환경 변수로 주는 것이다 — 이 변수를 따르지 않는 연결까지 막는 장치는 아니다).
  * PATH = 영혼의 심 · node + 윈도 기본 폴더(= Git 을 깐 적 없는 PC).
  */
 export function isolatedEnv({ root, home, deadUrl, base = process.env, extra = {} }) {
@@ -423,16 +447,14 @@ export function pipeDriver() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-// 이 스크립트가 어떤 까닭으로든 죽을 때 남기지 않을 것 둘: 띄운 CLI(자기 PID) · 떠 둔 브라우저 연동 등록.
+// 이 스크립트가 어떤 까닭으로든 죽을 때 띄운 CLI(자기 PID)를 남기지 않는다.
 const ownPids = new Set();
-let pendingRegistry = null; // { snapshot, dir }
 let exitGuardOn = false;
 function armExitGuard() {
   if (exitGuardOn) return;
   exitGuardOn = true;
   process.on('exit', () => {
     for (const pid of ownPids) { try { endOwnPid(pid); } catch { /* */ } }
-    if (pendingRegistry) { try { restoreNativeHosts(pendingRegistry.snapshot, pendingRegistry.dir); } catch { /* */ } }
   });
   process.on('uncaughtException', (e) => { console.error(`firstrun-probe ERROR ${e?.stack || e}`); process.exit(EXIT.failed); });
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(sig, () => process.exit(EXIT.failed));
@@ -446,25 +468,40 @@ export function endOwnPid(pid) {
 
 /**
  * watchFirstScreen -- CLI 를 띄워 첫 화면이 가라앉을 때까지 본다(아무것도 입력하지 않는다).
- * 가라앉음 = 출력이 quietMs 동안 멈췄고 화면 판정이 busy 가 아님(최소 minMs, 최대 maxMs). 끝내지는 않는다 — 부른 쪽이 stop().
+ * 가라앉음 = 출력이 quietMs 동안 멈췄고 화면 판정이 busy 가 아님(최소 minMs, 최대 maxMs). 한도에 닿으면 settled=false —
+ * 그 관측은 통과가 될 수 없다(판정 ⓪). 끝내지는 않는다 — 부른 쪽이 stop() 을 부른다(probe* 가 finally 로 보장).
+ * 보는 도중에 무엇이 던지면 띄운 프로세스를 끝낸 뒤 다시 던진다. kill = 끝내는 함수(시험이 "끝내기 실패"를 흉내 낼 때 바꾼다).
  */
-export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUILTIN_SCREEN_RE, cols = 120, rows = 36, quietMs = 6000, minMs = 10000, maxMs = 90000, tickMs = 400 }) {
+export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUILTIN_SCREEN_RE, cols = 120, rows = 36, quietMs = 6000, minMs = 10000, maxMs = 90000, tickMs = 400, kill = endOwnPid, stopWaitMs = 5000 }) {
   const t0 = Date.now();
   armExitGuard();
   const term = driver.open({ file, args, cwd, env, cols, rows });
   if (term.state.pid) ownPids.add(term.state.pid);
+  const stop = async () => {
+    const how = kill(term.state.pid);
+    for (let waited = 0; waited < stopWaitMs && pidAlive(term.state.pid); waited += 200) await sleep(200);
+    term.dispose();
+    const gone = !pidAlive(term.state.pid);
+    if (gone) ownPids.delete(term.state.pid);
+    return gone ? how : 'failed';
+  };
   const timeline = [];
   let last = null; let final = classifyScreen([], re); let settled = false;
-  for (;;) {
-    await sleep(tickMs);
-    const lines = (await term.lines()).map((l) => l.replace(/\s+$/, ''));
-    const text = lines.join('\n').replace(/\n+$/, '');
-    final = classifyScreen(lines, re);
-    if (text !== last) { timeline.push({ t: Date.now() - t0, status: final.status, text }); last = text; }
-    const now = Date.now();
-    if (term.state.exited) break;
-    if (now - t0 >= minMs && now - term.state.lastOutputAt >= quietMs && final.status !== 'busy') { settled = true; break; }
-    if (now - t0 >= maxMs) break;
+  try {
+    for (;;) {
+      await sleep(tickMs);
+      const lines = (await term.lines()).map((l) => l.replace(/\s+$/, ''));
+      const text = lines.join('\n').replace(/\n+$/, '');
+      final = classifyScreen(lines, re);
+      if (text !== last) { timeline.push({ t: Date.now() - t0, status: final.status, text }); last = text; }
+      const now = Date.now();
+      if (term.state.exited) break;
+      if (now - t0 >= minMs && now - term.state.lastOutputAt >= quietMs && final.status !== 'busy') { settled = true; break; }
+      if (now - t0 >= maxMs) break;
+    }
+  } catch (e) {
+    await stop().catch(() => {});
+    throw e;
   }
   const allLines = [...new Set(timeline.flatMap((s) => s.text.split('\n')))];
   const rawAtSettle = term.state.raw;
@@ -478,59 +515,8 @@ export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUIL
       await sleep(waitMs);
       return (await term.lines()).map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim());
     },
-    stop: async () => {
-      const how = endOwnPid(term.state.pid);
-      for (let i = 0; i < 25 && pidAlive(term.state.pid); i++) await sleep(200);
-      term.dispose();
-      if (!pidAlive(term.state.pid)) ownPids.delete(term.state.pid);
-      return how;
-    },
+    stop,
   };
-}
-
-// ---------------------------------------------------------------------------
-// 브라우저 연동 등록 지키기
-// ---------------------------------------------------------------------------
-// 클로드는 `--chrome`(창이 늘 넘기는 인수)으로 뜰 때 브라우저 연동 안내 파일을 %APPDATA% 에 쓰고 그 경로를
-// HKCU\Software\<브라우저>\NativeMessagingHosts\<이름> 에 등록한다(2.1.326 실행 파일의 표에서 읽은 일곱 자리).
-// 환경 변수는 임시 폴더로 돌릴 수 있지만 레지스트리는 돌릴 수 없다 — 그대로 두면 이 PC 의 진짜 등록이 곧 지워질
-// 임시 경로를 가리키게 된다. 그래서 띄우기 전에 그 자리들을 파일로 떠 두고(reg export), 끝난 뒤 달라진 자리만
-// 원래대로 돌린다(있던 값 = reg import, 없던 키 = 그 키 하나만 지움). 다른 이름의 키는 읽지도 쓰지도 않는다.
-export const NATIVE_HOST_NAME = 'com.anthropic.claude_code_browser_extension';
-export const NATIVE_HOST_PARENTS = Object.freeze([
-  'HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts',
-  'HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts',
-  'HKCU\\Software\\ArcBrowser\\Arc\\NativeMessagingHosts',
-  'HKCU\\Software\\Chromium\\NativeMessagingHosts',
-  'HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts',
-  'HKCU\\Software\\Vivaldi\\NativeMessagingHosts',
-  'HKCU\\Software\\Opera Software\\Opera Stable\\NativeMessagingHosts',
-]);
-
-const regRun = (args) => { try { execFileSync('reg', args, { stdio: 'ignore', windowsHide: true }); return true; } catch { return false; } };
-
-/** 일곱 자리를 떠 둔다. -> [{ key, existed, file }] (file = 있던 값의 .reg 사본) */
-export function snapshotNativeHosts(dir, { run = regRun } = {}) {
-  fs.mkdirSync(dir, { recursive: true });
-  return NATIVE_HOST_PARENTS.map((parent, i) => {
-    const key = `${parent}\\${NATIVE_HOST_NAME}`;
-    const file = path.join(dir, `native-host-${i}.reg`);
-    const existed = run(['export', key, file, '/y']) && fs.existsSync(file);
-    return { key, existed, file: existed ? file : null };
-  });
-}
-
-/** 달라진 자리만 원래대로. -> [{ key, action: 'unchanged'|'restored'|'removed'|'restore-failed' }] */
-export function restoreNativeHosts(snapshot, dir, { run = regRun } = {}) {
-  return snapshot.map((s, i) => {
-    const now = path.join(dir, `native-host-${i}.after.reg`);
-    try { fs.rmSync(now, { force: true }); } catch { /* */ }
-    const exists = run(['export', s.key, now, '/y']) && fs.existsSync(now);
-    if (!s.existed) return { key: s.key, action: exists ? (run(['delete', s.key, '/f']) ? 'removed' : 'restore-failed') : 'unchanged' };
-    const same = exists && Buffer.compare(fs.readFileSync(now), fs.readFileSync(s.file)) === 0;
-    if (same) return { key: s.key, action: 'unchanged' };
-    return { key: s.key, action: run(['import', s.file]) ? 'restored' : 'restore-failed' };
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -544,28 +530,45 @@ function countHookCalls(hookLog) {
   try { return fs.readFileSync(hookLog, 'utf8').split(/\r?\n/).filter((l) => l.trim()).length; } catch { return 0; }
 }
 
-/** 클로드: 창과 같은 인수(--chrome --model --effort --settings <fast> --session-id). 권한 인수는 넘기지 않는다 — 설치기 씨앗이 혼자 버티는지 본다. */
+/**
+ * 클로드를 띄울 인수 — 창(daemon/agents/claude.mjs buildCommand)과 같되 **`--chrome` 만 뺀다.**
+ * `--chrome` 은 브라우저 연동을 켜는 인수이고, 클로드는 그 길에서 연동 안내 파일의 경로를
+ * HKCU\Software\<브라우저>\NativeMessagingHosts 아래에 등록할 수 있다(2.1.326 실행 파일의 표 = 브라우저 일곱 가지).
+ * 환경 변수는 임시 폴더로 돌릴 수 있어도 레지스트리는 못 돌린다 — 검사가 이 PC 의 진짜 등록에 닿을 길을 아예 두지 않는다.
+ * 뺀 값: 2.1.311 · 2.1.326 에서 넣고 본 첫 화면과 빼고 본 첫 화면이 같았다(씨앗이 있을 때 · 뺐을 때 둘 다, 검증기록 5-82).
+ * 잃는 것: 크롬 연동 안내창은 이 검사로 볼 수 없다(넣었을 때도 오프라인 첫 화면에서는 뜨지 않았다) — 실제 PC 시험의 몫.
+ * 권한 인수도 넘기지 않는다 — 설치기 씨앗이 혼자 버티는지 본다.
+ */
+export function claudeArgs({ model = 'claude-opus-5-5', effort = 'high', fastSettings, sessionId }) {
+  return ['--model', model, '--effort', effort, '--settings', fastSettings, '--session-id', sessionId];
+}
+
 export async function probeClaude({ root, exe, env, driver, re, model = 'claude-opus-5-5', effort = 'high', hookLog = null, launch = null, watch = {}, expectDefaultMode = undefined }) {
   const sessionId = crypto.randomUUID();
   const fast = path.join(root, '_probe', 'fast-mode.json');
   fs.mkdirSync(path.dirname(fast), { recursive: true });
   fs.writeFileSync(fast, `${JSON.stringify({ fastMode: true }, null, 2)}\n`, 'utf8');
-  const args = ['--chrome', '--model', model, '--effort', effort, '--settings', fast, '--session-id', sessionId];
+  const args = claudeArgs({ model, effort, fastSettings: fast, sessionId });
   const cmd = launch ?? { file: exe, args };
   const recordDir = path.join(env.CLAUDE_CONFIG_DIR, 'projects', claudeProjectSlug(root));
-  const obs = await watchFirstScreen({ driver, file: cmd.file, args: cmd.args, cwd: root, env, re, ...watch });
-  let records = [];
-  try { records = fs.readdirSync(recordDir).filter((f) => f.endsWith('.jsonl')); } catch { records = []; }
-  obs.sessionId = sessionId;
-  obs.expectedRecord = records.includes(`${sessionId}.jsonl`);
-  obs.foreignRecords = records.filter((f) => f !== `${sessionId}.jsonl`);
-  obs.hookCalls = hookLog ? countHookCalls(hookLog) : 0;
-  obs.expectHookCall = !!hookLog;
-  // 11/9 에는 수락된 권유가 settings.json 의 기본 권한을 auto 로 바꿔 저장했다 — 첫 화면 뒤에도 씨앗 값 그대로인지 본다.
-  try { obs.defaultModeAfter = JSON.parse(fs.readFileSync(claudeSettingsPath(root), 'utf8'))?.permissions?.defaultMode ?? null; } catch { obs.defaultModeAfter = undefined; }
-  obs.cmdline = [path.basename(cmd.file), ...cmd.args.map((a) => (a === fast ? '<fast-mode.json>' : a))].join(' ');
-  obs.expectDefaultMode = expectDefaultMode;
-  obs.stopped = await obs.stop();
+  let obs = null;
+  try {
+    obs = await watchFirstScreen({ driver, file: cmd.file, args: cmd.args, cwd: root, env, re, ...watch });
+    let records = [];
+    try { records = fs.readdirSync(recordDir).filter((f) => f.endsWith('.jsonl')); } catch { records = []; }
+    obs.sessionId = sessionId;
+    obs.expectedRecord = records.includes(`${sessionId}.jsonl`);
+    obs.foreignRecords = records.filter((f) => f !== `${sessionId}.jsonl`);
+    obs.hookCalls = hookLog ? countHookCalls(hookLog) : 0;
+    obs.expectHookCall = !!hookLog;
+    // 11/9 에는 수락된 권유가 settings.json 의 기본 권한을 auto 로 바꿔 저장했다 — 첫 화면 뒤에도 씨앗 값 그대로인지 본다.
+    try { obs.defaultModeAfter = JSON.parse(fs.readFileSync(claudeSettingsPath(root), 'utf8'))?.permissions?.defaultMode ?? null; } catch { obs.defaultModeAfter = undefined; }
+    obs.cmdline = [path.basename(cmd.file), ...cmd.args.map((a) => (a === fast ? '<fast-mode.json>' : a))].join(' ');
+    obs.expectDefaultMode = expectDefaultMode;
+  } finally {
+    // 무엇을 보다가 던졌든 띄운 프로세스부터 끝낸다. 끝났는지는 판정에 들어간다(⑩).
+    if (obs) { obs.stopped = await obs.stop().catch(() => 'failed'); obs.childGone = obs.stopped !== 'failed'; }
+  }
   obs.checks = judgeClaude(obs);
   return obs;
 }
@@ -577,65 +580,125 @@ export async function probeCodex({ root, cmdFile, env, driver, re, model = 'gpt-
   const before = read(toml);
   const args = ['-m', model, '-c', `model_reasoning_effort=${effort}`, '-c', 'service_tier=fast', '--dangerously-bypass-hook-trust'];
   const cmd = launch ?? { file: env.ComSpec || 'cmd.exe', args: ['/c', cmdFile, ...args] };
-  const obs = await watchFirstScreen({ driver, file: cmd.file, args: cmd.args, cwd: root, env, re, ...watch });
-  const after = read(toml);
-  obs.configChanged = before !== null && after !== before;
-  const lineSet = (t) => new Set(String(t ?? '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
-  const a = lineSet(before); const b = lineSet(after);
-  obs.configDiff = { added: [...b].filter((l) => !a.has(l)).slice(0, 20), removed: [...a].filter((l) => !b.has(l)).slice(0, 20) };
-  obs.cmdline = ['codex', ...args].join(' ');
-  // 코덱스는 시작 경고를 상태줄에 "⚠ N warnings · f2 to view" 로 접어 둔다. 판정에 쓸 화면은 이미 잡았으니,
-  // 살아 있으면 보기 키(F2)를 한 번 눌러 경고 글을 기록에 남긴다(무엇이 경고인지 사람이 읽게).
-  obs.warningView = null;
-  if (peekWarnings && obs.alive && /warnings? · f2 to view/i.test(obs.final.tail ?? '')) {
-    try {
-      const pages = [];
-      let page = await obs.peek('\x1bOQ');
-      const total = Math.min(Number((/Warnings · \d+ of (\d+)/.exec(page.join('\n')) || [])[1] ?? 1), 30);
-      pages.push(page);
-      for (let i = 1; i < total; i++) { page = await obs.peek('\x1b[C', 500); pages.push(page); }
-      // 쪽마다 머리(판 · 폴더 · 권한 줄)와 꼬리(키 안내)는 같다 — 경고 글만 남긴다.
-      obs.warningView = pages.map((p) => p.filter((l) => !/^\s*(>_ OpenAI Codex|~?\\|[A-Za-z]:\\|permissions:)/.test(l) && !/keep & next · esc dismiss/.test(l)).join('\n'));
-    } catch { obs.warningView = null; }
+  let obs = null;
+  try {
+    obs = await watchFirstScreen({ driver, file: cmd.file, args: cmd.args, cwd: root, env, re, ...watch });
+    const after = read(toml);
+    obs.configChanged = before !== null && after !== before;
+    const lineSet = (t) => new Set(String(t ?? '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
+    const a = lineSet(before); const b = lineSet(after);
+    obs.configDiff = { added: [...b].filter((l) => !a.has(l)).slice(0, 20), removed: [...a].filter((l) => !b.has(l)).slice(0, 20) };
+    obs.cmdline = ['codex', ...args].join(' ');
+    // 코덱스는 시작 경고를 상태줄에 "⚠ N warnings · f2 to view" 로 접어 둔다. 판정에 쓸 화면은 이미 잡았으니,
+    // 살아 있으면 보기 키(F2)를 한 번 눌러 경고 글을 기록에 남긴다(무엇이 경고인지 사람이 읽게).
+    obs.warningView = null;
+    if (peekWarnings && obs.alive && /warnings? · f2 to view/i.test(obs.final.tail ?? '')) {
+      try {
+        const pages = [];
+        let page = await obs.peek('\x1bOQ');
+        const total = Math.min(Number((/Warnings · \d+ of (\d+)/.exec(page.join('\n')) || [])[1] ?? 1), 30);
+        pages.push(page);
+        for (let i = 1; i < total; i++) { page = await obs.peek('\x1b[C', 500); pages.push(page); }
+        // 쪽마다 머리(판 · 폴더 · 권한 줄)와 꼬리(키 안내)는 같다 — 경고 글만 남긴다.
+        obs.warningView = pages.map((p) => p.filter((l) => !/^\s*(>_ OpenAI Codex|~?\\|[A-Za-z]:\\|permissions:)/.test(l) && !/keep & next · esc dismiss/.test(l)).join('\n'));
+      } catch { obs.warningView = null; }
+    }
+  } finally {
+    if (obs) { obs.stopped = await obs.stop().catch(() => 'failed'); obs.childGone = obs.stopped !== 'failed'; }
   }
-  obs.stopped = await obs.stop();
   const j = judgeCodex(obs);
   obs.checks = j.checks; obs.warnings = j.warnings; obs.mcpArtifacts = j.mcpArtifacts; obs.warningBadge = j.warningBadge;
   return obs;
 }
 
-/** `--version` 한 줄(네트워크 없음 · 격리 환경 · 스스로 끝난다). 못 읽으면 null. */
+/** `--version` 한 줄(죽은 주소를 준 격리 환경에서 · 스스로 끝난다). 못 읽으면 null. */
 export function cliVersion(file, args, env) {
   try { return execFileSync(file, args, { env, encoding: 'utf8', timeout: 30000, windowsHide: true }).trim().split(/\r?\n/).pop(); } catch { return null; }
+}
+
+/** `--version` 출력에서 판 번호만("2.1.326 (Claude Code)" · "codex-cli 0.172.0" -> "2.1.326" · "0.172.0"). 없으면 null. */
+export function parseCliVersion(text) {
+  const m = /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)/.exec(String(text ?? ''));
+  return m ? m[1] : null;
+}
+
+/**
+ * 띄우려는 실행 파일이 잠금표의 판인가. 잠금 판 재현에서는 이것이 맞아야만 통과가 될 수 있다 —
+ * 화면이 아무리 깨끗해도 다른 판을 본 것은 잠금 판을 본 것이 아니다.
+ *   -> { state: 'match'|'mismatch'|'unreadable'|'no-lock', actual, expected }
+ */
+export function checkLockVersion(versionText, expected) {
+  const actual = parseCliVersion(versionText);
+  if (!expected) return { state: 'no-lock', actual, expected: null };
+  if (!actual) return { state: 'unreadable', actual: null, expected: String(expected) };
+  return { state: actual === String(expected) ? 'match' : 'mismatch', actual, expected: String(expected) };
+}
+
+/**
+ * 판 확인 결과 -> 띄울지 말지. 잠금 판 검증에서는 판이 맞을 때만 띄운다. 견주기(compare)에서는 판을 요구하지 않는다.
+ *   -> { launch: true } | { launch: false, state: 'failed'|'skipped', detail }
+ */
+export function decideLaunch(gate, { compare = false } = {}) {
+  if (compare || gate.state === 'match') return { launch: true };
+  if (gate.state === 'mismatch') return { launch: false, state: 'failed', detail: `실행 파일은 ${gate.actual}, 잠금표는 ${gate.expected} — 다른 판을 견주려면 --compare(그 결과는 잠금 판 검증이 아니다)` };
+  if (gate.state === 'no-lock') return { launch: false, state: 'skipped', detail: '잠금표에서 이 부품의 판을 읽지 못함' };
+  return { launch: false, state: 'skipped', detail: `실행 파일의 판을 읽지 못함(--version) — 잠금 판(${gate.expected})인지 알 수 없어 띄우지 않는다` };
+}
+
+/**
+ * 실행마다 새 작업 폴더. 받은 경로(base) 자체는 만들기만 하고 **지우지 않는다** — 그 안에 이번 실행의 폴더를 새로 만들고,
+ * 정리할 때도 그 폴더 하나만 지운다(base 에 있던 다른 자료 · 동시에 도는 다른 실행의 폴더는 건드리지 않는다).
+ */
+export function makeRunDir(base) {
+  fs.mkdirSync(base, { recursive: true });
+  return fs.mkdtempSync(path.join(base, 'run-'));
+}
+
+/** makeRunDir 가 만든 폴더 하나를 지운다. -> { removed: boolean, error?: string } (모양이 다른 경로는 지우지 않는다) */
+export function removeRunDir(dir) {
+  if (!dir || !/^run-[A-Za-z0-9]{6}$/.test(path.basename(dir))) return { removed: false, error: 'not a run folder made by this script' };
+  try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 }); } catch (e) { return { removed: false, error: String(e?.message || e) }; }
+  return fs.existsSync(dir) ? { removed: false, error: 'still exists' } : { removed: true };
 }
 
 // ---------------------------------------------------------------------------
 // 실행
 // ---------------------------------------------------------------------------
 
-export const EXIT = Object.freeze({ ok: 0, failed: 1, skipped: 2 });
+// 3 = 견주기(--compare)로 돌았고 본 것은 전부 맞았다 — 그래도 "잠금 판 검증 통과"(0)가 아니다.
+export const EXIT = Object.freeze({ ok: 0, failed: 1, skipped: 2, compare: 3 });
 
 export function parseArgs(argv) {
-  const o = { agent: 'both', face: null, claudeExe: null, codexCmd: null, work: null, logDir: null, label: null, control: null, codexAuth: 'apikey', keep: false };
+  const o = { agent: 'both', face: null, claudeExe: null, codexCmd: null, work: null, logDir: null, label: null, control: null, codexAuth: 'apikey', keep: false, compare: false };
   const take = { '--agent': 'agent', '--face': 'face', '--claude-exe': 'claudeExe', '--codex-cmd': 'codexCmd', '--work': 'work', '--log-dir': 'logDir', '--label': 'label', '--control': 'control', '--codex-auth': 'codexAuth' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--keep') o.keep = true;
+    else if (a === '--compare') o.compare = true;
     else if (take[a]) { if (argv[i + 1] === undefined) throw new Error(`${a} 뒤에 값이 없습니다`); o[take[a]] = argv[++i]; }
     else throw new Error(`모르는 인수: ${a}`);
   }
   if (!['claude', 'codex', 'both'].includes(o.agent)) throw new Error(`--agent 는 claude | codex | both (${o.agent})`);
   if (o.control && !['no-nudges', 'no-permissions'].includes(o.control)) throw new Error(`--control 은 no-nudges | no-permissions (${o.control})`);
   if (!['apikey', 'chatgpt'].includes(o.codexAuth)) throw new Error(`--codex-auth 는 apikey | chatgpt (${o.codexAuth})`);
+  // 대조군(씨앗을 뺌) · 로그인 꼴 대조는 잠금 판 검증이 아니다 — 견주기로만 돈다.
+  if (o.control || o.codexAuth !== 'apikey') o.compare = true;
   return o;
 }
 
-/** 결과 묶음 -> 종료 코드. 실패가 하나라도 있으면 1, 실패는 없는데 못 본 에이전트가 있으면 2(조용한 통과 금지), 전부 봤고 전부 통과면 0. */
-export function exitCodeOf(results) {
+/**
+ * 결과 묶음 -> 종료 코드.
+ *   1 = 실패가 하나라도 있다 / 작업 폴더를 지우지 못했다(무엇인가 파일을 쥐고 있다 — 끝나지 않은 자식일 수 있다)
+ *   2 = 실패는 없는데 못 본 에이전트가 있다(조용한 통과 금지) · 아무것도 못 봤다
+ *   3 = 견주기(--compare): 본 것은 전부 맞았지만 잠금 판 검증이 아니다
+ *   0 = 잠금 판을 전부 봤고 전부 통과
+ */
+export function exitCodeOf(results, { compare = false, cleanupFailed = false } = {}) {
   const list = Object.values(results);
   if (list.some((r) => r.state === 'failed')) return EXIT.failed;
+  if (cleanupFailed) return EXIT.failed;
   if (list.length === 0 || list.some((r) => r.state === 'skipped')) return EXIT.skipped;
-  return EXIT.ok;
+  return compare ? EXIT.compare : EXIT.ok;
 }
 
 function summarizeHits(hits) {
@@ -655,16 +718,21 @@ async function main(argv) {
   const log = (m) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${m}`);
   const opt = parseArgs(argv);
   const lock = readLock({ zipRoot: REPO });
-  const work = path.resolve(opt.work ?? path.join(REPO, '_build', 'firstrun-probe'));
+  const lockVer = { claude: lock?.parts?.claude?.version ?? null, codex: lock?.parts?.codex?.version ?? null };
+  const workBase = path.resolve(opt.work ?? path.join(REPO, '_build', 'firstrun-probe'));
   const logDir = path.resolve(opt.logDir ?? path.join(REPO, '_build', 'firstrun-probe-logs'));
-  const label = opt.label ?? 'lock';
+  const label = opt.label ?? (opt.compare ? 'compare' : 'lock');
   const want = opt.agent === 'both' ? ['claude', 'codex'] : [opt.agent];
   const results = {};
   const skip = (agent, reason) => { results[agent] = { state: 'skipped', reason }; console.log(`SKIP ${agent} -- ${reason}`); };
+  const fail = (agent, name, detail) => { results[agent] = { state: 'failed', reason: `${name}: ${detail}` }; console.log(`FAIL ${agent} ${name} -- ${detail}`); };
 
-  fs.rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
-  fs.mkdirSync(work, { recursive: true });
+  // 받은 경로는 지우지 않는다 — 그 아래에 이번 실행의 폴더를 새로 만들고 그 폴더만 정리한다.
+  const work = makeRunDir(workBase);
   fs.mkdirSync(logDir, { recursive: true });
+  console.log(opt.compare
+    ? 'mode: 견주기(--compare) — 이 실행의 결과는 "잠금 판 검증 통과"가 아니다'
+    : `mode: 잠금 판 검증 (claude ${lockVer.claude ?? '-'} · codex ${lockVer.codex ?? '-'})`);
 
   const faceDir = resolveFaceDir({ arg: opt.face, lock });
   const driver = loadPtyDriver(faceDir);
@@ -674,58 +742,57 @@ async function main(argv) {
   const dead = await startDeadServer();
   const root = path.join(work, 'soul');
   const home = path.join(work, 'home');
-  let seeded = null;
   let keepWork = opt.keep;
-  const out = { at: new Date().toISOString(), label, lock: { claude: lock?.parts?.claude?.version ?? null, codex: lock?.parts?.codex?.version ?? null },
+  let cleanup = { state: 'pending' };
+  const out = { at: new Date().toISOString(), label, mode: opt.compare ? 'compare' : 'lock', lock: lockVer,
     control: opt.control, screenRules: { source: screenRe.source, drift: screenRe.drift, missing: screenRe.missing }, agents: {} };
+
+  // 띄우려는 실행 파일의 판을 잠금표와 견준다. 잠금 판 검증에서는 맞을 때만 띄운다(false 를 돌려주면 띄우지 않는다).
+  const versionGate = (agent, versionText) => {
+    const gate = checkLockVersion(versionText, lockVer[agent]);
+    log(`${agent} ${versionText ?? '(판을 읽지 못함)'}${opt.compare ? ` (잠금표 ${lockVer[agent] ?? '-'} — 견주기)` : ''}`);
+    const d = decideLaunch(gate, { compare: opt.compare });
+    if (d.launch) return gate;
+    if (d.state === 'failed') fail(agent, 'ⓥ 띄울 판 = 잠금 판', d.detail); else skip(agent, d.detail);
+    return null;
+  };
+  const record = (agent, obs, gate, extra) => {
+    if (!opt.compare) obs.checks.unshift({ name: 'ⓥ 띄운 판 = 잠금 판', ok: true, detail: `${gate.actual}` });
+    const bad = obs.checks.filter((c) => !c.ok).length;
+    for (const c of obs.checks) console.log(`${c.ok ? 'OK  ' : 'FAIL'} ${agent} ${c.name} -- ${c.detail}`);
+    writeScreenLog(path.join(logDir, `${label}-${agent}.screen.txt`), `${agent} ${gate.actual ?? ''} (${label})`, obs);
+    fs.writeFileSync(path.join(logDir, `${label}-${agent}.raw.log`), obs.rawAtSettle, 'utf8');
+    results[agent] = { state: bad ? 'failed' : 'ok' };
+    if (obs.childGone === false) keepWork = true; // 끝나지 않은 자식이 있다 — 복구 자료(작업 폴더)를 지우지 않는다
+    out.agents[agent] = { version: gate.actual, lockVersion: lockVer[agent], versionState: gate.state, state: results[agent].state, cmdline: obs.cmdline, settled: obs.settled, ms: obs.ms,
+      final: { ...obs.final, tail: undefined }, finalTail: obs.final.tail, dialogs: findDialogs(obs.timelineText, agent), stopped: obs.stopped, childGone: obs.childGone, ...extra, checks: obs.checks };
+  };
+
   try {
     if (!driver.ok) { for (const a of want) skip(a, driver.reason); }
     else {
-      seeded = await seedSoul({ root, lock, deadUrl: dead.url, control: opt.control });
+      const seeded = await seedSoul({ root, lock, deadUrl: dead.url, control: opt.control });
       const env = isolatedEnv({ root, home, deadUrl: dead.url });
       log(`soul seeded (adapters.run): claude files ${seeded.recorded.claude.files.length}, codex files ${seeded.recorded.codex.files.length}; ${seeded.changed.join('; ')}`);
 
       if (want.includes('claude')) {
         let exe = opt.claudeExe ? path.resolve(opt.claudeExe) : null;
         if (!exe) {
+          // 준비 단계 — 여기서는 네트워크를 쓴다(설치기와 같은 함수 · 같은 지문 검증으로 잠금 판을 받는다).
           const dl = path.join(work, 'cli');
           fs.mkdirSync(path.join(dl, '_agent', 'setup'), { recursive: true });
-          log(`downloading Claude Code ${lock?.parts?.claude?.version} (lock) ...`);
+          log(`downloading Claude Code ${lockVer.claude} (lock) ...`);
           const got = await installClaude({ root: dl, nodeDir: path.dirname(process.execPath), lock, subscriptions: ['claude'], log: () => {} }).catch((e) => ({ ok: false, message: e?.message }));
-          if (got?.ok) exe = path.join(dl, '_agent', 'shared', 'tools', 'claude', String(got.version ?? lock.parts.claude.version), lock.parts.claude.binName ?? 'claude.exe');
+          if (got?.ok) exe = path.join(dl, '_agent', 'shared', 'tools', 'claude', String(got.version ?? lockVer.claude), lock.parts.claude.binName ?? 'claude.exe');
           else skip('claude', `잠금 판 Claude Code 를 받지 못함(${got?.code ?? got?.state ?? '-'} ${got?.message ?? ''}) — 인터넷을 확인하거나 --claude-exe`);
         }
         if (exe && !fs.existsSync(exe)) { skip('claude', `실행 파일이 없음: ${path.basename(exe)}`); exe = null; }
-        if (exe) {
-          const version = cliVersion(exe, ['--version'], env);
-          log(`claude ${version ?? '(판을 읽지 못함)'}`);
-          // 열쇠는 형식만 갖춘 가짜 — 죽은 주소 밖으로 나가지 않는다(창은 1년 열쇠가 있으면 같은 변수로 넘긴다).
-          const regDir = path.join(work, 'registry');
-          const snap = snapshotNativeHosts(regDir);
-          armExitGuard();
-          pendingRegistry = { snapshot: snap, dir: regDir };
-          let obs; let restored = [];
-          try {
-            obs = await probeClaude({ root, exe, env: { ...env, CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-firstrun-probe-not-a-real-key' }, driver, re: screenRe.re, hookLog: seeded.hookLog,
-              expectDefaultMode: opt.control === 'no-permissions' ? undefined : CLAUDE_MAX_PERMISSIONS.permissions.defaultMode });
-          } finally {
-            restored = restoreNativeHosts(snap, regDir);
-            pendingRegistry = null;
-            const touched = restored.filter((r) => r.action !== 'unchanged');
-            if (touched.length) log(`browser-link registration put back: ${touched.map((r) => `${r.key.split('\\')[2]}=${r.action}`).join(', ')}`);
-            if (restored.some((r) => r.action === 'restore-failed')) {
-              keepWork = true;
-              console.log(`FAIL claude 브라우저 연동 등록을 원래대로 돌리지 못함 -- 작업 폴더를 남긴다. 손으로: reg import "<작업 폴더>\\registry\\native-host-N.reg"`);
-            }
-          }
-          obs.checks.push({ name: '⑩ 브라우저 연동 등록(HKCU)을 원래대로', ok: !restored.some((r) => r.action === 'restore-failed'), detail: restored.filter((r) => r.action !== 'unchanged').map((r) => `${r.key.split('\\')[2]}:${r.action}`).join(', ') || '달라진 자리 없음' });
-          const bad = obs.checks.filter((c) => !c.ok).length;
-          for (const c of obs.checks) console.log(`${c.ok ? 'OK  ' : 'FAIL'} claude ${c.name} -- ${c.detail}`);
-          writeScreenLog(path.join(logDir, `${label}-claude.screen.txt`), `claude ${version ?? ''} (${label})`, obs);
-          fs.writeFileSync(path.join(logDir, `${label}-claude.raw.log`), obs.rawAtSettle, 'utf8');
-          results.claude = { state: bad ? 'failed' : 'ok' };
-          out.agents.claude = { version, state: results.claude.state, cmdline: obs.cmdline, settled: obs.settled, ms: obs.ms, final: { ...obs.final, tail: undefined }, finalTail: obs.final.tail,
-            dialogs: findDialogs(obs.timelineText, 'claude'), expectedRecord: obs.expectedRecord, foreignRecords: obs.foreignRecords, hookCalls: obs.hookCalls, stopped: obs.stopped, checks: obs.checks };
+        const gate = exe ? versionGate('claude', cliVersion(exe, ['--version'], env)) : null;
+        if (gate) {
+          // 열쇠는 형식만 갖춘 가짜다(창은 1년 열쇠가 있으면 같은 변수로 넘긴다).
+          const obs = await probeClaude({ root, exe, env: { ...env, CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-firstrun-probe-not-a-real-key' }, driver, re: screenRe.re, hookLog: seeded.hookLog,
+            expectDefaultMode: opt.control === 'no-permissions' ? undefined : CLAUDE_MAX_PERMISSIONS.permissions.defaultMode });
+          record('claude', obs, gate, { expectedRecord: obs.expectedRecord, foreignRecords: obs.foreignRecords, hookCalls: obs.hookCalls });
         }
       }
 
@@ -734,39 +801,56 @@ async function main(argv) {
         if (!cmdFile) {
           const cache = path.join(REPO, '_build', 'cache', 'npm');
           let meta = null; try { meta = JSON.parse(fs.readFileSync(path.join(cache, 'codex.meta.json'), 'utf8')); } catch { meta = null; }
-          if (meta?.version && meta.version === lock?.parts?.codex?.version) cmdFile = path.join(cache, 'codex', 'codex.cmd');
-          else skip('codex', `빌드 캐시에 잠금 판 코덱스(${lock?.parts?.codex?.version})가 없음(있는 판: ${meta?.version ?? '없음'}) — build 를 한 번 돌리거나 --codex-cmd`);
+          if (meta?.version && meta.version === lockVer.codex) cmdFile = path.join(cache, 'codex', 'codex.cmd');
+          else skip('codex', `빌드 캐시에 잠금 판 코덱스(${lockVer.codex})가 없음(있는 판: ${meta?.version ?? '없음'}) — build 를 한 번 돌리거나 --codex-cmd`);
         }
         if (cmdFile && !fs.existsSync(cmdFile)) { skip('codex', `실행 꾸러미가 없음: ${path.basename(cmdFile)}`); cmdFile = null; }
-        if (cmdFile) {
+        const gate = cmdFile ? versionGate('codex', cliVersion(env.ComSpec || 'cmd.exe', ['/c', cmdFile, '--version'], env)) : null;
+        if (gate) {
           writeFakeCodexAuth(env.CODEX_HOME, opt.codexAuth);
-          const version = cliVersion(env.ComSpec || 'cmd.exe', ['/c', cmdFile, '--version'], env);
-          log(`codex ${version ?? '(판을 읽지 못함)'}`);
           const obs = await probeCodex({ root, cmdFile, env, driver, re: screenRe.re });
-          const bad = obs.checks.filter((c) => !c.ok).length;
-          for (const c of obs.checks) console.log(`${c.ok ? 'OK  ' : 'FAIL'} codex ${c.name} -- ${c.detail}`);
-          writeScreenLog(path.join(logDir, `${label}-codex.screen.txt`), `codex ${version ?? ''} (${label})`, obs);
           if (obs.warningView) fs.writeFileSync(path.join(logDir, `${label}-codex.warnings.txt`), `${obs.warningView.join('\n\n')}\n`, 'utf8');
-          fs.writeFileSync(path.join(logDir, `${label}-codex.raw.log`), obs.rawAtSettle, 'utf8');
-          results.codex = { state: bad ? 'failed' : 'ok' };
-          out.agents.codex = { version, state: results.codex.state, cmdline: obs.cmdline, settled: obs.settled, ms: obs.ms, final: { ...obs.final, tail: undefined }, finalTail: obs.final.tail,
-            dialogs: findDialogs(obs.timelineText, 'codex'), warningBadge: obs.warningBadge, warnings: obs.warnings, mcpArtifacts: obs.mcpArtifacts, configChanged: obs.configChanged, configDiff: obs.configDiff, stopped: obs.stopped, checks: obs.checks };
+          record('codex', obs, gate, { warningBadge: obs.warningBadge, warnings: obs.warnings, mcpArtifacts: obs.mcpArtifacts, configChanged: obs.configChanged, configDiff: obs.configDiff });
         }
       }
     }
+  } catch (e) {
+    // 관측 · 판정 · 기록 중에 던진 것은 실패다. 띄운 프로세스는 probe* 의 finally 가 이미 끝냈다(못 끝냈으면 아래에서 잡힌다).
+    results.error = { state: 'failed', reason: String(e?.message || e) };
+    console.log(`FAIL firstrun-probe 예외 -- ${e?.stack || e}`);
   } finally {
-    await dead.close();
+    // 정리 순서: ① 자식 종료(probe* 의 finally — 여기서는 남은 것이 있는지 확인) → ② 폴더 정리. 자식이 남았으면 폴더를 지우지 않는다.
+    await dead.close().catch(() => {});
+    const left = [...ownPids].filter((pid) => pidAlive(pid));
+    if (left.length) {
+      keepWork = true;
+      results.children = { state: 'failed', reason: `띄운 프로세스가 끝나지 않음 pid=${left.join(',')}` };
+      console.log(`FAIL firstrun-probe 띄운 프로세스가 끝나지 않음 -- pid=${left.join(',')} (작업 폴더를 남긴다)`);
+    }
+    if (keepWork) cleanup = { state: 'kept', path: work };
+    else {
+      await sleep(500);
+      const r = removeRunDir(work);
+      cleanup = r.removed ? { state: 'removed' } : { state: 'failed', path: work, error: r.error };
+    }
     out.deadServer = { requests: dead.hits.length, byTarget: summarizeHits(dead.hits) };
     out.results = results;
-    out.exitCode = exitCodeOf(results);
-    fs.writeFileSync(path.join(logDir, `${label}.json`), `${JSON.stringify(out, null, 2)}\n`, 'utf8');
-    if (!keepWork) { await sleep(500); try { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 }); } catch (e) { log(`could not remove ${path.basename(work)}: ${e?.message}`); } }
+    out.cleanup = cleanup;
+    out.exitCode = exitCodeOf(results, { compare: opt.compare, cleanupFailed: cleanup.state === 'failed' });
+    try { fs.writeFileSync(path.join(logDir, `${label}.json`), `${JSON.stringify(out, null, 2)}\n`, 'utf8'); } catch (e) { console.log(`WARN 결과 파일을 쓰지 못함 -- ${e?.message}`); }
   }
-  log(`dead address received ${dead.hits.length} request(s); logs -> ${path.relative(REPO, logDir) || logDir}`);
+  log(`dead address received ${dead.hits.length} request(s) from the CLI under observation; logs -> ${path.relative(REPO, logDir) || logDir}`);
+  if (cleanup.state === 'kept') console.log(`kept work folder: ${cleanup.path}`);
+  // 정리 실패는 통과로 덮지 않는다: 무엇인가 그 폴더의 파일을 쥐고 있다는 뜻이고(끝나지 않은 자식일 수 있다), 받은 실행 파일이 남는다.
+  if (cleanup.state === 'failed') console.log(`FAIL firstrun-probe 정리 -- 작업 폴더를 지우지 못함: ${cleanup.path} (${cleanup.error})`);
   const code = out.exitCode;
   const n = Object.values(results);
-  const word = code === EXIT.ok ? 'OK' : (code === EXIT.failed ? 'FAIL' : 'INCOMPLETE');
-  console.log(`firstrun-probe ${word} (ok ${n.filter((r) => r.state === 'ok').length} · failed ${n.filter((r) => r.state === 'failed').length} · skipped ${n.filter((r) => r.state === 'skipped').length})`);
+  const count = `ok ${n.filter((r) => r.state === 'ok').length} · failed ${n.filter((r) => r.state === 'failed').length} · skipped ${n.filter((r) => r.state === 'skipped').length}`;
+  const seen = Object.entries(out.agents).map(([a, o]) => `${a} ${o.version ?? '?'}`).join(' · ');
+  if (code === EXIT.ok) console.log(`firstrun-probe OK -- 잠금 판 검증 통과 (${seen}; ${count})`);
+  else if (code === EXIT.compare) console.log(`firstrun-probe COMPARE -- 본 것은 전부 맞음(${seen}; ${count}) · 잠금 판 검증이 아니다(종료 코드 ${EXIT.compare})`);
+  else if (code === EXIT.failed) console.log(`firstrun-probe FAIL (${seen || '본 것 없음'}; ${count})`);
+  else console.log(`firstrun-probe INCOMPLETE -- 못 본 에이전트가 있다(${count})`);
   return code;
 }
 

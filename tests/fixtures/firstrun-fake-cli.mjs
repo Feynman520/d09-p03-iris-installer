@@ -1,5 +1,7 @@
 // tests/firstrun-probe.test.mjs 가 쓰는 가짜 CLI. 실제 클로드 · 코덱스의 첫 화면 글(2026-11-27 재현에서 옮긴 줄)을
 // 장면별로 찍고 살아 있는다(끝내는 것은 시험 쪽 — 자기가 띄운 PID 로).
+// 이 가짜는 **고른 장면을 찍을 뿐 설정(씨앗)을 읽지 않는다** — 묶는 것은 "이런 화면이면 판정이 이렇게 난다"까지다.
+// "씨앗을 빼면 실제 CLI 의 화면이 이렇게 바뀐다"는 실제 CLI 로 손으로 돌린 대조 재현의 몫이다(검증기록 5-82).
 //   node firstrun-fake-cli.mjs <scene> [--dump <file>] [--ping]
 //     --dump  받은 환경 변수 이름과 인수를 파일에 적는다(격리 확인용 — 값은 주소 · 폴더만)
 //     --ping  ANTHROPIC_BASE_URL 로 요청 하나를 보내고 받은 상태 코드를 화면에 적는다(죽은 주소 확인용)
@@ -26,6 +28,7 @@ const SCENES = {
   'codex-update': ['  ✨ Update available! 0.0.1 -> 0.0.2', '', '› 1. Update now (runs `npm install -g @openai/codex`)', '  2. Skip', '  3. Skip until next version', '', '  enter continue · esc skip'],
   'codex-busy': [...CODEX_HEAD, '• Starting MCP servers (2/7): playwright, self-improve (3s • esc to interrupt)', '', '› Ask Codex to do anything'],
   'exit-early': ['Error: account/read failed: workspace routing discovery failed (code -32603)'],
+  'claude-chatty': [...CLAUDE_HEAD, '  loading plugins… 0', RULE, '❯', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'],
 };
 
 const dump = flag('--dump');
@@ -44,7 +47,11 @@ if (flag('--ping')) {
 }
 
 if (scene === 'exit-early') setTimeout(() => process.exit(1), 100);
-else {
+else if (scene === 'claude-chatty') {
+  // 입력 칸은 계속 보이는데 출력이 멈추지 않는다(위쪽 한 줄이 계속 바뀐다) — "가라앉지 않는 첫 화면".
+  let n = 0;
+  setInterval(() => { n += 1; process.stdout.write(`${CLEAR}${[...CLAUDE_HEAD, `  loading plugins… ${n}`, RULE, '❯', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\r\n')}\r\n`); }, 120);
+} else {
   // 보기 키(F2)를 받으면 경고 쪽 하나를 보여 준다(코덱스 0.172.0 의 꼴).
   process.stdin.on('data', (d) => {
     if (String(d).includes('\x1bOQ')) process.stdout.write(`${CLEAR}  Warnings · 1 of 1 · Startup\r\n  \`[features].multi_agent\` is deprecated.\r\n  k keep & next · esc dismiss & close\r\n`);

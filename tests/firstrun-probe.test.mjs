@@ -1,6 +1,13 @@
 // verify/firstrun-probe.mjs 의 판정 논리 — 실제 CLI 없이(가짜 CLI · 가짜 화면) 돈다.
 // 실제 CLI 를 띄우는 재현은 배포 검사(`node verify/firstrun-probe.mjs`)의 몫이고, 여기서는 그 검사가
 // "깨끗한 화면은 통과시키고, 11/9 의 고장 화면은 잡는다"는 것과 격리 · 종료 코드 규칙을 묶는다.
+//
+// 이 파일이 묶는 범위(둘을 섞어 읽지 않는다):
+//   · 판정 논리 = 화면 · 관측값이 이러하면 통과 / 실패가 이렇게 난다(가짜 화면 · 장면을 고르는 가짜 CLI).
+//     실패 길도 여기서 묶는다: 판 불일치 · 판을 못 읽음 · 가라앉지 않음 · 자식이 끝나지 않음 · 보다가 던짐 · 폴더 정리.
+//   · 씨앗 = seedSoul 이 설치기 함수로 쓴 파일에 그 키가 있다 / 대조군은 그 키만 뺀다(파일 내용까지).
+//   · 묶지 **않는** 것 = "씨앗을 빼면 실제 CLI 의 화면이 바뀐다". 가짜 CLI 는 설정을 읽지 않는다 — 그 인과는
+//     실제 CLI 로 손으로 돌린 대조 재현(`--control`)의 기록이 근거다(자동 시험이 아니다, 검증기록 5-82).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,8 +18,9 @@ import {
   BUILTIN_SCREEN_RE, SCREEN_RE_NAMES, parseScreenRegexes, loadFaceScreenRegexes, classifyScreen, findDialogs,
   judgeClaude, judgeCodex, startDeadServer, isolatedEnv, leakedKeys, seedSoul, writeFakeCodexAuth, FAKE_LOGIN_EMAIL,
   pipeDriver, watchFirstScreen, probeClaude, probeCodex, endOwnPid, parseArgs, exitCodeOf, EXIT,
-  snapshotNativeHosts, restoreNativeHosts, NATIVE_HOST_PARENTS, NATIVE_HOST_NAME, claudeProjectSlug, resolveFaceDir, loadPtyDriver,
+  claudeArgs, parseCliVersion, checkLockVersion, decideLaunch, makeRunDir, removeRunDir, claudeProjectSlug, resolveFaceDir, loadPtyDriver,
 } from '../verify/firstrun-probe.mjs';
+import { spawnSync } from 'node:child_process';
 import { CLAUDE_START_NUDGES, claudeConfigJsonPath, claudeSettingsPath, codexConfigTomlPath } from '../installer/lib/firstrun.mjs';
 import { CODEX_RELAY_BASE_URL, CODEX_PROVIDER_ID } from '../installer/lib/shims.mjs';
 
@@ -108,8 +116,11 @@ test('사본 식 = 옆 폴더의 창 소스(있을 때만 본다) — 창이 식
 // 판정
 // ---------------------------------------------------------------------------
 
-const cleanClaude = (over = {}) => ({ alive: true, exited: false, pid: 1, final: classifyScreen(CLAUDE_IDLE), timelineText: CLAUDE_IDLE.join('\n'), allLines: CLAUDE_IDLE,
-  foreignRecords: [], expectedRecord: false, hookCalls: 1, expectHookCall: true, expectDefaultMode: 'bypassPermissions', defaultModeAfter: 'bypassPermissions', ...over });
+const cleanClaude = (over = {}) => ({ settled: true, ms: 10000, alive: true, exited: false, pid: 1, final: classifyScreen(CLAUDE_IDLE), timelineText: CLAUDE_IDLE.join('\n'), allLines: CLAUDE_IDLE,
+  foreignRecords: [], expectedRecord: false, hookCalls: 1, expectHookCall: true, expectDefaultMode: 'bypassPermissions', defaultModeAfter: 'bypassPermissions',
+  stopped: 'ended', childGone: true, ...over });
+const cleanCodex = (over = {}) => ({ settled: true, ms: 10000, alive: true, exited: false, pid: 1, final: classifyScreen(CODEX_IDLE), timelineText: CODEX_IDLE.join('\n'), allLines: CODEX_IDLE,
+  configDiff: { added: [], removed: [] }, configChanged: false, stopped: 'ended', childGone: true, ...over });
 const failed = (checks) => checks.filter((c) => !c.ok).map((c) => c.name.slice(0, 1));
 
 test('judgeClaude: 깨끗한 첫 화면은 전부 통과', () => {
@@ -126,6 +137,11 @@ test('judgeClaude: 고장마다 그 줄만 실패', () => {
   assert.deepEqual(failed(judgeClaude(cleanClaude({ timelineText: `${CLAUDE_IDLE.join('\n')}\nTranscript saving is off` }))), ['⑧']);
   assert.deepEqual(failed(judgeClaude(cleanClaude({ defaultModeAfter: 'auto' }))), ['⑨'], '설정의 기본 권한이 바뀜');
   assert.deepEqual(failed(judgeClaude(cleanClaude({ alive: false, exited: true, exitCode: 1 }))), ['①']);
+  // 화면은 깨끗한데 관측이 끝나지 않았다(한도 시간에 닿음) — 통과가 아니다
+  assert.deepEqual(failed(judgeClaude(cleanClaude({ settled: false, ms: 90000 }))), ['⓪']);
+  assert.deepEqual(failed(judgeClaude(cleanClaude({ settled: undefined }))), ['⓪'], '가라앉았다는 값이 없으면 통과가 아니다');
+  // 화면은 깨끗한데 띄운 프로세스를 끝내지 못했다 — 통과가 아니다
+  assert.deepEqual(failed(judgeClaude(cleanClaude({ stopped: 'failed', childGone: false }))), ['⑩']);
   // 훅 대역이 없으면(다른 영혼을 볼 때) ⑦ 은 묻지 않는다
   assert.ok(!judgeClaude(cleanClaude({ expectHookCall: false, hookCalls: 0 })).some((c) => c.name.startsWith('⑦')));
 });
@@ -133,19 +149,21 @@ test('judgeClaude: 고장마다 그 줄만 실패', () => {
 test('judgeCodex: 경고 배지는 막지 않으면 통과 — 시작 경고와 MCP 부산물을 갈라 센다', () => {
   const view = ['  Warnings · 1 of 3 · Startup\n  `bypass_hook_trust` is ignored.', '  Warnings · 2 of 3 · Startup\n  `[features].multi_agent` is deprecated. It still controls\n  the V1 fallback.',
     '  Warnings · 3 of 3 · MCP · playwright\n  MCP client for `playwright` failed to start'];
-  const ok = judgeCodex({ alive: true, exited: false, final: classifyScreen(CODEX_IDLE), timelineText: CODEX_IDLE.join('\n'), allLines: CODEX_IDLE, warningView: view, configDiff: { added: ['[tui]'], removed: [] }, configChanged: true });
+  const ok = judgeCodex(cleanCodex({ warningView: view, configDiff: { added: ['[tui]'], removed: [] }, configChanged: true }));
   assert.deepEqual(failed(ok.checks), []);
   assert.equal(ok.warningBadge, 12);
   assert.equal(ok.warnings.length, 2);
   assert.match(ok.warnings[1], /multi_agent.*deprecated\. It still controls the V1 fallback\./);
   assert.equal(ok.mcpArtifacts, 1);
 
-  const upd = judgeCodex({ alive: true, exited: false, final: classifyScreen(CODEX_UPDATE), timelineText: CODEX_UPDATE.join('\n'), allLines: CODEX_UPDATE });
+  const upd = judgeCodex(cleanCodex({ final: classifyScreen(CODEX_UPDATE), timelineText: CODEX_UPDATE.join('\n'), allLines: CODEX_UPDATE }));
   assert.deepEqual(failed(upd.checks), ['②', '③', '④'], '업데이트 물음이 입력 칸을 막는다');
-  const gone = judgeCodex({ alive: true, exited: false, final: classifyScreen(CODEX_IDLE), timelineText: '', allLines: CODEX_IDLE, configDiff: { added: [], removed: ['multi_agent = true'] }, configChanged: true });
+  const gone = judgeCodex(cleanCodex({ timelineText: '', configDiff: { added: [], removed: ['multi_agent = true'] }, configChanged: true }));
   assert.deepEqual(failed(gone.checks), ['⑤'], '설치기가 쓴 줄을 CLI 가 지웠다');
-  const dead = judgeCodex({ alive: false, exited: true, exitCode: 1, final: classifyScreen(['Error: account/read failed']), timelineText: '', allLines: [] });
+  const dead = judgeCodex(cleanCodex({ alive: false, exited: true, exitCode: 1, final: classifyScreen(['Error: account/read failed']), timelineText: '', allLines: [] }));
   assert.ok(failed(dead.checks).includes('①') && failed(dead.checks).includes('②'));
+  assert.deepEqual(failed(judgeCodex(cleanCodex({ settled: false })).checks), ['⓪'], '가라앉지 않은 관측은 통과가 아니다');
+  assert.deepEqual(failed(judgeCodex(cleanCodex({ stopped: 'failed', childGone: false })).checks), ['⑥'], '띄운 프로세스를 끝내지 못했다');
 });
 
 test('exitCodeOf: 실패 1 · 못 본 것이 있으면 2(조용한 통과 금지) · 전부 봤고 통과면 0', () => {
@@ -156,8 +174,93 @@ test('exitCodeOf: 실패 1 · 못 본 것이 있으면 2(조용한 통과 금지
   assert.notEqual(EXIT.skipped, 0); assert.notEqual(EXIT.skipped, EXIT.failed);
 });
 
+test('exitCodeOf: 견주기는 전부 맞아도 0 이 아니다(3) · 폴더 정리 실패는 통과를 실패로 바꾼다', () => {
+  const allOk = { claude: { state: 'ok' }, codex: { state: 'ok' } };
+  assert.equal(exitCodeOf(allOk, { compare: true }), EXIT.compare);
+  assert.ok(![0, EXIT.failed, EXIT.skipped].includes(EXIT.compare), '견주기의 코드는 통과 · 실패 · 못 봄과 겹치지 않는다');
+  assert.equal(exitCodeOf({ claude: { state: 'failed' } }, { compare: true }), EXIT.failed, '견주기에서도 실패는 실패');
+  assert.equal(exitCodeOf({ claude: { state: 'skipped' } }, { compare: true }), EXIT.skipped);
+  assert.equal(exitCodeOf(allOk, { cleanupFailed: true }), EXIT.failed);
+  assert.equal(exitCodeOf(allOk, { compare: true, cleanupFailed: true }), EXIT.failed);
+  // 끝나지 않은 자식 · 보다가 던진 것은 결과 묶음에 실패로 들어온다
+  assert.equal(exitCodeOf({ ...allOk, children: { state: 'failed' } }), EXIT.failed);
+  assert.equal(exitCodeOf({ ...allOk, error: { state: 'failed' } }), EXIT.failed);
+});
+
+test('판 일치: 잠금표와 같을 때만 띄운다 — 다르면 실패, 못 읽으면 못 봄(통과가 될 수 없다)', () => {
+  assert.equal(parseCliVersion('2.1.326 (Claude Code)'), '2.1.326');
+  assert.equal(parseCliVersion('codex-cli 0.172.0'), '0.172.0');
+  assert.equal(parseCliVersion('codex-cli 0.174.0-alpha.8'), '0.174.0-alpha.8');
+  assert.equal(parseCliVersion(null), null);
+  assert.equal(parseCliVersion('no digits here'), null);
+
+  const same = checkLockVersion('2.1.326 (Claude Code)', '2.1.326');
+  assert.deepEqual(same, { state: 'match', actual: '2.1.326', expected: '2.1.326' });
+  assert.deepEqual(decideLaunch(same), { launch: true });
+
+  const old = checkLockVersion('2.1.311 (Claude Code)', '2.1.326');
+  assert.equal(old.state, 'mismatch');
+  const d1 = decideLaunch(old);
+  assert.equal(d1.launch, false); assert.equal(d1.state, 'failed');
+  assert.match(d1.detail, /2\.1\.311.*2\.1\.326.*--compare/);
+  assert.deepEqual(decideLaunch(old, { compare: true }), { launch: true }, '견주기에서는 다른 판도 띄운다(결과는 잠금 판 검증이 아니다)');
+  assert.equal(checkLockVersion('0.172.0-alpha.1', '0.172.0').state, 'mismatch', '앞선 시험판은 같은 판이 아니다');
+
+  const unread = checkLockVersion(null, '2.1.326');
+  assert.equal(unread.state, 'unreadable');
+  const d2 = decideLaunch(unread);
+  assert.equal(d2.launch, false); assert.equal(d2.state, 'skipped');
+  const noLock = decideLaunch(checkLockVersion('2.1.326', null));
+  assert.equal(noLock.launch, false); assert.equal(noLock.state, 'skipped');
+  // 띄우지 않은 결과는 종료 코드로 간다
+  assert.equal(exitCodeOf({ claude: { state: d1.state } }), EXIT.failed);
+  assert.equal(exitCodeOf({ claude: { state: d2.state } }), EXIT.skipped);
+});
+
+test('claudeArgs: 창의 인수에서 --chrome 만 뺀다 · 이 스크립트는 레지스트리 도구를 부르지 않는다', () => {
+  const args = claudeArgs({ fastSettings: 'F', sessionId: 'S' });
+  assert.deepEqual(args, ['--model', 'claude-opus-5-5', '--effort', 'high', '--settings', 'F', '--session-id', 'S']);
+  assert.ok(!args.includes('--chrome'), '브라우저 연동 인수를 넘기지 않는다(HKCU 등록에 닿을 길을 두지 않는다)');
+  assert.ok(!args.some((a) => /permission/.test(a)), '권한 인수도 넘기지 않는다 — 씨앗이 혼자 버티는지 본다');
+  const src = fs.readFileSync(path.join(REPO, 'verify', 'firstrun-probe.mjs'), 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  assert.ok(!/['"`]reg(\.exe)?['"`]/.test(code), 'reg 를 실행하지 않는다');
+  assert.ok(!/HKCU|HKEY_|NativeMessagingHosts/.test(code), '레지스트리 경로를 코드에 두지 않는다(설명 글에만)');
+  assert.ok(!/['"`]--chrome['"`]/.test(code), '--chrome 을 인수로 만들지 않는다');
+});
+
+test('makeRunDir / removeRunDir: 받은 폴더는 지우지 않고, 실행마다 새 폴더를 만들어 그 폴더만 지운다', () => {
+  const base = path.join(tmp, 'workbase');
+  fs.mkdirSync(path.join(base, 'someone-elses'), { recursive: true });
+  fs.writeFileSync(path.join(base, 'keep-me.txt'), 'data');
+  fs.writeFileSync(path.join(base, 'someone-elses', 'x.txt'), 'data');
+  const a = makeRunDir(base); const b = makeRunDir(base);
+  assert.notEqual(a, b, '동시에 도는 실행끼리 폴더가 겹치지 않는다');
+  for (const d of [a, b]) { assert.equal(path.dirname(d), base); assert.match(path.basename(d), /^run-[A-Za-z0-9]{6}$/); }
+  fs.writeFileSync(path.join(a, 'f.txt'), '1');
+  assert.deepEqual(removeRunDir(a), { removed: true });
+  assert.ok(!fs.existsSync(a));
+  assert.ok(fs.existsSync(b), '다른 실행의 폴더는 그대로');
+  assert.equal(fs.readFileSync(path.join(base, 'keep-me.txt'), 'utf8'), 'data', '받은 폴더에 있던 자료는 그대로');
+  assert.ok(fs.existsSync(path.join(base, 'someone-elses', 'x.txt')));
+  // 자기가 만든 모양이 아닌 경로는 지우지 않는다
+  assert.equal(removeRunDir(base).removed, false);
+  assert.equal(removeRunDir(path.join(base, 'someone-elses')).removed, false);
+  assert.equal(removeRunDir(null).removed, false);
+  assert.ok(fs.existsSync(base) && fs.existsSync(path.join(base, 'someone-elses')));
+  assert.deepEqual(removeRunDir(b), { removed: true });
+  // 없는 폴더 아래에도 만든다(받은 경로는 만들기만 한다)
+  const fresh = makeRunDir(path.join(tmp, 'not-yet', 'deep'));
+  assert.ok(fs.existsSync(fresh));
+});
+
 test('parseArgs: 기본값 · 모르는 인수 · 값 없는 인수', () => {
   assert.equal(parseArgs([]).agent, 'both');
+  assert.equal(parseArgs([]).compare, false, '인수 없이 = 잠금 판 검증');
+  assert.equal(parseArgs(['--compare']).compare, true);
+  assert.equal(parseArgs(['--control', 'no-nudges']).compare, true, '대조군은 언제나 견주기(잠금 판 검증 통과로 끝날 수 없다)');
+  assert.equal(parseArgs(['--codex-auth', 'chatgpt']).compare, true);
+  assert.equal(parseArgs(['--codex-auth', 'apikey']).compare, false);
   assert.equal(parseArgs(['--agent', 'codex', '--keep']).keep, true);
   assert.throws(() => parseArgs(['--agent', 'gemini']), /--agent/);
   assert.throws(() => parseArgs(['--bogus']), /모르는 인수/);
@@ -337,37 +440,82 @@ test('watchFirstScreen: 계속 바쁜 화면은 가라앉지 않고 한도에서
 });
 
 // ---------------------------------------------------------------------------
-// 브라우저 연동 등록 지키기(레지스트리는 가짜 실행기로)
+// 통과가 되어서는 안 되는 길: 가라앉지 않음 · 자식이 끝나지 않음 · 보다가 던짐 · 판이 다름
 // ---------------------------------------------------------------------------
 
-test('snapshot/restoreNativeHosts: 달라진 자리만 원래대로 — 있던 값은 다시 넣고, 없던 키는 그 키만 지운다', () => {
-  const dir = path.join(tmp, 'reg');
-  const store = new Map([[`${NATIVE_HOST_PARENTS[0]}\\${NATIVE_HOST_NAME}`, 'real-path'], [`${NATIVE_HOST_PARENTS[4]}\\${NATIVE_HOST_NAME}`, 'real-path-edge']]);
-  const calls = [];
-  const run = (args) => {
-    calls.push(args.join(' '));
-    const [verb, key, file] = args;
-    if (verb === 'export') { if (!store.has(key)) return false; fs.writeFileSync(file, `[${key}]\n@="${store.get(key)}"\n`); return true; }
-    if (verb === 'delete') { store.delete(key); return true; }
-    if (verb === 'import') { const t = fs.readFileSync(key, 'utf8'); const m = /^\[(.+)\]\n@="(.*)"/.exec(t); store.set(m[1], m[2]); return true; }
-    return false;
-  };
-  const snap = snapshotNativeHosts(dir, { run });
-  assert.equal(snap.length, NATIVE_HOST_PARENTS.length);
-  assert.deepEqual(snap.map((s) => s.existed), [true, false, false, false, true, false, false]);
-  assert.ok(snap.every((s) => s.key.endsWith(`\\${NATIVE_HOST_NAME}`)), '이 이름의 키만 다룬다');
-  // CLI 가 한 일: 크롬 자리를 임시 경로로 바꾸고, 없던 브레이브 자리를 새로 만들었다. 엣지는 그대로.
-  store.set(snap[0].key, 'temp-path'); store.set(snap[1].key, 'temp-path');
-  const back = restoreNativeHosts(snap, dir, { run });
-  assert.deepEqual(back.map((b) => b.action), ['restored', 'removed', 'unchanged', 'unchanged', 'unchanged', 'unchanged', 'unchanged']);
-  assert.equal(store.get(snap[0].key), 'real-path');
-  assert.equal(store.has(snap[1].key), false);
-  assert.equal(store.get(snap[4].key), 'real-path-edge');
-  assert.ok(!calls.some((c) => /^delete /.test(c) && !c.includes(NATIVE_HOST_NAME)), '다른 키는 지우지 않는다');
-  // 아무것도 안 달라졌으면 쓰기(import · delete) 0
-  calls.length = 0;
-  assert.ok(restoreNativeHosts(snap, dir, { run }).every((b) => b.action === 'unchanged'));
-  assert.ok(!calls.some((c) => /^(import|delete) /.test(c)));
+test('가짜 클로드: 입력 칸은 보이지만 출력이 멈추지 않으면(한도 시간에 닿음) 통과가 아니다', { timeout: 60_000 }, async () => {
+  await withSoul('e2e-chatty', async ({ root, env }) => {
+    const obs = await probeClaude({ root, exe: 'unused', env, driver: pipeDriver(), launch: fakeLaunch('claude-chatty'), watch: { quietMs: 400, minMs: 600, maxMs: 2500, tickMs: 100 } });
+    assert.equal(obs.settled, false, '한도까지 가라앉지 않았다');
+    assert.equal(obs.final.status, 'idle', '화면만 보면 대기다 — 그래서 가라앉음을 따로 요구한다');
+    assert.equal(obs.final.promptNear, true);
+    assert.deepEqual(failed(obs.checks), ['⓪']);
+    assert.equal(pidAlive(obs.pid), false);
+  });
+});
+
+test('가짜 클로드: 띄운 프로세스를 끝내지 못하면 화면이 깨끗해도 실패(⑩)이고, 그 PID 는 살아 있는 것으로 보고된다', { timeout: 60_000 }, async () => {
+  await withSoul('e2e-nokill', async ({ root, env }) => {
+    // 끝내기가 실패한 것처럼: kill 이 아무것도 하지 않는다
+    const obs = await probeClaude({ root, exe: 'unused', env, driver: pipeDriver(), launch: fakeLaunch('claude-clean'), watch: { ...FAST, kill: () => 'ended', stopWaitMs: 600 } });
+    try {
+      assert.equal(obs.stopped, 'failed', 'kill 이 "끝냈다"고 해도 실제로 살아 있으면 failed');
+      assert.equal(obs.childGone, false);
+      assert.deepEqual(failed(obs.checks), ['⑩']);
+      assert.equal(pidAlive(obs.pid), true);
+    } finally {
+      endOwnPid(obs.pid);
+      for (let i = 0; i < 25 && pidAlive(obs.pid); i++) await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(pidAlive(obs.pid), false);
+  });
+});
+
+test('보다가 던져도 띄운 프로세스부터 끝낸다(관측 예외 길의 finally)', { timeout: 60_000 }, async () => {
+  const base = pipeDriver();
+  let pid = null;
+  const flaky = { ...base, open: (o) => { const t = base.open(o); pid = t.state.pid; let n = 0; const lines = t.lines; t.lines = async () => { n += 1; if (n >= 3) throw new Error('boom while reading the screen'); return lines(); }; return t; } };
+  await assert.rejects(() => watchFirstScreen({ driver: flaky, ...fakeLaunch('claude-clean'), cwd: tmp, env: process.env, ...FAST }), /boom while reading/);
+  assert.ok(pid, '프로세스가 떴었다');
+  for (let i = 0; i < 25 && pidAlive(pid); i++) await new Promise((r) => setTimeout(r, 200));
+  assert.equal(pidAlive(pid), false, '던진 뒤에 프로세스가 남지 않는다');
+
+  // probe* 를 거쳐도 같다: 관측 뒤 단계에서 던지면(설정 파일을 읽다가 등) finally 가 끝낸다
+  await withSoul('e2e-throw', async ({ root, env }) => {
+    let pid2 = null;
+    const spy = { ...base, open: (o) => { const t = base.open(o); pid2 = t.state.pid; return t; } };
+    // CLAUDE_CONFIG_DIR 이 없는 환경 = 기록 폴더 경로를 만들다 던진다(띄우기 전) → 프로세스가 뜨지 않아야 한다
+    await assert.rejects(() => probeClaude({ root, exe: 'unused', env: { ...env, CLAUDE_CONFIG_DIR: undefined }, driver: spy, launch: fakeLaunch('claude-clean'), watch: FAST }));
+    assert.equal(pid2, null, '띄우기 전에 던지면 아무것도 뜨지 않는다');
+  });
+});
+
+test('스크립트 실행: 잠금표와 다른 판의 실행 파일을 주면 띄우지 않고 0 이 아닌 코드로 끝나며, --work 폴더의 자료는 그대로다', { timeout: 120_000 }, () => {
+  const base = path.join(tmp, 'cli-work');
+  const logs = path.join(tmp, 'cli-logs');
+  fs.mkdirSync(base, { recursive: true });
+  fs.writeFileSync(path.join(base, 'precious.txt'), 'do not delete');
+  // "다른 판의 실행 파일" = node 자신(--version 이 v<판> 을 낸다 — 잠금표의 클로드 판과 다르다). 실제 CLI 는 쓰지 않는다.
+  const r = spawnSync(process.execPath, [path.join(REPO, 'verify', 'firstrun-probe.mjs'), '--agent', 'claude', '--claude-exe', process.execPath, '--work', base, '--log-dir', logs, '--label', 't-mismatch'],
+    { encoding: 'utf8', timeout: 100_000, windowsHide: true });
+  const outText = `${r.stdout}\n${r.stderr}`;
+  assert.match(outText, /mode: 잠금 판 검증/);
+  assert.ok(!/잠금 판 검증 통과/.test(outText), outText);
+  const faceHere = /screen rules: face/.test(outText);
+  if (faceHere) {
+    // 창의 가상 터미널을 빌릴 수 있는 자리: 판 확인까지 가서 불일치로 실패(1)
+    assert.equal(r.status, EXIT.failed, outText);
+    assert.match(outText, /FAIL claude ⓥ 띄울 판 = 잠금 판/);
+    assert.ok(!/OK {3}claude ①/.test(outText), '띄우지 않았다');
+  } else {
+    // 빌릴 수 없는 자리(옆 폴더에 창이 없다): 못 봄(2) — 어느 쪽이든 통과(0)도 견주기(3)도 아니다
+    assert.equal(r.status, EXIT.skipped, outText);
+    assert.match(outText, /SKIP claude/);
+  }
+  assert.equal(fs.readFileSync(path.join(base, 'precious.txt'), 'utf8'), 'do not delete', '--work 로 준 폴더의 자료를 지우지 않는다');
+  assert.deepEqual(fs.readdirSync(base).filter((f) => f.startsWith('run-')), [], '자기가 만든 실행 폴더는 정리했다');
+  const j = JSON.parse(fs.readFileSync(path.join(logs, 't-mismatch.json'), 'utf8'));
+  assert.equal(j.mode, 'lock'); assert.equal(j.exitCode, r.status); assert.equal(j.cleanup.state, 'removed');
 });
 
 test('가상 터미널을 못 빌리면 건너뜀 사유를 돌려준다(던지지 않는다)', () => {
