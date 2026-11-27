@@ -9,6 +9,7 @@
 //   --legacy     1.x IRIS 자료가 있는 자리               --fail venv 그 단계에서 설치가 멈춘다
 //   --reinstall  1.x 영수증을 자동 업데이트로 연 상태     --speed     단계 하나에 걸리는 시간(기본 700ms)
 //   --login-reason window-closed|page-blocked|import-failed   로그인이 그 까닭으로 실패한다
+//   --no-doctor-shortcut   「IRIS Doctor」 바로가기를 만들지 못한 설치의 완료 화면
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -275,6 +276,9 @@ const server = createServer(async (req, res) => {
           checks: '9항목 가운데 8항목 통과 · 1항목 남은 일',
         },
         pendingCapabilities: ['edge', 'office'],
+        // 2.0.66: 「IRIS Doctor」 바탕화면 바로가기가 만들어졌는가 — 참이면 완료 화면에 "IRIS가 열리지 않을 때는…" 한 줄이 보인다.
+        // --no-doctor-shortcut 으로 못 만든 경우(그 줄이 없고 "바로가기 하나뿐"으로 나오는 화면)를 본다.
+        doctor: { desktopShortcut: !flag('no-doctor-shortcut') },
       });
     }
 

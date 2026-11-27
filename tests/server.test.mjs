@@ -1323,3 +1323,154 @@ test('update-offer(2.0.22): finished older install -> step "update" with auto el
     await same.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// 2.0.66 -- IRIS Doctor: hands-free account preparation at the end of the online bundle
+// (lib/doctor-prepare.mjs asks the installed Doctor for `link auto` once). These tests inject a
+// fake in its place: no Doctor is run. What they pin down is the installer side of the contract --
+// when it is called, and that its outcome can never change what "installed" means.
+// ---------------------------------------------------------------------------
+
+// Drives a server to the point where the relay may start, with a real nine-stages-done receipt on
+// disk. `relayRecorded` is what the relay stage (stage 7) left in the receipt.
+async function toRelay(s, { relayRecorded = {} } = {}) {
+  const { url, soulRoot } = s;
+  await answerQuestions(url, ['claude']);
+  await post(url, '/api/structure', { nodes: TREE });
+  await post(url, '/api/summary/confirm');
+  await post(url, '/api/setup/start');
+  await waitForProgress(url, (b) => b.percent === 100, 'setup 100%');
+  const receipt = readReceipt(soulRoot);
+  for (const id of SETUP_STAGE_IDS) {
+    receipt.setup[id] = { status: 'done', startedAt: '2026-11-27T00:00:00.000Z', finishedAt: '2026-11-27T00:01:00.000Z', recorded: id === 'relay' ? relayRecorded : {}, pending: [] };
+  }
+  writeReceipt(soulRoot, receipt);
+  await post(url, '/api/online/start');
+  await waitForOnline(url, (b) => b.stage === 'login' || b.stage === 'relay', 'the login phase');
+  await post(url, '/api/online/login', { provider: 'claude' });
+  await waitForOnline(url, (b) => b.logins.claude?.state === 'done', 'claude login done');
+}
+// everything that decides "is this install finished", with the time stamps taken out
+const verdictOf = (soulRoot) => {
+  const r = readReceipt(soulRoot);
+  return { steps: r.steps, onlineCompleted: r.online?.completed, relay: r.online?.relay, setup: Object.fromEntries(SETUP_STAGE_IDS.map((id) => [id, r.setup[id].status])) };
+};
+const serverLogOf = (s) => fs.readFileSync(path.join(tmp, 'logs', path.basename(s.soulRoot), 'server.log'), 'utf8');
+
+test('doctor prepare (2.0.66): called exactly once when the relay comes up -- after the receipt is written, with this root; never when the relay fails', async () => {
+  const calls = [];
+  const s = await start({ doctorPrepareFn: async (opts) => { calls.push({ ...opts, receiptOnline: readReceipt(opts.root)?.steps?.online }); return { called: true, ok: true, exit: 0, timedOut: false, ms: 5, claude: { linked: true, why: 'linked' }, codex: { prepared: true, why: 'prepared' } }; } });
+  try {
+    await toRelay(s);
+    assert.equal(calls.length, 0, 'not before the relay is up (login alone is not the end of the online bundle)');
+    const relay = await (await post(s.url, '/api/online/relay')).json();
+    assert.equal(relay.ok, true);
+    assert.equal(calls.length, 1, 'once');
+    assert.equal(calls[0].root, s.soulRoot);
+    assert.equal(calls[0].noUserEnv, false);
+    assert.equal(calls[0].receiptOnline, 'done', 'the receipt was already written when Doctor was asked');
+    assert.deepEqual(Object.keys(relay).sort(), ['accounts', 'ok'], 'the answer carries nothing about Doctor');
+    assert.match(serverLogOf(s), /doctor prepare \(online\): ok claude=linked codex=prepared \(5ms\)/);
+  } finally {
+    await s.close();
+  }
+  // the relay fails -> the online bundle did not end -> Doctor is not asked
+  let asked = 0;
+  const f = await start({
+    onlineRunner: { ...okOnline(), startRelay: async () => ({ ok: false, code: 'E-RELAY-START', message: 'x' }) },
+    doctorPrepareFn: async () => { asked += 1; return { called: false, why: 'no-doctor' }; },
+  });
+  try {
+    await toRelay(f);
+    const relay = await (await post(f.url, '/api/online/relay')).json();
+    assert.equal(relay.ok, false);
+    assert.equal(asked, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('doctor prepare (2.0.66): whatever it answers -- made, nothing to do, not called, failed, timed out, thrown -- the verdict, the receipt, the handoff and the answer are the same', async () => {
+  const outcomes = {
+    made: async () => ({ called: true, ok: true, exit: 0, timedOut: false, ms: 1, claude: { linked: true, why: 'linked' }, codex: { prepared: true, why: 'prepared' } }),
+    nothing: async () => ({ called: true, ok: true, exit: 0, timedOut: false, ms: 1, claude: { linked: false, why: 'no-iris-key' }, codex: { prepared: false, why: 'ready' } }),
+    notCalled: async () => ({ called: false, why: 'no-doctor' }),
+    failed: async () => ({ called: true, ok: false, exit: 3, timedOut: false, ms: 1, claude: null, codex: null }),
+    timedOut: async () => ({ called: true, ok: false, exit: null, timedOut: true, alive: false, ms: 20000, claude: null, codex: null }),
+    thrown: async () => { throw new Error(['boom', 'D:', 'private', 'someone'].join('\\')); },
+    garbage: async () => 'not an object',
+  };
+  const seen = {};
+  for (const [name, fn] of Object.entries(outcomes)) {
+    const s = await start({ doctorPrepareFn: fn });
+    try {
+      await toRelay(s);
+      const handoffFile = path.join(s.soulRoot, '_agent', 'setup', 'handoff.json');
+      fs.writeFileSync(handoffFile, JSON.stringify({ schema: 1, packageVersion: '2.0.0', state: 'login-pending', subscriptions: ['claude'], leadAgent: 'claude', login: { claude: 'waiting', chatgpt: 'not-needed' }, relay: { state: 'pending', accounts: 0 }, setup: { allDone: true, failed: null }, setupCompletedAt: null }, null, 2), 'utf8');
+      const relay = await (await post(s.url, '/api/online/relay')).json();
+      const state = await getJson(s.url, '/api/state');
+      const handoff = JSON.parse(fs.readFileSync(handoffFile, 'utf8'));
+      delete handoff.setupCompletedAt;
+      delete handoff.writtenAt;
+      seen[name] = { relay, step: state.step, online: { completed: state.online.completed, relay: state.online.relay, stage: state.online.stage }, verdict: verdictOf(s.soulRoot), handoff };
+      // nothing about Doctor reaches the state, the receipt or the handoff document
+      for (const [what, text] of [['state', JSON.stringify(state)], ['receipt', fs.readFileSync(path.join(s.soulRoot, '_agent', 'setup', 'package-receipt.json'), 'utf8')], ['handoff', fs.readFileSync(handoffFile, 'utf8')]]) {
+        assert.ok(!/doctor|"linked"|"prepared"|has-card|no-iris-key|timedOut/i.test(text), `${name}: the ${what} carries the preparation result`);
+      }
+      const log = serverLogOf(s);
+      assert.equal((log.match(/doctor prepare \(online\)/g) ?? []).length, 1, `${name}: exactly one log line`);
+      assert.ok(!log.includes('someone') && !log.includes('private'), `${name}: the log line carries nothing from a thrown error`);
+    } finally {
+      await s.close();
+    }
+  }
+  assert.equal(seen.made.step, 'done');
+  assert.equal(seen.made.verdict.steps.online, 'done');
+  assert.equal(seen.made.handoff.state, 'ready');
+  for (const name of Object.keys(outcomes)) assert.deepEqual(seen[name], seen.made, `${name} must end exactly like "made"`);
+});
+
+test('doctor prepare (2.0.66): a rehearsal (--no-user-env) passes that on; and without a seam the real preparer starts nothing here (no Doctor part)', async () => {
+  const calls = [];
+  const s = await start({ noUserEnv: true, doctorPrepareFn: async (opts) => { calls.push(opts); return { called: false, why: 'rehearsal' }; } });
+  try {
+    await toRelay(s);
+    await post(s.url, '/api/online/relay');
+    assert.deepEqual(calls.map((c) => c.noUserEnv), [true]);
+  } finally {
+    await s.close();
+  }
+  // no seam: the real preparer is used. This soul has no Doctor part, so nothing is spawned and nothing is written.
+  const real = await start();
+  try {
+    await toRelay(real);
+    const relay = await (await post(real.url, '/api/online/relay')).json();
+    assert.equal(relay.ok, true);
+    assert.match(serverLogOf(real), /doctor prepare \(online\): not called \((no-doctor|rehearsal|offline)\)/);
+    assert.equal(fs.existsSync(path.join(real.soulRoot, '_agent', 'doctor')), false, 'the installer never makes the Doctor home itself');
+  } finally {
+    await real.close();
+  }
+});
+
+test('report (2.0.66): doctor.desktopShortcut is true only when the relay stage really made (or kept) the desktop shortcut', async () => {
+  const cases = [
+    [{ doctorShortcut: { status: 'created', desktop: { ok: true, path: 'X:\\d\\IRIS Doctor.lnk' }, startMenu: { ok: true, path: 'X:\\p\\IRIS Doctor.lnk' } } }, true],
+    [{ doctorShortcut: { status: 'kept', desktop: { ok: true, path: 'X:\\d\\IRIS Doctor.lnk', kept: true }, startMenu: { ok: true, path: 'X:\\p\\IRIS Doctor.lnk', kept: true } } }, true],
+    [{ doctorShortcut: { status: 'partial', desktop: { ok: false, path: null, foreign: true, cause: 'x' }, startMenu: { ok: true, path: 'X:\\p\\IRIS Doctor.lnk' } } }, false],
+    [{ doctorShortcut: { status: 'skipped', reason: 'IRIS_INSTALLER_NO_USER_ENV=1' } }, false],
+    [{ doctorShortcut: { status: 'absent', reason: 'x' } }, false],
+    [{}, false],
+  ];
+  for (const [relayRecorded, want] of cases) {
+    const s = await start({ doctorPrepareFn: async () => ({ called: false, why: 'no-doctor' }) });
+    try {
+      await toRelay(s, { relayRecorded });
+      await post(s.url, '/api/online/relay');
+      const rep = await getJson(s.url, '/api/report');
+      assert.deepEqual(rep.doctor, { desktopShortcut: want }, JSON.stringify(relayRecorded));
+    } finally {
+      await s.close();
+    }
+  }
+});

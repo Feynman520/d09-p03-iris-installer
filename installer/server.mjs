@@ -50,6 +50,7 @@ import { run as defaultRun } from '../lib/run.mjs';
 import { listHolders, stopHolders } from './lib/holders.mjs';
 import { trustSystemRoots } from './lib/systemca.mjs';
 import { buildReportPayload, sendReport, saveReportCopy } from './lib/report-send.mjs';
+import { prepareDoctorAccounts, doctorPrepareLine } from './lib/doctor-prepare.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -372,6 +373,8 @@ export function startServer({
   claudePresentFn = (root) => fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', 'claude.cmd')),
   // 2.0.39: 업데이트가 설치기 사본(_agent\setup\installer)을 새 판으로 바꿔 끼우는 함수(ctx → 결과) — 시험은 가짜를 넣는다.
   copyInstallerFn = null,
+  // 2.0.66: 손 안 가는 IRIS Doctor 계정 준비(lib/doctor-prepare.mjs — 설치본의 Doctor 에게 `link auto` 를 한 번) — 시험은 가짜를 넣는다.
+  doctorPrepareFn = null,
   faceDir,
   faceNodeExe,
   workDir,
@@ -1228,6 +1231,29 @@ export function startServer({
     sendJson(res, 200, { ok: true, subscriptions: subs, leadAgent, restarted });
   }));
 
+  // --- IRIS Doctor: 손 안 가는 계정 준비(2.0.66) ---------------------------------
+  // 온라인 묶음이 끝났을 때와 업데이트가 끝났을 때 한 번씩, 설치본의 Doctor 에게 `link auto` 를 부른다(통신 0 · 브라우저 0 ·
+  // 만들 것이 없으면 Doctor 가 아무것도 쓰지 않는다 — lib/doctor-prepare.mjs 머리말). Doctor 부품이 없거나 연습 실행 ·
+  // 오프라인이면 부르지 않는다.
+  // **결과는 기록 한 줄뿐이다.** 상태(state) · 영수증 · 인수 문서 · 응답 어디에도 싣지 않는다 — Doctor 의 준비 여부가
+  // 설치 완료 판정(resumeVerdict · setupAllDone · onlineDone)에 섞이면 준비 실패가 "설치 미완료"로 읽혀 재로그인을 되풀이하게 된다.
+  // 제한 시간(20초)까지 기다린 뒤 돌아온다. 무슨 일이 있어도 던지지 않는다.
+  async function prepareDoctor(root, where) {
+    try {
+      const r = await (doctorPrepareFn ?? prepareDoctorAccounts)({ root, noUserEnv: userEnvSkipped });
+      log(`doctor prepare (${where}): ${doctorPrepareLine(r)}`);
+    } catch (err) {
+      log(`doctor prepare (${where}) failed: ${String(err?.name ?? 'Error')}`);
+    }
+  }
+  // 「IRIS Doctor」 바탕화면 바로가기가 실제로 있는가(실행기 단계의 기록: 새로 만들었거나, 이미 이 설치의 것이 있어 그대로 둠).
+  // 완료 화면 · 업데이트 완료 글이 "바탕화면의 「IRIS Doctor」"를 말해도 되는지를 가른다 — 못 만들었거나 연습 실행이면 말하지 않는다.
+  function doctorShortcutMade(root) {
+    try {
+      return readReceiptFn(root)?.setup?.relay?.recorded?.doctorShortcut?.desktop?.ok === true;
+    } catch { return false; }
+  }
+
   routes.set('POST /api/online/relay', withBody(async (body, req, res) => {
     if (!requireLocated(res)) return;
     const root = state.soul.root;
@@ -1297,6 +1323,8 @@ export function startServer({
         log(`handoff refresh failed: ${String(err?.message ?? err)}`);
       }
       log('online relay ok -> done');
+      // 온라인 묶음의 끝: 영수증 · 인수 문서를 다 쓴 **뒤에** Doctor 계정을 손 없이 준비한다(결과는 위 기록에 섞이지 않는다).
+      await prepareDoctor(root, 'online');
     }
     save();
     sendJson(res, 200, {
@@ -1333,7 +1361,9 @@ export function startServer({
     const pendingCapabilities = handoff?.pendingCapabilities ?? state.setup?.pending ?? [];
     state.report = { markdownPath, handoffPath: handoff ? path.join(setupDir, 'handoff.json') : null, pendingCapabilities };
     save();
-    sendJson(res, 200, { ok: true, markdown, handoff, pendingCapabilities });
+    // 2.0.66: 완료 화면이 "IRIS 가 열리지 않을 때는 바탕화면의 「IRIS Doctor」"를 안내해도 되는가(바로가기가 실제로 있을 때만 참).
+    // 인수 문서(handoff.json)에는 싣지 않는다 — 화면 안내용 한 칸이다.
+    sendJson(res, 200, { ok: true, markdown, handoff, pendingCapabilities, doctor: { desktopShortcut: doctorShortcutMade(root) } });
   });
 
   routes.set('POST /api/open-face', withBody(async (body, req, res) => {
@@ -1623,6 +1653,10 @@ export function startServer({
         log(`auto receipt version refresh failed: ${String(err?.message ?? err)}`);
       }
 
+      // 2.0.66: 업데이트의 끝에서도 Doctor 계정을 손 없이 준비한다(이미 설치된 PC 가 이 판으로 올라올 때 1년 열쇠가 있으면 사본).
+      // 영수증을 다 쓴 뒤 · IRIS 창을 다시 열기 전. 결과는 기록 한 줄뿐 — 업데이트의 성공 · 실패에 섞지 않는다.
+      await prepareDoctor(root, 'update');
+
       forward({ part: 'login', pct: 96, status: 'skipped', skipped: true });
 
       const relaunch = relaunchFace();
@@ -1644,7 +1678,8 @@ export function startServer({
       };
       state.step = 'done';
       save();
-      pushEvent({ part: null, pct: 100, skipped: false, status: 'done', error: null, done: true });
+      // 마지막 방송에 한 칸(참일 때만): 「IRIS Doctor」 바탕화면 바로가기가 있으면 화면이 그 안내 한 줄을 덧붙인다.
+      pushEvent({ part: null, pct: 100, skipped: false, status: 'done', error: null, done: true, ...(doctorShortcutMade(root) ? { doctorShortcut: true } : {}) });
     } catch (err) {
       failAuto('setup', err?.code ?? 'install_failed', String(err?.message ?? err));
     } finally {

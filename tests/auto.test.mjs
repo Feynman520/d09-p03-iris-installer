@@ -978,3 +978,100 @@ test('auto(2.0.22): with --auto the server starts the update by itself -- no bro
     await close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// 2.0.66 -- IRIS Doctor at the end of an update: hands-free account preparation (one `link auto`,
+// lib/doctor-prepare.mjs) and the "IRIS Doctor shortcut" hint on the last event. A fake stands in
+// for the preparer: no Doctor is run.
+// ---------------------------------------------------------------------------
+
+// words that only the preparation result has (the receipt legitimately names the part `iris-doctor`)
+const PREPARE_WORDS = /doctor.?prepare|"linked"|"prepared"|has-card|no-iris-key|timedOut/i;
+
+async function runUpdate(label, { engine = fakeSetupRunner(), doctorPrepareFn, receipt = priorReceipt({ version: '1.9.0' }) } = {}) {
+  const zipRoot = makeZipRoot(`zip-doctor-${label}`);
+  const store = receiptStore(receipt);
+  const order = [];
+  const { url, close } = await startServer({
+    onlineRunner: { startRelay: async () => ({ ok: true, state: 'done', accounts: 1 }) },
+    relayRecheckFn: async () => ({ at: 't', items: [] }),
+    autoSelfStart: false,
+    holdersFn: { list: async () => [], stop: async () => ({ ok: true, stopped: [] }) },
+    port: 0, precheckFn: async () => OK_PRECHECK, zipRoot, nodeDir: path.join(tmp, 'node'),
+    stateFile: path.join(tmp, `state-doctor-${label}.json`), soulName: SOUL, soulRoot: SOUL_ROOT, auto: true,
+    workDir: path.join(tmp, `logs-doctor-${label}`),
+    readReceiptFn: store.readReceiptFn, writeReceiptFn: store.writeReceiptFn, setupRunner: engine.runner,
+    relaunchFaceFn: () => { order.push('relaunch'); return { ok: true, how: 'wscript', pid: 9 }; },
+    finishFn: () => ({ ok: true }), onQuit: () => {},
+    ...(doctorPrepareFn ? { doctorPrepareFn: async (opts) => { order.push('doctor'); return doctorPrepareFn(opts, store); } } : {}),
+  });
+  try {
+    await fetch(`${url}/api/auto`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const want = engine.fails ? 'auto' : 'done';
+    const end = await waitForStep(url, want, 400);
+    const frames = await readBufferedEvents(url);
+    const log = fs.readFileSync(path.join(tmp, `logs-doctor-${label}`, 'server.log'), 'utf8');
+    return { end, frames, store, order, log };
+  } finally {
+    await close();
+  }
+}
+
+test('auto (2.0.66): the update asks Doctor for the hands-free preparation exactly once -- after the new version is recorded, before the window reopens; never when the update failed', async () => {
+  const calls = [];
+  const ok = await runUpdate('once', { doctorPrepareFn: async (opts, store) => { calls.push({ ...opts, versionThen: store.state.receipt.package.version }); return { called: true, ok: true, exit: 0, timedOut: false, ms: 3, claude: { linked: true, why: 'linked' }, codex: { prepared: false, why: 'ready' } }; } });
+  assert.equal(ok.end.autoResult.ok, true);
+  assert.equal(calls.length, 1, 'once per update');
+  assert.equal(calls[0].root, SOUL_ROOT);
+  assert.equal(calls[0].noUserEnv, false);
+  assert.equal(calls[0].versionThen, '2.0.0', 'the receipt already says the new version');
+  assert.deepEqual(ok.order, ['doctor', 'relaunch'], 'before the IRIS window is reopened');
+  assert.match(ok.log, /doctor prepare \(update\): ok claude=linked codex=ready \(3ms\)/);
+
+  // the engine stops -> the update failed -> Doctor is not asked
+  let asked = 0;
+  const failing = fakeSetupRunner({ ok: false, failed: { id: 'unpack', code: 'E-UNPACK', message: 'x' } });
+  failing.fails = true;
+  const bad = await runUpdate('failed', { engine: failing, doctorPrepareFn: async () => { asked += 1; return { called: false, why: 'no-doctor' }; } });
+  assert.equal(bad.end.autoResult.ok, false);
+  assert.equal(asked, 0);
+});
+
+test('auto (2.0.66): whatever the preparation answers -- or throws -- the update result, the receipt and the events are the same', async () => {
+  const outcomes = {
+    made: async () => ({ called: true, ok: true, exit: 0, timedOut: false, ms: 1, claude: { linked: true, why: 'linked' }, codex: { prepared: true, why: 'prepared' } }),
+    notCalled: async () => ({ called: false, why: 'rehearsal' }),
+    failed: async () => ({ called: true, ok: false, exit: 2, timedOut: false, ms: 1, claude: null, codex: null }),
+    timedOut: async () => ({ called: true, ok: false, exit: null, timedOut: true, alive: true, ms: 20000, claude: null, codex: null }),
+    thrown: async () => { throw new Error('boom'); },
+  };
+  // the receipt without its time stamps (when the update ran, when each stage was reset)
+  const strip = (r) => { const c = JSON.parse(JSON.stringify(r)); if (c.update) delete c.update.at; for (const s of Object.values(c.setup ?? {})) delete s.resetAt; return c; };
+  const seen = {};
+  for (const [i, [name, fn]] of Object.entries(outcomes).entries()) {
+    // the label goes into temp file names that the state echoes back, so it must not contain the words looked for below
+    const run = await runUpdate(`same-${i}`, { doctorPrepareFn: fn });
+    seen[name] = { result: run.end.autoResult, step: run.end.step, receipt: strip(run.store.state.receipt), frames: run.frames.map((f) => [f.part, f.status, f.done === true]) };
+    assert.ok(!PREPARE_WORDS.test(JSON.stringify(run.store.state.receipt)), `${name}: the receipt carries the preparation result`);
+    assert.ok(!PREPARE_WORDS.test(JSON.stringify(run.end)), `${name}: the state carries the preparation result`);
+    assert.equal((run.log.match(/doctor prepare \(update\)/g) ?? []).length, 1, `${name}: exactly one log line`);
+  }
+  assert.equal(seen.made.result.ok, true);
+  for (const name of Object.keys(outcomes)) assert.deepEqual(seen[name], seen.made, `${name} must end exactly like "made"`);
+});
+
+test('auto (2.0.66): the last event carries doctorShortcut only when the receipt says the desktop shortcut is really there', async () => {
+  const withShortcut = priorReceipt({ version: '1.9.0' });
+  withShortcut.setup.relay.recorded = { doctorShortcut: { status: 'created', desktop: { ok: true, path: 'X:\\d\\IRIS Doctor.lnk' }, startMenu: { ok: false, path: null, cause: 'x' } } };
+  const a = await runUpdate('hint-yes', { receipt: withShortcut, doctorPrepareFn: async () => ({ called: false, why: 'no-doctor' }) });
+  const lastA = a.frames.find((f) => f.done);
+  assert.equal(lastA.doctorShortcut, true);
+  // not made (a rehearsal, a failure, a foreign shortcut left alone, or an install from before 2.0.66 whose relay stage did not re-run)
+  for (const [label, recorded] of [['skipped', { doctorShortcut: { status: 'skipped', reason: 'x' } }], ['foreign', { doctorShortcut: { status: 'failed', desktop: { ok: false, path: null, foreign: true, cause: 'x' }, startMenu: { ok: false, path: null, cause: 'x' } } }], ['none', {}]]) {
+    const r = priorReceipt({ version: '1.9.0' });
+    r.setup.relay.recorded = recorded;
+    const b = await runUpdate(`hint-${label}`, { receipt: r, doctorPrepareFn: async () => ({ called: false, why: 'no-doctor' }) });
+    const last = b.frames.find((f) => f.done);
+    assert.equal('doctorShortcut' in last, false, `${label}: the key is absent, the event keeps its 2.0.65 shape`);
+  }
+});

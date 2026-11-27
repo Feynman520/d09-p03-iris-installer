@@ -194,3 +194,25 @@ test('ui/mock-server.mjs: 127.0.0.1에만 귀를 열고, 화면 파일만 내준
   assert.ok(src.includes('startsWith(HERE)'), 'installer/ui 밖의 파일을 내주면 안 된다');
   assert.ok(!src.includes('TeamClaude'));
 });
+
+// 2.0.66 — 「IRIS Doctor」 안내 한 줄. 바탕화면 바로가기가 **실제로 만들어졌을 때만** 보인다(서버가 실행기 단계의 기록으로 답한다).
+test('ui/index.html (2.0.66): 「IRIS Doctor」 안내는 바로가기가 있을 때만 — 완료 보고와 업데이트 완료가 같은 글, 없으면 "바로가기 하나뿐"', () => {
+  const src = html();
+  assert.ok(src.includes("const DOCTOR_HINT = 'IRIS가 열리지 않을 때는 바탕화면의 「IRIS Doctor」를 여세요. 복구용 계정은 거기서 연결합니다.';"), '안내 글은 한 곳에 한 번');
+  assert.equal(src.split('복구용 계정은 거기서 연결합니다').length - 1, 1, '글을 두 군데에 따로 적지 않는다');
+  // 완료 보고: 서버의 답(doctor.desktopShortcut === true)일 때만
+  assert.match(src, /const doctorLnk = !!\(rep\.doctor && rep\.doctor\.desktopShortcut === true\);/);
+  assert.match(src, /\(doctorLnk \? '<p class="sub">' \+ DOCTOR_HINT \+ '<\/p>' : ''\)/);
+  // 업데이트 완료: 마지막 방송의 doctorShortcut === true 일 때만
+  assert.match(src, /\(e\.doctorShortcut === true \? '<br>' \+ DOCTOR_HINT : ''\)/);
+  // "바탕화면에 만든 것"은 사실대로: 둘 다 만든 때와 「IRIS」 하나뿐인 때를 가른다
+  assert.ok(src.includes('바탕화면에 만든 것은 「IRIS」와 「IRIS Doctor」 바로가기 둘뿐입니다(「IRIS Doctor」는 시작 메뉴에도 있습니다).'));
+  assert.ok(src.includes("'바탕화면에 만든 것은 「IRIS」 바로가기 하나뿐입니다.'"));
+  assert.match(src, /const madeOnDesktop = doctorLnk\s*\?/);
+  // 설치 전 안내(② 설치 위치)도 바깥에 만드는 것을 사실대로 말한다
+  assert.ok(src.includes('바탕화면에는 「IRIS」 바로가기와, IRIS가 열리지 않을 때 쓰는 「IRIS Doctor」 바로가기만 만듭니다.'));
+  assert.ok(!src.includes('바탕화면에는 「IRIS」 바로가기 하나만 만듭니다'));
+  // 가짜 서버도 그 칸을 준다(없는 경우의 화면은 --no-doctor-shortcut)
+  const mock = fs.readFileSync(path.join(UI, 'mock-server.mjs'), 'utf8');
+  assert.match(mock, /doctor: \{ desktopShortcut: !flag\('no-doctor-shortcut'\) \}/);
+});
