@@ -97,11 +97,28 @@ function withOffline(fn) {
     });
 }
 
+// A release run sets IRIS_FACE_SOURCE (the release tool and the manual release order both pass it
+// to `npm test`), and collect lets it override the source of the part named `face`. A test that
+// builds a part named `face` from its own fake tree must read that tree, not the real window
+// folder -- so the override is dropped for the duration of the test and put back afterwards.
+// (Renaming the part, as the exclude test below does, is not possible where the name `face`
+// itself is what is being tested: faceVersion and the `npm ci face` messages.)
+function withoutFaceSourceOverride(fn) {
+  const KEY = 'IRIS_FACE_SOURCE';
+  const before = process.env[KEY];
+  delete process.env[KEY];
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (before !== undefined) process.env[KEY] = before;
+    });
+}
+
 // --------------------------------------------------------------------------
 // dir / file kinds
 // --------------------------------------------------------------------------
 
-test('dir kind zips with excludes; url without sha256 throws', async () => {
+test('dir kind zips with excludes; url without sha256 throws', () => withoutFaceSourceOverride(async () => {
   const src = path.join(tmp, 'src');
   fs.mkdirSync(path.join(src, 'state'), { recursive: true });
   // Nested folders: a plain exclude name matches the first segment only, a
@@ -131,7 +148,7 @@ test('dir kind zips with excludes; url without sha256 throws', async () => {
     }),
     /sha256 missing for node/,
   );
-});
+}));
 
 // 2.0.65 -- two lock.json edits checked against the real lock file, offline (dir parts only):
 //   * gen-image became a two-file bundle: `dir` + `include` must stage exactly gen-image.py and
@@ -617,7 +634,7 @@ test('a second collect() with the same cache makes zero network calls; --no-cach
 // "refuse before starting". Both branches have to behave (T07 review round 1,
 // finding 1): a cache that CAN satisfy the lockfile must still build offline,
 // and one that cannot must fail with the same `offline:` contract as the rest.
-test('npmCi dir part: --offline succeeds from npm cache, and a failed offline run raises the offline contract', async () => {
+test('npmCi dir part: --offline succeeds from npm cache, and a failed offline run raises the offline contract', () => withoutFaceSourceOverride(async () => {
   const src = path.join(tmp, 'face-src');
   writeTree(src, { 'package.json': '{"name":"iris-face","version":"2.65.0"}', 'launch.mjs': 'x' });
   const lock = {
@@ -658,7 +675,7 @@ test('npmCi dir part: --offline succeeds from npm cache, and a failed offline ru
     },
   );
   assert.ok(!f.calls.find((c) => c.args.includes('ci')).args.includes('--offline'));
-});
+}));
 
 test('IRIS_INSTALLER_OFFLINE=1 turns every cache miss into offline: <what>', async () => {
   const f = fakeRunner({ repoFiles: { 'a.md': 'x' }, npmFiles: { 'node_modules/p/package.json': '{}' }, wheels: ['a-1-py3-none-any.whl'] });
