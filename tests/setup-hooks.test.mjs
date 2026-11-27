@@ -256,13 +256,35 @@ test('알림 훅: 클로드 SessionStart 에 따로 둔 항목 하나 — 파워
   assert.equal(h.shell, 'powershell');
   assert.equal(h.timeout, 10);
   assert.equal(h.timeout, adapters.AUTH_NOTICE_TIMEOUT_SEC);
-  // 알리기만 하는 훅: 프로그램의 오류 글은 버리고(2>$null), 프로그램을 못 띄워도 조용히(try/catch), 늘 0 으로 끝난다(exit 0).
-  assert.equal(h.command, `if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; try { & "${NODE}" "${path.win32.join(TOOLS, 'iris-auth', 'status.mjs')}" --hook 2>$null } catch { }; exit 0`);
+  // 알리기만 하는 훅: node 를 파워셸 안에서 직접 띄워 안쪽 제한(6초)만큼만 기다리고, 오류 글은 버리고, 못 띄워도 조용히, 늘 0 으로 끝난다.
+  // 실리는 글자 전체를 여기 적어 둔다(꼴이 바뀌면 이 시험이 먼저 알린다 — 실제로 도는지는 아래 시험들이 파워셸로 잰다).
+  assert.equal(h.command, [
+    "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }",
+    "try { $ErrorActionPreference = 'Stop'",
+    '$p = New-Object System.Diagnostics.Process',
+    `$p.StartInfo.FileName = '${NODE}'`,
+    `$p.StartInfo.Arguments = '"${path.win32.join(TOOLS, 'iris-auth', 'status.mjs')}" --hook'`,
+    '$p.StartInfo.UseShellExecute = $false',
+    '$p.StartInfo.CreateNoWindow = $true',
+    '$p.StartInfo.RedirectStandardOutput = $true',
+    '$p.StartInfo.RedirectStandardError = $true',
+    '$p.StartInfo.StandardOutputEncoding = [Text.Encoding]::UTF8',
+    '[void]$p.Start()',
+    '$o = $p.StandardOutput.ReadToEndAsync()',
+    '$e = $p.StandardError.ReadToEndAsync()',
+    'if ($p.WaitForExit(6000)) { if ($o.Wait(2000) -and $o.Result) { $b = [Text.Encoding]::UTF8.GetBytes($o.Result); $s = [Console]::OpenStandardOutput(); $s.Write($b, 0, $b.Length); $s.Flush() } } else { try { $p.Kill() } catch { } }',
+    '} catch { }; exit 0',
+  ].join('; '));
   assert.ok(!/^"/.test(h.command), '파워셸에서 "a" "b" 꼴은 문법 오류');
+  // 안쪽 제한은 바깥 제한보다 넉넉히 짧아야 한다(파워셸이 뜨는 시간을 더해도 바깥이 먼저 끊지 않게) — 적어도 3초 여유.
+  assert.equal(adapters.AUTH_NOTICE_INNER_TIMEOUT_MS, 6000);
+  assert.ok(adapters.AUTH_NOTICE_INNER_TIMEOUT_MS <= adapters.AUTH_NOTICE_TIMEOUT_SEC * 1000 - 3000);
+  // 작은따옴표가 든 경로는 파워셸 글 안에서 '' 로 적는다.
+  assert.ok(adapters.authNoticeHookCommand("C:\\it's\\node.exe", "C:\\it's\\status.mjs").includes(`$p.StartInfo.FileName = 'C:\\it''s\\node.exe'; $p.StartInfo.Arguments = '"C:\\it''s\\status.mjs" --hook';`));
   // 막는 훅 넷은 그대로 스크립트의 종료 코드를 넘긴다 — 차단(2)이 살아야 한다.
   for (const e of [...groups.PreToolUse, groups.SessionStart[0], ...groups.Stop]) {
     assert.ok(e.hooks[0].command.endsWith('; exit $LASTEXITCODE'), e.hooks[0].command);
-    assert.ok(!e.hooks[0].command.includes('2>$null') && !e.hooks[0].command.includes('try {'), '막는 훅의 오류 글은 숨기지 않는다');
+    assert.ok(!e.hooks[0].command.includes('RedirectStandardError') && !e.hooks[0].command.includes('try {'), '막는 훅의 오류 글은 숨기지 않는다');
   }
   // 잠금표가 부품 자리를 바꾸면 그 자리를 따른다.
   const moved = adapters.claudeHookGroups(ROOT, { authDir: path.win32.join(TOOLS, 'iris-auth', '2.0') });
@@ -364,6 +386,46 @@ test('알림 훅: 어떤 실패에도 종료 코드 0 · 오류 글 없음 · �
   blocks(runHookCommand(adapters.authNoticeHookCommand(path.join(noNode.tool, 'no-such-node.exe'), noNode.script), noNode.env), 'node 없음');
 });
 
+// 2026-11-27 코드 검토 "막아야 함": node 가 바깥(클로드코드)의 훅 제한 10초를 넘기면 바깥이 먼저 끊어 `exit 0` 에 닿지 못한다.
+// 그래서 훅 명령이 스스로 안쪽 제한(6초)에서 그 node 하나만 끝내고 0 으로 마친다. 실제 파워셸 + 오래 자는 가짜 도구로 잰다.
+test('알림 훅: 도구가 오래 걸리면 안쪽 제한에서 그 프로그램만 끝내고 종료 코드 0 · 오류 글 없음 · 출력 없음 — 남는 프로세스 없음', async () => {
+  const a = makeAuthRoot('slow');
+  const pidFile = path.join(a.tool, 'slow.pid');
+  // 30초 동안 끝나지 않는 가짜 도구: 자기 번호를 적고, 출력을 조금 낸 뒤, 잠든다.
+  fs.writeFileSync(a.script, `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nprocess.stdout.write('[IRIS 인증] 받다 만 글');\nprocess.stderr.write('slow tool\\n');\nsetTimeout(() => {}, 30000);\n`);
+  const t0 = Date.now();
+  const r = runHookCommand(adapters.authNoticeHookCommand(process.execPath, a.script), a.env);
+  const elapsed = Date.now() - t0;
+  assert.equal(r.code, 0);
+  assert.equal(r.err, '');
+  assert.equal(r.out, '', '제한을 넘겨 끊은 도구의 받다 만 출력은 내보내지 않는다');
+  assert.ok(elapsed >= adapters.AUTH_NOTICE_INNER_TIMEOUT_MS - 500, `안쪽 제한만큼은 기다렸다(${elapsed}ms)`);
+  // 도구가 스스로 끝나는 30초보다 한참 앞에서 끝났다 = 우리가 끊었다. 마감은 넉넉히 둔다(PC 가 바쁠 때 파워셸이 늦게 뜬다).
+  assert.ok(elapsed < 25000, `도구가 끝나기를 기다리지 않았다(${elapsed}ms)`);
+  // 남은 프로세스 없음: 그 도구(node)가 살아 있지 않다. 끝나는 데 잠깐 걸릴 수 있어 최대 10초 기다려 본다.
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  assert.ok(Number.isInteger(pid) && pid > 0, '가짜 도구가 실제로 떴다');
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  for (let i = 0; i < 100 && alive(); i += 1) await new Promise((res) => setTimeout(res, 100));
+  assert.equal(alive(), false, `끊긴 도구(pid ${pid})가 남아 있으면 안 된다`);
+});
+
+test('알림 훅: 경로에 빈칸 · 한글 · 작은따옴표가 있어도 인용이 깨지지 않는다(정상 · 스크립트 없음 · node 없음)', () => {
+  const a = makeAuthRoot("한글 폴더 with space it's");
+  fs.writeFileSync(a.env.IRIS_LONGKEY_FILE, JSON.stringify({ token: 'T', expiresAt: Date.now() + 86400000 }));
+  const due = runHookCommand(adapters.authNoticeHookCommand(process.execPath, a.script), a.env);
+  assert.equal(due.code, 0);
+  assert.equal(due.err, '');
+  assert.match(due.out, /^\[IRIS 인증\] .*IRIS 1년 열쇠.*사용자에게 알릴 것\.\r?\n$/);
+  for (const [what, node, script] of [
+    ['스크립트 없음', process.execPath, path.join(a.tool, '없는 파일.mjs')],
+    ['node 없음', path.join(a.tool, '없는 node.exe'), a.script],
+  ]) {
+    const r = runHookCommand(adapters.authNoticeHookCommand(node, script), a.env);
+    assert.deepEqual([r.code, r.out, r.err], [0, '', ''], what);
+  }
+});
+
 test('알림 훅: 훅 방식(--hook)은 이 PC 의 파일만 읽는다 — 풍선 알림 · 네트워크 · 다른 프로그램 실행이 없어 시간 제한(10초) 안에 끝난다', () => {
   // 시간 초과 자체는 클로드코드가 끊는다(timeout 칸). 여기서는 오래 걸릴 일을 하지 않는다는 것을 원본 글자로 묶는다:
   // 풍선 알림(다른 프로그램을 띄움)은 --notify 를 줄 때만이고, 훅 명령은 --notify 를 주지 않는다.
@@ -373,7 +435,7 @@ test('알림 훅: 훅 방식(--hook)은 이 PC 의 파일만 읽는다 — 풍�
   assert.ok(!/\bfetch\(|node:https?|node:net\b/.test(src), '네트워크를 쓰지 않는다');
   assert.ok(!/\bfetch\(|node:https?|node:net\b|child_process/.test(fs.readFileSync(path.join(AUTH_SRC, 'lib.mjs'), 'utf8')));
   const cmd = adapters.claudeHookGroups(ROOT).SessionStart[1].hooks[0].command;
-  assert.ok(cmd.includes(' --hook 2>$null }') && !cmd.includes('--notify'));
+  assert.ok(cmd.includes('status.mjs" --hook\';') && !cmd.includes('--notify'));
 });
 
 test('알림 훅: NODE_USE_SYSTEM_CA 는 비어 있을 때만 1 로 채운다(사용자가 정한 값은 덮지 않는다)', () => {

@@ -161,11 +161,16 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   // 2.0.65: 로그인 열쇠 알림 — 동봉 node 로 부품 iris-auth 의 status.mjs --hook 을 부른다(따로 둔 항목, 10초 제한)
   assert.equal(start[1].matcher, 'startup|resume|clear|compact');
   assert.equal(start[1].hooks.length, 1);
-  // 알리기만 하는 훅이라 어떤 경우에도 종료 코드 0 · 오류 글 없음(`try { … 2>$null } catch { }; exit 0`) — 세션 시작 화면에 오류 줄을 남기지 않는다.
-  assert.ok(start[1].hooks[0].command.endsWith(`try { & "${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" "${under(root, `${LOCK.parts['iris-auth'].dest}/status.mjs`)}" --hook 2>$null } catch { }; exit 0`));
+  // 알리기만 하는 훅이라 어떤 경우에도 종료 코드 0 · 오류 글 없음 — 세션 시작 화면에 오류 줄을 남기지 않는다.
+  // 오래 걸려도 그렇다: 바깥 제한(10초)보다 짧은 안쪽 제한(6초)으로 node 를 직접 끊고 0 으로 마친다.
+  const notice = start[1].hooks[0].command;
+  assert.ok(notice.includes(`$p.StartInfo.FileName = '${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}';`));
+  assert.ok(notice.includes(`$p.StartInfo.Arguments = '"${under(root, `${LOCK.parts['iris-auth'].dest}/status.mjs`)}" --hook';`));
+  assert.ok(notice.includes('$p.WaitForExit(6000)') && notice.includes('$p.Kill()'));
+  assert.ok(notice.endsWith('} catch { }; exit 0'));
   assert.equal(start[1].hooks[0].timeout, 10);
   // Node 를 띄우는 자리: 윈도우 인증서 목록도 믿게 — 비어 있을 때만 채운다(사용자가 정한 값은 덮지 않는다)
-  assert.ok(start[1].hooks[0].command.startsWith("if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; try { & "));
+  assert.ok(notice.startsWith("if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; try { $ErrorActionPreference = 'Stop'; "));
   // 2.0.42: 안 끈 배경 명령 가드(클로드 전용 Stop 훅, matcher 없음)
   const stop = settings.hooks.Stop;
   assert.equal(stop.length, 1);
@@ -748,17 +753,30 @@ test('adapters(2.0.65): 옛 꼴로 남은 우리 알림 훅(시간 제한 · 껍
   assert.equal(after[0].hooks[0].shell, 'powershell');
   assert.equal(after[0].hooks[0].timeout, 10);
 
-  // 꼴만 다른 것도 간다: 종료 코드를 그대로 넘기던 꼴(`…; exit $LASTEXITCODE` — 실패 때 오류 한 줄이 남는다) → 늘 0 인 꼴.
-  const s1 = readJson(sPath);
-  const mine = s1.hooks.SessionStart.find((e) => JSON.stringify(e).includes('status.mjs'));
-  mine.hooks[0].command = `if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; & "${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" "${path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs')}" --hook; exit $LASTEXITCODE`;
-  fs.writeFileSync(sPath, `${JSON.stringify(s1, null, 2)}\n`);
+  // 꼴만 다른 것도 간다. 이 훅이 거쳐 온 꼴 둘: ① 종료 코드를 그대로 넘기던 꼴(실패 때 오류 한 줄이 남는다)
+  // ② 늘 0 이지만 안쪽 시간 제한이 없던 꼴(오래 걸리면 바깥 제한이 먼저 끊는다) → 지금의 꼴(안쪽 제한 + 늘 0).
+  const node = path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe');
+  const script = path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs');
+  const ca = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }";
+  for (const older of [
+    `${ca}; & "${node}" "${script}" --hook; exit $LASTEXITCODE`,
+    `${ca}; try { & "${node}" "${script}" --hook 2>$null } catch { }; exit 0`,
+  ]) {
+    const s1 = readJson(sPath);
+    const mine = s1.hooks.SessionStart.find((e) => JSON.stringify(e).includes('status.mjs'));
+    mine.hooks[0].command = older;
+    fs.writeFileSync(sPath, `${JSON.stringify(s1, null, 2)}\n`);
+    await adapters.run(ctx);
+    const s2 = readJson(sPath);
+    const again = s2.hooks.SessionStart.filter((e) => JSON.stringify(e).includes('status.mjs'));
+    assert.equal(again.length, 1, older);
+    assert.equal(again[0].hooks[0].command, wanted.command, older);
+    assert.ok(again[0].hooks[0].command.includes('$p.WaitForExit(6000)') && again[0].hooks[0].command.endsWith('} catch { }; exit 0'));
+  }
+  // 지금의 꼴 그대로면 다시 얹어도 변경 0(따옴표가 겹친 꼴에서도 우리 훅을 알아본다).
+  const settled = fs.readFileSync(sPath, 'utf8');
   await adapters.run(ctx);
-  const s2 = readJson(sPath);
-  const again = s2.hooks.SessionStart.filter((e) => JSON.stringify(e).includes('status.mjs'));
-  assert.equal(again.length, 1);
-  assert.equal(again[0].hooks[0].command, wanted.command);
-  assert.ok(again[0].hooks[0].command.endsWith('} catch { }; exit 0'));
+  assert.equal(fs.readFileSync(sPath, 'utf8'), settled);
 });
 
 test('adapters(업데이트): 플러그인은 새 판 캐시를 가리키고, 사람이 바꾼 source 는 그대로 둔다', async () => {

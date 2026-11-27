@@ -436,23 +436,49 @@ export const CLAUDE_HOOK_SHELL = 'powershell';
 const psCall = (exe, ...args) => `& ${[exe, ...args].map((a) => (/[\\/:\s]/.test(a) ? `"${a}"` : a)).join(' ')}`;
 // 막는 훅(일괄 종료 막기 · 경로 보호 · 신선도 점검 · 남은 배경 작업): 스크립트의 종료 코드를 그대로 넘긴다 — 차단(2)이 살아야 한다.
 const psRun = (exe, ...args) => `${psCall(exe, ...args)}; exit $LASTEXITCODE`;
-// 알리기만 하는 훅: **어떤 경우에도 종료 코드 0, 오류 줄 없음.** 세션 시작 화면에 오류 한 줄을 남기면 안 된다.
-//   · `2>$null` = 프로그램이 낸 오류 글(스크립트 없음 · 불러오기 실패 때 node 가 내는 글)을 버린다.
-//   · `try { } catch { }` = 프로그램 자체를 못 띄운 경우(node 없음)에 파워셸이 내는 오류 글을 막는다.
-//   · `exit 0` = 프로그램이 몇 번으로 끝났든 0.
-// 프로그램의 표준 출력(알림 한 줄)은 그대로 나간다(실측: 한글 UTF-8 글자가 바뀌지 않는다).
-const psRunQuiet = (exe, ...args) => `try { ${psCall(exe, ...args)} 2>$null } catch { }; exit 0`;
+// 알리기만 하는 훅: **어떤 경우에도 종료 코드 0, 오류 줄 없음 — 오래 걸려도.** 세션 시작 화면에 오류 한 줄을 남기면 안 된다.
+// 바깥(클로드코드)의 훅 시간 제한이 먼저 끊으면 `exit 0` 에 닿지 못하고 "훅 시간 초과"가 남는다. 그래서 프로그램을 파워셸 안에서
+// 직접 띄워 **바깥 제한보다 짧은 안쪽 제한**만큼만 기다리고, 넘으면 그 프로그램 하나만 끝낸 뒤 0 으로 마친다.
+//   · 프로그램은 창 없이 띄우고 표준 출력 · 표준 오류를 받아 온다. 표준 오류는 읽어서 버린다(스크립트 없음 · 불러오기 실패 때의 글).
+//   · 제때 끝났을 때만 표준 출력(알림 한 줄)을 그대로 내보낸다 — UTF-8 바이트로 쓴다(콘솔 글자표를 거치면 한글이 깨진다).
+//     제한을 넘겨 끊은 경우에는 받다 만 출력을 내보내지 않는다.
+//   · 프로그램을 못 띄웠을 때(node 없음)를 포함해 모든 오류는 `try { } catch { }` 가 삼킨다. 끝은 늘 `exit 0`.
+//   · 경로는 파워셸 작은따옴표 글(안의 ' 는 '' 로)과 그 안의 큰따옴표로 감싼다 — 빈칸 · 한글이 있어도 깨지지 않는다.
+// 윈도우 파워셸 5.1 에서 돈다(.NET 의 Process · ReadToEndAsync 만 쓴다). 시험이 실제 파워셸로 잰다(20초 자는 가짜 도구 포함).
+const psLiteral = (s) => `'${String(s).replace(/'/g, "''")}'`;
+function psRunQuietTimed(timeoutMs, exe, ...args) {
+  const argLine = args.map((a) => (/[\\/:\s]/.test(a) ? `"${a}"` : a)).join(' ');
+  return [
+    "try { $ErrorActionPreference = 'Stop'",
+    '$p = New-Object System.Diagnostics.Process',
+    `$p.StartInfo.FileName = ${psLiteral(exe)}`,
+    `$p.StartInfo.Arguments = ${psLiteral(argLine)}`,
+    '$p.StartInfo.UseShellExecute = $false',
+    '$p.StartInfo.CreateNoWindow = $true',
+    '$p.StartInfo.RedirectStandardOutput = $true',
+    '$p.StartInfo.RedirectStandardError = $true',
+    '$p.StartInfo.StandardOutputEncoding = [Text.Encoding]::UTF8',
+    '[void]$p.Start()',
+    '$o = $p.StandardOutput.ReadToEndAsync()',
+    '$e = $p.StandardError.ReadToEndAsync()',
+    `if ($p.WaitForExit(${Number(timeoutMs)})) { if ($o.Wait(2000) -and $o.Result) { $b = [Text.Encoding]::UTF8.GetBytes($o.Result); $s = [Console]::OpenStandardOutput(); $s.Write($b, 0, $b.Length); $s.Flush() } } else { try { $p.Kill() } catch { } }`,
+    '} catch { }; exit 0',
+  ].join('; ');
+}
 
 // 로그인 열쇠 알림 훅(2.0.65) — 세션이 시작될 때 부품 `iris-auth` 의 `status.mjs --hook` 을 한 번 부른다.
 // IRIS 열쇠가 곧 끝나거나 끝났을 때만 한 줄을 내고, 알릴 것이 없으면 아무것도 내지 않는다(이 PC 의 파일만 읽는다).
 //   · Node 를 띄우는 자리라 윈도우 인증서 목록도 믿게 한다(정적 검사 ㉒) — 값이 비어 있을 때만 채운다.
-//   · 알림일 뿐이다: 스크립트가 없거나 깨져 있거나 node 가 없어도 종료 코드 0 · 오류 글 없음(psRunQuiet — 시험이 실제 파워셸로 잰다).
+//   · 알림일 뿐이다: 스크립트가 없거나 깨져 있거나 node 가 없거나 오래 걸려도 종료 코드 0 · 오류 글 없음(psRunQuietTimed).
+//   · 시간 제한은 둘이다: 바깥 = 클로드코드가 훅을 끊는 시간(AUTH_NOTICE_TIMEOUT_SEC), 안쪽 = 우리가 node 를 끊는 시간
+//     (AUTH_NOTICE_INNER_TIMEOUT_MS). **안쪽이 반드시 더 짧아야 한다** — 파워셸이 뜨는 시간까지 더해도 바깥보다 먼저 끝나게.
 //   · 클로드 전용. 코덱스 hooks.json 에는 넣지 않는다(코덱스 훅을 바꾸면 첫 실행 신뢰 확인에 닿는다).
 export const AUTH_NOTICE_TIMEOUT_SEC = 10;
+export const AUTH_NOTICE_INNER_TIMEOUT_MS = 6000;
 export const PS_TRUST_SYSTEM_CA = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }";
 export const authToolDir = (root) => path.join(root, '_agent', 'shared', 'tools', 'iris-auth');
-export function authNoticeHookCommand(node, script) {
-  return `${PS_TRUST_SYSTEM_CA}; ${psRunQuiet(node, script, '--hook')}`;
+export function authNoticeHookCommand(node, script, { innerTimeoutMs = AUTH_NOTICE_INNER_TIMEOUT_MS } = {}) {
+  return `${PS_TRUST_SYSTEM_CA}; ${psRunQuietTimed(innerTimeoutMs, node, script, '--hook')}`;
 }
 
 // `authDir` = 잠금표가 정한 `iris-auth` 부품 폴더(없으면 기본 자리).
@@ -566,13 +592,28 @@ export function codexHookConfig(root) {
 
 // 훅 명령 한 줄을 낱말로 가른다. 따옴표 안은 빈칸이 있어도 한 덩이다.
 // 파워셸 꼴(2.0.55)은 `…script.py"; exit $LASTEXITCODE` 처럼 경로 뒤에 `;` 가 붙는다 — 떼고 본다.
+// 파워셸 작은따옴표 글 안에 큰따옴표로 감싼 경로(`'"C:\…\x.mjs" --hook'` — 알림 훅의 꼴)도 한 덩이로 읽는다.
 function commandTokens(command) {
   const out = [];
-  for (const m of String(command ?? '').matchAll(/"([^"]*)"|(\S+)/g)) {
-    const t = (m[1] ?? m[2] ?? '').replace(/"/g, '').replace(/;+$/, '');
+  for (const m of String(command ?? '').matchAll(/'?"([^"]*)"'?|(\S+)/g)) {
+    const t = (m[1] ?? m[2] ?? '').replace(/"/g, '').replace(/;+$/, '').replace(/^'+|'+$/g, '');
     if (t) out.push(t);
   }
   return out;
+}
+
+// 명령 글 안에 그 경로가 **통째로**(앞뒤가 따옴표 · 빈칸 · 글의 끝) 적혀 있나. 대소문자 · 슬래시 방향은 보지 않는다.
+// 낱말로 가르는 것과 따로 본다 — 명령의 꼴(따옴표가 겹친 꼴 등)이 달라져도 "우리가 놓은 바로 그 경로"는 놓치지 않게.
+function commandMentionsPath(command, wantedPath) {
+  const hay = normPath(command);
+  const needle = normPath(wantedPath);
+  if (!needle) return false;
+  for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) {
+    const before = i === 0 ? ' ' : hay[i - 1];
+    const after = i + needle.length >= hay.length ? ' ' : hay[i + needle.length];
+    if (/["'\s]/.test(before) && /["'\s;]/.test(after)) return true;
+  }
+  return false;
 }
 
 const HOOK_SCRIPT_EXT = /\.(ps1|py|cjs|js|mjs)$/i;
@@ -619,7 +660,8 @@ function hookMatches(root, h, w) {
   const cmd = String(h?.command ?? '');
   // 옛 훅 넷: 이름이 명령 어디에든 있으면 같은 훅(지금까지의 동작 그대로).
   if (isNameMatched(name)) return cmd.toLowerCase().includes(name);
-  // 새 훅: 명령 안의 스크립트 낱말 가운데 IRIS 가 놓은 그 파일이 있어야 한다.
+  // 새 훅: 명령 안에 IRIS 가 놓은 그 파일이 있어야 한다 — 그 경로가 통째로 적혀 있거나, 스크립트 낱말 가운데 같은 부품의 같은 파일이 있거나.
+  if (commandMentionsPath(cmd, wantedPath)) return true;
   return commandTokens(cmd).some((t) => HOOK_SCRIPT_EXT.test(t) && isSameOwnedScript(root, t, wantedPath));
 }
 
