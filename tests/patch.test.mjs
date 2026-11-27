@@ -132,17 +132,47 @@ test('applyPatches on a fresh pristine install reproduces the live TeamClaude in
 
   // 4. Every file the rules touch must now be byte-identical to the live
   //    snapshot.
+  //
+  //    One narrow, named exception (2.0.65): the relay's OWN test files that
+  //    the rules carry in a newer form than the live install holds. When the
+  //    2026-11-25/26 fixes were put into the live install only src/ was
+  //    copied; the relay working copy's tests of those fixes were not. The
+  //    package ships the tests that belong to the code it ships. Only files
+  //    at the package root named *.test.js / *.test.mjs may be listed -- the
+  //    running relay never loads those, so "byte-identical to what runs here"
+  //    still holds for every file that runs. Each entry says HOW it is ahead,
+  //    and the test fails once that stops being true, so an entry cannot
+  //    outlive its reason: when the live install catches up, delete the line.
+  const TESTS_AHEAD_OF_LIVE = new Map([
+    // tests of the soft login-failure round; the live install has no copy
+    ['auth-soft.test.mjs', 'absent'],
+    // one assertion made independent of log order in the same round
+    ['reject-log.test.mjs', 'differs'],
+  ]);
   const mismatches = [];
+  const staleExceptions = [];
   for (const f of rules.files) {
     assert.ok(f.path.startsWith(PKG_PREFIX), `unexpected rule path shape: ${f.path}`);
     const rel = f.path.slice(PKG_PREFIX.length);
     const patchedPath = path.join(installRoot, f.path);
     const livePath = path.join(liveSnapshot, rel);
     const patched = fs.readFileSync(patchedPath);
+    const ahead = TESTS_AHEAD_OF_LIVE.get(rel);
+    if (ahead) {
+      assert.match(rel, /^[^/]+\.test\.m?js$/, `only a package-root test file may be ahead of the live install: ${rel}`);
+      const liveHas = fs.existsSync(livePath);
+      const stillAhead = ahead === 'absent' ? !liveHas : liveHas && !patched.equals(fs.readFileSync(livePath));
+      if (!stillAhead) staleExceptions.push(`${rel} (listed as "${ahead}")`);
+      continue;
+    }
     const live = fs.readFileSync(livePath);
     if (!patched.equals(live)) mismatches.push(rel);
   }
   assert.deepEqual(mismatches, [], `files not byte-identical to the live install after patching: ${mismatches.join(', ')}`);
+  assert.deepEqual(staleExceptions, [], `TESTS_AHEAD_OF_LIVE no longer describes the live install -- remove or correct: ${staleExceptions.join(', ')}`);
+  for (const rel of TESTS_AHEAD_OF_LIVE.keys()) {
+    assert.ok(rules.files.some((f) => f.path === PKG_PREFIX + rel), `TESTS_AHEAD_OF_LIVE names a file no rule carries: ${rel}`);
+  }
 
   // 5. (2.0.65) And the other way round: the WHOLE package folder must match,
   //    not only the files a rule names. Step 4 alone cannot see a file that
@@ -165,8 +195,9 @@ test('applyPatches on a fresh pristine install reproduces the live TeamClaude in
     return out.sort();
   };
   const madeRoot = path.join(installRoot, ...PKG_PREFIX.split('/').filter(Boolean));
-  const madeFiles = listPackage(madeRoot);
-  const liveFiles = listPackage(liveSnapshot);
+  // (the test files step 4 excused are left out on both sides)
+  const madeFiles = listPackage(madeRoot).filter((rel) => !TESTS_AHEAD_OF_LIVE.has(rel));
+  const liveFiles = listPackage(liveSnapshot).filter((rel) => !TESTS_AHEAD_OF_LIVE.has(rel));
   assert.deepEqual(liveFiles.filter((rel) => !madeFiles.includes(rel)), [], 'files only the live install has (no rule ships them)');
   assert.deepEqual(madeFiles.filter((rel) => !liveFiles.includes(rel)), [], 'files the rules produce that the live install does not have');
   const treeMismatches = liveFiles.filter((rel) => !fs.readFileSync(path.join(madeRoot, rel)).equals(fs.readFileSync(path.join(liveSnapshot, rel))));
