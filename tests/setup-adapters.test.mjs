@@ -156,8 +156,15 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   assert.ok(pre[1].hooks[0].command.includes(path.join(root, '_agent', 'shared', 'shims', 'python.cmd')));
   assert.ok(pre[1].hooks[0].command.includes('guard-iris-path.py'));
   const start = settings.hooks.SessionStart;
-  assert.equal(start.length, 1);
+  assert.equal(start.length, 2);
   assert.ok(start[0].hooks[0].command.includes(path.join(root, '_ontology', 'check_fresh.py')));
+  // 2.0.65: 로그인 열쇠 알림 — 동봉 node 로 부품 iris-auth 의 status.mjs --hook 을 부른다(따로 둔 항목, 10초 제한)
+  assert.equal(start[1].matcher, 'startup|resume|clear|compact');
+  assert.equal(start[1].hooks.length, 1);
+  assert.ok(start[1].hooks[0].command.includes(`& "${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" "${under(root, `${LOCK.parts['iris-auth'].dest}/status.mjs`)}" --hook; exit $LASTEXITCODE`));
+  assert.equal(start[1].hooks[0].timeout, 10);
+  // Node 를 띄우는 자리: 윈도우 인증서 목록도 믿게 — 비어 있을 때만 채운다(사용자가 정한 값은 덮지 않는다)
+  assert.ok(start[1].hooks[0].command.startsWith("if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; & "));
   // 2.0.42: 안 끈 배경 명령 가드(클로드 전용 Stop 훅, matcher 없음)
   const stop = settings.hooks.Stop;
   assert.equal(stop.length, 1);
@@ -277,6 +284,10 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   assert.equal(chooks.hooks.PreToolUse.length, 2);
   assert.ok(chooks.hooks.PreToolUse[1].hooks[0].command.startsWith('& "'));
   assert.equal(chooks.hooks.SessionStart[0].matcher, 'startup|resume|clear|compact');
+  // 2.0.65: 로그인 열쇠 알림 훅은 클로드에만 건다 — 코덱스 훅 파일은 한 글자도 늘지 않는다(바뀌면 코덱스가 훅 신뢰를 다시 묻는 길에 닿는다)
+  assert.equal(chooks.hooks.SessionStart.length, 1);
+  assert.deepEqual(Object.keys(chooks.hooks).sort(), ['PreToolUse', 'SessionStart']);
+  assert.ok(!fs.readFileSync(agentFile(root, 'codex', 'hooks.json'), 'utf8').includes('status.mjs'));
 
   // --- recorded / pending ------------------------------------------------
   assert.equal(recorded.claude.mcp.length, 6);
@@ -579,8 +590,70 @@ test('adapters(업데이트): 우리 훅의 경로는 고치고, 그 사람 사�
   assert.equal(after.hooks[0].command, wanted, '우리 폴더를 가리키던 우리 훅은 새 명령으로 갱신');
   assert.equal(after.hooks[0].shell, 'powershell', '옛 판 훅(shell 없음)도 파워셸로 갈아 끼운다(2.0.55)');
   assert.equal(s.hooks.PreToolUse.length, 2, '훅을 하나 더 만들지 않는다');
-  assert.equal(s.hooks.SessionStart.length, 1, '그 사람 훅 옆에 우리 것을 끼워 넣지 않는다');
+  // 그 사람이 신선도 훅을 자기 사본으로 돌려 두었으면 우리 신선도 훅을 옆에 끼워 넣지 않는다(그대로).
+  // 2.0.65 의 로그인 열쇠 알림은 그와 다른 훅이라 한 번 더해진다 — 그래서 2개다(그 사람 것 1 + 알림 1).
   assert.equal(s.hooks.SessionStart[0].hooks[0].command, '"C:\\mine\\python.exe" "C:\\mine\\check_fresh.py" --hook session');
+  assert.equal(s.hooks.SessionStart.filter((e) => JSON.stringify(e).includes('check_fresh.py')).length, 1, '그 사람 훅 옆에 우리 신선도 훅을 끼워 넣지 않는다');
+  assert.equal(s.hooks.SessionStart.length, 2);
+  assert.ok(s.hooks.SessionStart[1].hooks[0].command.includes('status.mjs'));
+});
+
+test('adapters(2.0.65): 옛 판 설정에 세 번 되풀이 적용해도 로그인 열쇠 알림 훅은 한 번만 — 그 사람 훅은 그대로', async () => {
+  const ctx = makeCtx('auth-hook-repeat', { apps: { office: true, hancom: true } });
+  const root = ctx.root;
+  await adapters.run(ctx);
+  const sPath = agentFile(root, 'claude', 'settings.json');
+  const codexHooksPath = agentFile(root, 'codex', 'hooks.json');
+
+  // 옛 판(2.0.64 까지)이 남긴 모양으로 되돌린다: 알림 훅이 없고, 그 사람이 건 훅이 섞여 있다.
+  const s0 = readJson(sPath);
+  s0.hooks.SessionStart = s0.hooks.SessionStart.filter((e) => !JSON.stringify(e).includes('status.mjs'));
+  assert.equal(s0.hooks.SessionStart.length, 1, '옛 판에는 신선도 훅 하나뿐이었다');
+  const mine = [
+    { matcher: 'startup', hooks: [{ type: 'command', command: 'node "D:\\my tools\\status.mjs" --hook', timeout: 77 }] }, // 같은 이름의 그 사람 스크립트
+    { hooks: [{ type: 'command', command: 'echo hello' }] },
+  ];
+  s0.hooks.SessionStart.unshift(...mine);
+  fs.writeFileSync(sPath, `${JSON.stringify(s0, null, 2)}\n`);
+  const codexBefore = fs.readFileSync(codexHooksPath, 'utf8');
+
+  await adapters.run(ctx); // 새 판으로 한 번
+  const once = fs.readFileSync(sPath, 'utf8');
+  await adapters.run(ctx); // 두 번
+  await adapters.run(ctx); // 세 번
+  assert.equal(fs.readFileSync(sPath, 'utf8'), once, '두 번째 · 세 번째 적용은 설정을 한 글자도 바꾸지 않는다');
+
+  const s = readJson(sPath);
+  assert.deepEqual(s.hooks.SessionStart.slice(0, 2), mine, '그 사람 훅은 순서 · 명령 · 시간 제한까지 그대로');
+  const auth = s.hooks.SessionStart.filter((e) => (e.hooks ?? []).some((h) => h.command.includes(path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs'))));
+  assert.equal(auth.length, 1, '우리 알림 훅은 딱 하나');
+  assert.equal(s.hooks.SessionStart.length, 4, '그 사람 것 2 + 신선도 1 + 알림 1');
+  assert.equal(s.hooks.PreToolUse.length, 2);
+  assert.equal(s.hooks.Stop.length, 1);
+  assert.equal(fs.readFileSync(codexHooksPath, 'utf8'), codexBefore, '코덱스 훅 파일은 바뀌지 않는다');
+});
+
+test('adapters(2.0.65): 옛 꼴로 남은 우리 알림 훅(시간 제한 · 껍데기가 다름)은 제자리에서 새 꼴로 — 하나 더 만들지 않는다', async () => {
+  const ctx = makeCtx('auth-hook-refresh', { apps: { office: true, hancom: true } });
+  const root = ctx.root;
+  await adapters.run(ctx);
+  const sPath = agentFile(root, 'claude', 'settings.json');
+  const s0 = readJson(sPath);
+  const ours = s0.hooks.SessionStart.find((e) => JSON.stringify(e).includes('status.mjs'));
+  const wanted = { ...ours.hooks[0] };
+  ours.hooks[0].command = `"${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" "${path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs')}" --hook`;
+  ours.hooks[0].timeout = 60;
+  delete ours.hooks[0].shell;
+  fs.writeFileSync(sPath, `${JSON.stringify(s0, null, 2)}\n`);
+
+  await adapters.run(ctx);
+
+  const s = readJson(sPath);
+  const after = s.hooks.SessionStart.filter((e) => JSON.stringify(e).includes('status.mjs'));
+  assert.equal(after.length, 1);
+  assert.equal(after[0].hooks[0].command, wanted.command);
+  assert.equal(after[0].hooks[0].shell, 'powershell');
+  assert.equal(after[0].hooks[0].timeout, 10);
 });
 
 test('adapters(업데이트): 플러그인은 새 판 캐시를 가리키고, 사람이 바꾼 source 는 그대로 둔다', async () => {

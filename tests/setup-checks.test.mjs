@@ -249,20 +249,41 @@ test('검사3: 표지 파일 또는 스킬 파일이 있으면 통과, 폴더가
 // 4. 훅 문법
 // ---------------------------------------------------------------------------
 
-test('검사4: 훅 스크립트 3개를 각각 파워셸 파서·py_compile 로 본다', async () => {
+test('검사4: 훅 스크립트를 각각 파워셸 파서·py_compile·node --check 로 본다(실행하지 않는다)', async () => {
   const root = newRoot('hooks');
   write(path.join(root, '_agent', 'claude', 'scripts', 'block-blanket-kill.ps1'), '# ps');
   write(path.join(root, '_agent', 'claude', 'scripts', 'guard-iris-path.py'), '# py');
   write(path.join(root, '_ontology', 'check_fresh.py'), '# py');
+  // 2.0.65: 세션 시작 훅으로 걸리는 로그인 열쇠 알림 스크립트
+  write(path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs'), '// mjs');
   const calls = [];
   const c = await checkHooks(ctxFor(root, {
     run: async (exe, args) => { calls.push({ exe: path.basename(exe), args }); return { code: 0, out: '', err: '' }; },
   }));
   assert.equal(c.status, 'pass');
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   assert.equal(calls[0].exe, 'powershell');
   assert.match(calls[0].args[2], /Parser\]::ParseFile/);
   assert.deepEqual(calls[1].args.slice(-3, -1), ['-m', 'py_compile']);
+  assert.deepEqual(calls[3].args.slice(-2), ['--check', path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs')], '.mjs 훅은 문법만 본다(--check) — 돌리면 상태 파일을 쓴다');
+  assert.match(c.detail, /4개 전부 문법 정상/);
+});
+
+test('검사4: 로그인 열쇠 알림 스크립트(status.mjs)가 없거나 문법이 깨졌으면 잡는다', async () => {
+  const root = newRoot('hooks-auth');
+  write(path.join(root, '_agent', 'claude', 'scripts', 'block-blanket-kill.ps1'), '# ps');
+  write(path.join(root, '_agent', 'claude', 'scripts', 'guard-iris-path.py'), '# py');
+  write(path.join(root, '_ontology', 'check_fresh.py'), '# py');
+  const ok = async () => ({ code: 0, out: '', err: '' });
+  const missing = await checkHooks(ctxFor(root, { run: ok }));
+  assert.equal(missing.status, 'fail');
+  assert.match(missing.detail, /status\.mjs\(파일이 없습니다\)/);
+  write(path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs'), 'import {');
+  const broken = await checkHooks(ctxFor(root, {
+    run: async (exe, args) => (args.includes('--check') ? { code: 1, out: '', err: 'SyntaxError: Unexpected end of input' } : { code: 0, out: '', err: '' }),
+  }));
+  assert.equal(broken.status, 'fail');
+  assert.match(broken.detail, /status\.mjs\(문법 오류/);
 });
 
 test('배치 파일(.cmd 심)은 cmd.exe 를 거쳐 띄운다(윈도 Node 의 spawn EINVAL 회피)', async () => {
@@ -666,6 +687,7 @@ function fullyPassingRoot(label) {
   write(path.join(root, '_agent', 'claude', 'scripts', 'block-blanket-kill.ps1'), '# ps');
   write(path.join(root, '_agent', 'claude', 'scripts', 'guard-iris-path.py'), '# py');
   write(path.join(root, '_ontology', 'check_fresh.py'), '# py');
+  write(path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs'), '// mjs'); // 2.0.65: 로그인 열쇠 알림 훅의 스크립트
   write(path.join(root, '_agent', 'claude', 'plugins', 'installed_plugins.json'), {
     version: 2, plugins: { 'superpowers@iris-local': [{ installPath: path.join(root, 'cache', 'sp') }] },
   });

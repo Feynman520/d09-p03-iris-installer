@@ -714,6 +714,11 @@ async function main() {
     // points, checked in the zip that was packed (not the source tree):
     // bootstrap.ps1 env line, server.mjs calling trustSystemRoots, the relay
     // manage script, and the agent updater inside its own nested zip.
+    // 2.0.65 adds a fifth: the Claude SessionStart hook that runs the bundled
+    // node on iris-auth/status.mjs --hook. The hook command is a string the
+    // installer writes into settings.json, so the check reads the installer
+    // code that builds it (setup/adapters.mjs): the "only when empty" env line
+    // exists and the hook command is built with it in front.
     {
       const problems = [];
       const read = (rel) => {
@@ -726,6 +731,9 @@ async function main() {
       if (!/import \{ trustSystemRoots \} from '\.\/lib\/systemca\.mjs'/.test(server) || !/const ca = trustSystemRoots\(\)/.test(server)) problems.push('server.mjs does not call trustSystemRoots()');
       if (!/setDefaultCACertificates/.test(read('installer/lib/systemca.mjs'))) problems.push('lib/systemca.mjs lacks setDefaultCACertificates');
       if (!/\$env:NODE_USE_SYSTEM_CA = '1'/.test(read('payload/relay/teamclaude-manage.ps1'))) problems.push('relay/teamclaude-manage.ps1 does not set NODE_USE_SYSTEM_CA');
+      const adaptersSrc = read('installer/setup/adapters.mjs');
+      if (!adaptersSrc.includes(`PS_TRUST_SYSTEM_CA = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }"`)) problems.push('setup/adapters.mjs lacks the only-when-empty NODE_USE_SYSTEM_CA line for hooks');
+      if (!adaptersSrc.includes("return `${PS_TRUST_SYSTEM_CA}; ${psRun(node, script, '--hook')}`") || !/command: authNoticeHookCommand\(nodeExePath\(root\), authStatus\)/.test(adaptersSrc)) problems.push('setup/adapters.mjs: the login-key notice hook (node status.mjs --hook) is not built with the NODE_USE_SYSTEM_CA line');
       const updZip = path.join(payloadDir, 'updater', 'iris-updater.zip');
       if (!fs.existsSync(updZip)) problems.push('missing payload/updater/iris-updater.zip');
       else {
@@ -746,9 +754,9 @@ async function main() {
         }
       }
       record(
-        '㉒ IRIS-started Node trusts the Windows certificate store too (installer, relay, updater)',
+        '㉒ IRIS-started Node trusts the Windows certificate store too (installer, relay, updater, session-start hook)',
         problems.length === 0,
-        problems.length === 0 ? '4 launch point(s) wired' : problems.join('; '),
+        problems.length === 0 ? '5 launch point(s) wired' : problems.join('; '),
       );
     }
   } finally {

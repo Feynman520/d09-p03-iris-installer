@@ -9,10 +9,19 @@
 //     — 파일 이름으로 알아보고, 그 사람이 자기 사본으로 돌려 둔 것도 "이미 있음"으로 존중한다.
 //   · 그 뒤에 더하는 훅은 IRIS 가 놓은 경로일 때만 우리 것이다.
 //   · 같은 설정에 몇 번을 되풀이 적용해도 훅은 한 번씩만 들어간다. 그 사람 훅은 한 글자도 바뀌지 않는다.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import * as adapters from '../installer/setup/adapters.mjs';
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const AUTH_SRC = path.join(REPO, 'payload-src', 'tools', 'iris-auth');
+const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 'iris-hooks-'));
+after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
 const ROOT = 'C:\\Soul';
 const TOOLS = path.win32.join(ROOT, '_agent', 'shared', 'tools');
@@ -174,4 +183,136 @@ test('빈칸이 든 설치 경로: 따옴표 안을 한 덩이로 읽어 되풀�
   apply(data, groups, root);
   apply(data, groups, root);
   assert.equal(data.hooks.SessionStart.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// 2.0.65 — 로그인 열쇠 알림 훅(클로드 SessionStart): 부품 iris-auth 의 `status.mjs --hook`
+// ---------------------------------------------------------------------------
+
+test('알림 훅: 클로드 SessionStart 에 따로 둔 항목 하나 — 파워셸 꼴 · 10초 · 코덱스에는 없다', () => {
+  const groups = adapters.claudeHookGroups(ROOT);
+  assert.equal(groups.SessionStart.length, 2);
+  const h = groups.SessionStart[1].hooks[0];
+  assert.equal(groups.SessionStart[1].hooks.length, 1);
+  assert.equal(h.type, 'command');
+  assert.equal(h.shell, 'powershell');
+  assert.equal(h.timeout, 10);
+  assert.equal(h.timeout, adapters.AUTH_NOTICE_TIMEOUT_SEC);
+  assert.equal(h.command, `if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; & "${NODE}" "${path.win32.join(TOOLS, 'iris-auth', 'status.mjs')}" --hook; exit $LASTEXITCODE`);
+  assert.ok(!/^"/.test(h.command), '파워셸에서 "a" "b" 꼴은 문법 오류');
+  // 잠금표가 부품 자리를 바꾸면 그 자리를 따른다.
+  const moved = adapters.claudeHookGroups(ROOT, { authDir: path.win32.join(TOOLS, 'iris-auth', '2.0') });
+  assert.ok(moved.SessionStart[1].hooks[0].command.includes(path.win32.join(TOOLS, 'iris-auth', '2.0', 'status.mjs')));
+  // 코덱스 훅 구성에는 넣지 않는다.
+  const codex = adapters.codexHookConfig(ROOT).hooks;
+  assert.equal(codex.SessionStart.length, 1);
+  assert.ok(!JSON.stringify(codex).includes('status.mjs'));
+  // Node 를 띄우지 않는 옛 훅들에는 인증서 줄을 붙이지 않는다(그 훅들의 명령은 지금까지와 글자가 같다).
+  for (const e of [...groups.PreToolUse, groups.SessionStart[0], ...groups.Stop]) {
+    assert.ok(!e.hooks[0].command.includes('NODE_USE_SYSTEM_CA'));
+  }
+});
+
+// 훅 명령을 클로드코드가 하듯 파워셸로 실제로 돌린다. 사본을 임시 폴더에 놓고 **임시 홈**에서만 돈다
+// (이 PC 의 진짜 상태 파일 · 로그인 파일은 읽지도 쓰지도 않는다). node 는 이 시험을 돌리는 node 다.
+function makeAuthRoot(label, { drop = [] } = {}) {
+  const base = path.join(tmp, label);
+  const tool = path.join(base, 'tool');
+  const home = path.join(base, 'home');
+  fs.mkdirSync(tool, { recursive: true });
+  fs.mkdirSync(path.join(home, '.config'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'claude', 'secrets'), { recursive: true });
+  for (const f of ['status.mjs', 'lib.mjs', 'longkey.mjs']) {
+    if (!drop.includes(f)) fs.copyFileSync(path.join(AUTH_SRC, f), path.join(tool, f));
+  }
+  const env = { ...process.env };
+  for (const k of ['NODE_TEST_CONTEXT', 'NODE_USE_SYSTEM_CA', 'TEAMCLAUDE_CONFIG']) delete env[k];
+  Object.assign(env, {
+    USERPROFILE: home, HOME: home,
+    CLAUDE_CONFIG_DIR: path.join(home, 'claude'),
+    IRIS_LONGKEY_FILE: path.join(home, 'claude', 'secrets', 'iris-cli-token.json'),
+    IRIS_AUTH_NOTIFY: '0',
+  });
+  return { tool, home, env, script: path.join(tool, 'status.mjs') };
+}
+
+function runHookCommand(command, env) {
+  // 멈추지 않는지는 60초 한도로 본다(짧은 마감으로 재지 않는다 — PC 가 바쁠 때 코드 문제 없이 깨지지 않게).
+  const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], { env, encoding: 'utf8', timeout: 60000, windowsHide: true });
+  assert.equal(r.error, undefined, `훅 명령이 끝나지 않았다: ${r.error?.message}`);
+  return { code: r.status, out: r.stdout ?? '', err: r.stderr ?? '' };
+}
+
+test('알림 훅: 알릴 것이 없으면 조용히 0 — 열쇠가 곧 끝나면 한 줄', () => {
+  const a = makeAuthRoot('run-quiet');
+  const quiet = runHookCommand(adapters.authNoticeHookCommand(process.execPath, a.script), a.env);
+  assert.equal(quiet.code, 0, quiet.err);
+  assert.equal(quiet.out, '');
+
+  fs.writeFileSync(a.env.IRIS_LONGKEY_FILE, JSON.stringify({ token: 'T', expiresAt: Date.now() + 86400000 }));
+  const due = runHookCommand(adapters.authNoticeHookCommand(process.execPath, a.script), a.env);
+  assert.equal(due.code, 0, due.err);
+  assert.match(due.out, /^\[IRIS 인증\] /);
+  assert.equal(due.out.trim().split(/\r?\n/).length, 1);
+});
+
+test('알림 훅: 어떤 실패에도 세션 시작을 막는 종료 코드(2)를 내지 않고, 멈추지 않고 끝난다', () => {
+  const blocks = (r, what) => {
+    assert.notEqual(r.code, 2, `${what}: 종료 코드 2 는 "막음"이다`);
+    assert.ok(r.code === 0 || r.code === 1, `${what}: 종료 코드 ${r.code}`);
+    assert.equal(r.out, '', `${what}: 세션에 끼어드는 글(표준 출력)을 내지 않는다`);
+  };
+
+  // ① 스크립트 파일이 없다(부품이 아직 안 놓였거나 지워졌다).
+  const gone = makeAuthRoot('fail-missing', { drop: ['status.mjs'] });
+  blocks(runHookCommand(adapters.authNoticeHookCommand(process.execPath, gone.script), gone.env), '스크립트 없음');
+
+  // ② 불러오기 실패(옆의 lib.mjs 가 없다 / 문법이 깨졌다).
+  const noLib = makeAuthRoot('fail-import', { drop: ['lib.mjs'] });
+  blocks(runHookCommand(adapters.authNoticeHookCommand(process.execPath, noLib.script), noLib.env), 'lib.mjs 없음');
+  const badLib = makeAuthRoot('fail-syntax');
+  fs.writeFileSync(path.join(badLib.tool, 'lib.mjs'), 'export function collect( {');
+  blocks(runHookCommand(adapters.authNoticeHookCommand(process.execPath, badLib.script), badLib.env), 'lib.mjs 문법 오류');
+
+  // ③ 읽기 오류: 읽는 파일이 전부 깨져 있고, 상태 파일을 쓸 폴더도 없다 → 그래도 정상 종료(0).
+  const junk = makeAuthRoot('fail-read');
+  fs.mkdirSync(path.join(junk.home, '.config', 'x'), { recursive: true });
+  fs.writeFileSync(path.join(junk.home, '.config', 'teamclaude.json'), '{ not json');
+  fs.writeFileSync(path.join(junk.home, '.config', 'teamclaude.auth-health.json'), '\u0000\u0001');
+  fs.writeFileSync(path.join(junk.home, '.config', 'iris-auth-status.json'), '[[[');
+  fs.writeFileSync(path.join(junk.home, 'claude', '.credentials.json'), 'null');
+  fs.writeFileSync(junk.env.IRIS_LONGKEY_FILE, '{"token":');
+  const r3 = runHookCommand(adapters.authNoticeHookCommand(process.execPath, junk.script), junk.env);
+  assert.equal(r3.code, 0, r3.err);
+  assert.equal(r3.out, '');
+  const noDir = makeAuthRoot('fail-nodir');
+  fs.rmSync(path.join(noDir.home, '.config'), { recursive: true, force: true });
+  const r3b = runHookCommand(adapters.authNoticeHookCommand(process.execPath, noDir.script), noDir.env);
+  assert.equal(r3b.code, 0, r3b.err);
+
+  // ④ node 자체가 없다(런타임 부품이 빠졌다).
+  const noNode = makeAuthRoot('fail-nonode');
+  blocks(runHookCommand(adapters.authNoticeHookCommand(path.join(noNode.tool, 'no-such-node.exe'), noNode.script), noNode.env), 'node 없음');
+});
+
+test('알림 훅: 훅 방식(--hook)은 이 PC 의 파일만 읽는다 — 풍선 알림 · 네트워크 · 다른 프로그램 실행이 없어 시간 제한(10초) 안에 끝난다', () => {
+  // 시간 초과 자체는 클로드코드가 끊는다(timeout 칸). 여기서는 오래 걸릴 일을 하지 않는다는 것을 원본 글자로 묶는다:
+  // 풍선 알림(다른 프로그램을 띄움)은 --notify 를 줄 때만이고, 훅 명령은 --notify 를 주지 않는다.
+  const src = fs.readFileSync(path.join(AUTH_SRC, 'status.mjs'), 'utf8');
+  assert.match(src, /if \(argv\.includes\('--notify'\)\) \{[\s\S]*?windowsNotify\(/, '풍선 알림은 --notify 안에서만');
+  assert.equal((src.match(/windowsNotify\(/g) ?? []).length, 2, 'windowsNotify 는 정의 한 번 + --notify 안의 호출 한 번뿐');
+  assert.ok(!/\bfetch\(|node:https?|node:net\b/.test(src), '네트워크를 쓰지 않는다');
+  assert.ok(!/\bfetch\(|node:https?|node:net\b|child_process/.test(fs.readFileSync(path.join(AUTH_SRC, 'lib.mjs'), 'utf8')));
+  const cmd = adapters.claudeHookGroups(ROOT).SessionStart[1].hooks[0].command;
+  assert.ok(cmd.includes(' --hook;') && !cmd.includes('--notify'));
+});
+
+test('알림 훅: NODE_USE_SYSTEM_CA 는 비어 있을 때만 1 로 채운다(사용자가 정한 값은 덮지 않는다)', () => {
+  const a = makeAuthRoot('ca');
+  const probe = path.join(a.tool, 'probe.mjs');
+  fs.writeFileSync(probe, "process.stdout.write(`CA=${process.env.NODE_USE_SYSTEM_CA ?? ''}`);\n");
+  const command = adapters.authNoticeHookCommand(process.execPath, probe);
+  assert.equal(runHookCommand(command, a.env).out, 'CA=1', '없으면 채운다');
+  assert.equal(runHookCommand(command, { ...a.env, NODE_USE_SYSTEM_CA: '' }).out, 'CA=1', '빈 값이어도 채운다');
+  assert.equal(runHookCommand(command, { ...a.env, NODE_USE_SYSTEM_CA: '0' }).out, 'CA=0', '사용자가 정한 값은 그대로');
 });

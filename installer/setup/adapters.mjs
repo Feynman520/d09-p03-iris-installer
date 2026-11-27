@@ -434,9 +434,24 @@ async function runRelaySurvey(ctx, { fs, root, log }) {
 // 차단(2)이 살아 있게 `; exit $LASTEXITCODE` 를 붙인다(실측: 없으면 1, 있으면 2).
 export const CLAUDE_HOOK_SHELL = 'powershell';
 const psRun = (exe, ...args) => `& ${[exe, ...args].map((a) => (/[\\/:\s]/.test(a) ? `"${a}"` : a)).join(' ')}; exit $LASTEXITCODE`;
-export function claudeHookGroups(root) {
+
+// 로그인 열쇠 알림 훅(2.0.65) — 세션이 시작될 때 부품 `iris-auth` 의 `status.mjs --hook` 을 한 번 부른다.
+// IRIS 열쇠가 곧 끝나거나 끝났을 때만 한 줄을 내고, 알릴 것이 없으면 아무것도 내지 않는다(이 PC 의 파일만 읽는다).
+//   · Node 를 띄우는 자리라 윈도우 인증서 목록도 믿게 한다(정적 검사 ㉒) — 값이 비어 있을 때만 채운다.
+//   · 알림일 뿐이다: 스크립트가 없거나 깨져 있어도 세션 시작을 막지 않는다(막는 종료 코드 2 를 내지 않는다 — 시험이 묶음).
+//   · 클로드 전용. 코덱스 hooks.json 에는 넣지 않는다(코덱스 훅을 바꾸면 첫 실행 신뢰 확인에 닿는다).
+export const AUTH_NOTICE_TIMEOUT_SEC = 10;
+export const PS_TRUST_SYSTEM_CA = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }";
+export const authToolDir = (root) => path.join(root, '_agent', 'shared', 'tools', 'iris-auth');
+export function authNoticeHookCommand(node, script) {
+  return `${PS_TRUST_SYSTEM_CA}; ${psRun(node, script, '--hook')}`;
+}
+
+// `authDir` = 잠금표가 정한 `iris-auth` 부품 폴더(없으면 기본 자리).
+export function claudeHookGroups(root, { authDir = null } = {}) {
   const scripts = claudeScriptsDir(root);
   const py = pythonShimPath(root);
+  const authStatus = path.join(authDir ?? authToolDir(root), 'status.mjs');
   return {
     PreToolUse: [
       {
@@ -469,6 +484,17 @@ export function claudeHookGroups(root) {
           shell: CLAUDE_HOOK_SHELL,
           timeout: 30,
           statusMessage: '온톨로지 신선도 점검',
+        }],
+      },
+      // 따로 둔 항목이다 — 위 신선도 훅을 그 사람이 자기 사본으로 돌려 두었어도 이 훅은 그와 무관하게 한 번 들어간다.
+      {
+        matcher: 'startup|resume|clear|compact',
+        hooks: [{
+          type: 'command',
+          command: authNoticeHookCommand(nodeExePath(root), authStatus),
+          shell: CLAUDE_HOOK_SHELL,
+          timeout: AUTH_NOTICE_TIMEOUT_SEC,
+          statusMessage: '로그인 열쇠 만료 확인',
         }],
       },
     ],
@@ -547,13 +573,6 @@ const normPath = (p) => String(p ?? '').split('/').join('\\').toLowerCase();
 // 훅 하나가 부르는 스크립트의 경로(명령에 적힌 그대로). 없으면 null.
 function hookScriptPath(hook) {
   return commandTokens(hook?.command).find((t) => HOOK_SCRIPT_EXT.test(t)) ?? null;
-}
-
-// 훅 항목이 어느 스크립트를 부르는지(파일 이름만).
-function hookScriptNames(entry) {
-  return (entry?.hooks ?? [])
-    .map((h) => path.basename(String(h?.command ?? '').replace(/"/g, '').split(/\s+/).map((t) => t.replace(/;+$/, '')).find((t) => HOOK_SCRIPT_EXT.test(t)) ?? ''))
-    .filter(Boolean);
 }
 
 // 2.0.64 까지 등록해 온 훅 넷(일괄 종료 막기 · 경로 보호 · 신선도 점검 · 남은 배경 작업)은 지금까지처럼
@@ -948,8 +967,8 @@ function writeClaudeSettings(ctx, { fs, root, recorded, note, log }) {
   // 권한 두 줄은 기존 헬퍼가 정본이다(같은 값을 두 군데 적지 않는다).
   const perms = seedClaudePermissions(root);
   const file = claudeSettingsPath(root);
-  const groups = claudeHookGroups(root);
-  recorded.claude.hooks =Object.entries(groups).flatMap(([event, entries]) => entries.map((e) => `${event}:${e.matcher ?? '*'}`));
+  const groups = claudeHookGroups(root, { authDir: toolDir(ctx, 'iris-auth') });
+  recorded.claude.hooks = Object.entries(groups).flatMap(([event, entries]) => entries.map((e) => `${event}:${e.matcher ?? '*'}`));
 
   const superEnv = lockField(ctx, 'superpowers', 'env') ?? { SUPERPOWERS_DISABLE_TELEMETRY: '1' };
 

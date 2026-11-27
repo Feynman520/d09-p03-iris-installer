@@ -76,11 +76,13 @@ export function allowedDesktopFiles(root) {
   return Object.freeze([...new Set(names)]);
 }
 
-// 훅으로 등록되는 스크립트 세 개(설계-v2 6-3 검사 4 "훅 스크립트 3개").
+// 훅으로 등록되는 스크립트(설계-v2 6-3 검사 4 "훅 스크립트 3개" + 2.0.65 로그인 열쇠 알림 `status.mjs`).
 export const HOOK_FILES = Object.freeze([
   { rel: ['_agent', 'claude', 'scripts', 'block-blanket-kill.ps1'], kind: 'ps1' },
   { rel: ['_agent', 'claude', 'scripts', 'guard-iris-path.py'], kind: 'py' },
   { rel: ['_ontology', 'check_fresh.py'], kind: 'py' },
+  // 세션 시작 때 동봉 node 로 부른다(adapters.mjs claudeHookGroups). 실행하지 않고 문법만 본다(`node --check`).
+  { rel: ['_agent', 'shared', 'tools', 'iris-auth', 'status.mjs'], kind: 'mjs' },
 ]);
 
 // ---------------------------------------------------------------------------
@@ -443,6 +445,7 @@ export async function checkHooks(ctx) {
   const fs = fsOf(ctx);
   const root = ctx.root;
   const python = resolveExe(ctx, 'python').path;
+  const node = resolveExe(ctx, 'node').path;
   const results = [];
   for (const spec of HOOK_FILES) {
     const file = path.join(root, ...spec.rel);
@@ -454,6 +457,9 @@ export async function checkHooks(ctx) {
     if (spec.kind === 'ps1') {
       const res = await runExe(ctx, 'powershell', ['-NoProfile', '-Command', psSyntaxCommand(file)], { timeoutMs: SYNTAX_TIMEOUT_MS });
       results.push({ name, ok: res.code === 0, why: res.code === 0 ? '문법 정상' : (res.code === null ? `검사 시간 초과(${SYNTAX_TIMEOUT_MS / 1000}초, 파워셸이 답하지 않음)` : `문법 오류(${String(res.out || res.err).slice(0, 120)})`) });
+    } else if (spec.kind === 'mjs') {
+      const res = await runExe(ctx, node, ['--check', file], { timeoutMs: SYNTAX_TIMEOUT_MS });
+      results.push({ name, ok: res.code === 0, why: res.code === 0 ? '문법 정상' : (res.code === null ? `검사 시간 초과(${SYNTAX_TIMEOUT_MS / 1000}초)` : `문법 오류(${String(res.err || res.out).slice(0, 120)})`) });
     } else {
       const res = await runExe(ctx, python, ['-m', 'py_compile', file], { timeoutMs: SYNTAX_TIMEOUT_MS });
       results.push({ name, ok: res.code === 0, why: res.code === 0 ? '문법 정상' : (res.code === null ? `검사 시간 초과(${SYNTAX_TIMEOUT_MS / 1000}초)` : `문법 오류(${String(res.err || res.out).slice(0, 120)})`) });
