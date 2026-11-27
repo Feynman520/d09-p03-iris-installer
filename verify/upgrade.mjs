@@ -394,7 +394,8 @@ function finishedPid() {
 function procInfo(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue; if ($p) { [Console]::Out.Write((@{ path = $p.ExecutablePath; cmd = $p.CommandLine } | ConvertTo-Json -Compress)) }`],
+    // 큰따옴표를 쓰지 않는다(파워셸의 -Command 인자 안에서 벗겨질 수 있다).
+    `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction SilentlyContinue; if ($p) { [Console]::Out.Write((@{ path = $p.ExecutablePath; cmd = $p.CommandLine } | ConvertTo-Json -Compress)) }`],
   { encoding: 'utf8', windowsHide: true, timeout: 30000 });
   try { return r.status === 0 && r.stdout ? JSON.parse(r.stdout) : null; } catch { return null; }
 }
@@ -525,8 +526,9 @@ async function updateViaApplier({ nextZip, nextVersion, prevVersion, staged }) {
   const serverOut = [readText(path.join(INSTALLER_WORK, 'server.out.log')), readText(path.join(INSTALLER_WORK, 'server.err.log')), bootstrapLog].filter(Boolean).join('\n');
   check('ⓝ 시작 파일(IRIS-설치.cmd → bootstrap.ps1)이 새 판의 설치기 서버를 띄웠다', seenUp && /Server process started \(pid \d+\)/.test(bootstrapLog),
     (bootstrapLog.match(/(Server process started|Could not unpack Node|Setup server did not respond|Please extract)[^\r\n]*/g) ?? ['(bootstrap 기록 없음)']).slice(-1)[0].slice(0, 120));
-  check('ⓝ 연습 실행이라 브라우저를 열지 않았다(받아 둔 사본에만 덧댄 손잡이)', /Browser not opened/.test(bootstrapLog) || !/Opened browser/.test(bootstrapLog),
-    (bootstrapLog.match(/(Browser not opened|Opened browser)[^\r\n]*/g) ?? ['(브라우저 줄 없음)']).slice(-1)[0].slice(0, 100));
+  // bootstrap.ps1 은 브라우저 열기 함수를 부른 뒤 늘 "Opened browser …" 줄을 적는다 — 열지 않았다는 증거는 덧댄 줄이 남긴 기록이다.
+  check('ⓝ 연습 실행이라 브라우저를 열지 않았다(받아 둔 사본에만 덧댄 손잡이)', /Browser not opened/.test(bootstrapLog),
+    (bootstrapLog.match(/Browser not opened[^\r\n]*/) ?? ['"Browser not opened" 줄이 없다 — 브라우저가 열렸을 수 있다'])[0].slice(0, 100));
   log(`② finished in ${Math.round((Date.now() - tUpdate) / 1000)}s (via the applier)`);
 
   for (const r of judgeAfterInstaller({
