@@ -10,6 +10,9 @@
 //                 OAuth 는 끝내지 않는다(계정 0 추가) -- 주소가 잡히면 자기가 띄운 PID 하나만 끝낸다.
 //   ③ CLI 없음    빈 영혼 폴더(영수증만 있음)에서 startPipedLogin 이 cli-missing 으로 던지고, startLogin 이
 //                 failed/cli-missing + 안내를 기록하고, loginStatus 가 그 기록을 그대로 돌려주는가.
+//   ⑥ 1년 열쇠    (2.0.66) 설치 화면의 권장 카드가 띄우는 도구(iris-auth\longkey.mjs --also-iris)를 임시 폴더에서
+//                 브라우저 없이 · 3초 한도로 띄워, 승인 주소가 이 PC 로 돌아오는 모양인가 + 승인 없이는 아무것도
+//                 쓰지 않는가. 승인 · 열쇠 교환은 하지 않는다(네트워크 0).
 //
 // 안전 규칙: 쓰는 곳은 _build/login-probe/ 하나뿐이며 끝나면 지운다. CLAUDE_CONFIG_DIR 은 임시 폴더를
 // 가리키므로(startPipedLogin) 이 PC 의 클로드 설정·계정·중계기(3456)는 건드리지 않는다. 프로세스는 이
@@ -95,9 +98,71 @@ async function probeCliMissing() {
   judge('③ⓒ loginStatus 가 기록 유지', st?.state === 'failed' && st?.reason === 'cli-missing', `state=${st?.state} reason=${st?.reason}`);
 }
 
+// ⑥ (2.0.66) 1년 열쇠 승인 주소의 모양 — 설치 화면의 「1년 열쇠 받기(권장)」 카드가 띄우는 꼴 그대로
+//   (동봉 도구 `iris-auth\longkey.mjs --account <이름> --also-iris`)를 임시 폴더에서 띄운다.
+//   브라우저를 열지 않고(--no-open) 승인도 하지 않으므로 열쇠 교환 요청은 한 번도 나가지 않는다(네트워크 0 · 계정 0).
+//   짧은 한도(3초)로 스스로 끝나게 하고, 그동안 찍힌 승인 주소의 모양과 "아무것도 쓰지 않았다"를 본다.
+//   (번호 ④ ⑤ 는 코덱스 로그인 · 중계기 로그인 몫으로 비워 둔다 — 아직 싣지 않았다.)
+function treeFingerprint(dir) {
+  const out = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else out.push(`${path.relative(dir, p)}:${fs.statSync(p).size}:${fs.readFileSync(p).toString('base64').slice(0, 64)}`);
+    }
+  };
+  walk(dir);
+  return out.sort().join('\n');
+}
+
+async function probeLongKeyAddress() {
+  const { root } = freshRoot('longkey');
+  const account = 'probe@localhost';
+  const tc = path.join(root, 'teamclaude-probe.json');
+  fs.writeFileSync(tc, `${JSON.stringify({ proxy: { port: 1 }, accounts: [{ name: account, type: 'oauth', accessToken: 'probe-a', refreshToken: 'probe-r', expiresAt: 1 }] }, null, 2)}\n`);
+  const claudeDir = path.join(root, '_agent', 'claude');
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const tool = path.join(REPO, 'payload-src', 'tools', 'iris-auth', 'longkey.mjs');
+  const env = { ...process.env, USERPROFILE: root, HOME: root, TEAMCLAUDE_CONFIG: tc, CLAUDE_CONFIG_DIR: claudeDir, IRIS_AUTH_RELOAD: '0' };
+  delete env.IRIS_LONGKEY_FILE;
+  const before = treeFingerprint(root);
+  let out = '';
+  let code = null;
+  try {
+    out = execFileSync(process.execPath, [tool, '--account', account, '--also-iris', '--no-open', '--timeout', '3'], { env, encoding: 'utf8', timeout: 30000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    code = 0;
+  } catch (e) {
+    out = String(e?.stdout ?? '');
+    code = e?.status ?? null;
+  }
+  const url = /https:\/\/claude\.ai\/oauth\/authorize\?\S+/.exec(out)?.[0] ?? null;
+  let shape = false;
+  let detail = 'no approval address in the output';
+  if (url) {
+    const u = new URL(url);
+    const q = (k) => u.searchParams.get(k);
+    const redirect = q('redirect_uri');
+    const noSecrets = ['access_token', 'refresh_token', 'token', 'code_verifier'].every((k) => q(k) == null);
+    shape = /^http:\/\/localhost:\d+\/callback$/.test(redirect ?? '') && q('response_type') === 'code'
+      && q('code_challenge_method') === 'S256' && !!q('code_challenge') && !!q('state')
+      && q('scope') === 'user:inference user:profile' && noSecrets;
+    detail = `redirect_uri=${redirect ?? '-'} scope=${q('scope') ?? '-'} challenge=${q('code_challenge_method') ?? '-'} secrets=${noSecrets ? 'none' : 'PRESENT'}`;
+  }
+  judge('⑥ⓐ 1년 열쇠 승인 주소의 모양', shape, detail);
+  const line = out.split('\n').filter((l) => l.startsWith('RESULT ')).pop() ?? null;
+  let result = null;
+  try { result = line ? JSON.parse(line.slice(7)) : null; } catch { result = null; }
+  const untouched = treeFingerprint(root) === before;
+  judge('⑥ⓑ 승인이 없으면 아무것도 쓰지 않음',
+    untouched && code === 1 && result?.ok === false && result?.relay === 'skipped' && result?.iris === 'skipped' && result?.reason === 'timeout',
+    `exit=${code} files=${untouched ? 'unchanged' : 'CHANGED'} relay=${result?.relay ?? '-'} iris=${result?.iris ?? '-'} reason=${result?.reason ?? '-'}`);
+}
+
 try {
   await probeDownloadAndLogin();
   await probeCliMissing();
+  await probeLongKeyAddress();
 } finally {
   await new Promise((r) => setTimeout(r, 500));
   try { fs.rmSync(WORK, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 }); } catch (e) { log(`could not remove ${WORK}: ${e?.message}`); }

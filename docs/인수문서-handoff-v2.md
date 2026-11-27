@@ -38,5 +38,6 @@
 | `messenger.prompted` | Face가 메신저 로그인 안내를 한 번 보였는지 (정본 = 이 중첩 키; 평면 `messengerPrompted`는 쓰지 않는다) | Face가 `true`로 갱신(이 필드만 Face가 쓴다) |
 | `messenger.installed` | 인수 문서를 처음 쓸 때 `face\modules\messenger` 폴더가 있었는지. **2.0.64 부터 새 설치는 `false`**(메신저 = 선택, 설치 패키지에 없음 — 위 예시의 `true` 는 2.0.63 까지의 값) | `true` 일 때만 Face가 메신저 로그인 안내를 1회 보인다. 나중에 설정에서 메신저를 설치해도 이 칸은 바뀌지 않는다(안내는 설치 흐름이 대신한다) |
 | `resume` | 「설치 이어하기」가 실행할 것 | 영혼 안 설치기 사본 |
+| `claudeLongKey` (2.0.66 — 더하기만, 위 예시에는 없다) | `{ "state": "received" · "partial" · "not-received" · "not-needed", "expiresAt": <ISO 시각 또는 null>, "howTo": "설정 → 계정 · 보안 → 1년 열쇠 받기" 또는 null }` | 설치 화면의 「1년 열쇠 받기(권장)」 카드 결과(영수증 `online.logins.claude` 의 `longKey` · `longKeyExpiresAt` · `longKeySlots` 에서 만든다). `partial` = 두 자리(계정 연결 · IRIS 창 세션) 가운데 하나에만 넣음, `not-needed` = Claude 구독을 고르지 않음. **안내용일 뿐 `state` 판정에 쓰지 않는다** — 받지 않아도 `ready` 다. 2.0.65 까지의 인수 문서에는 이 칸이 없다(없으면 "모름"으로 읽는다). 카드 결과가 난 뒤에는 설치기가 이 한 칸만 갈아 끼운다(다른 칸 · `writtenAt` 은 그대로) |
 
 규칙: 경로는 전부 영혼 루트 상대경로(휴대성). 토큰·키·이메일·사용자 이름 없음. Face는 `messenger.prompted` 외 어떤 필드도 쓰지 않는다.
