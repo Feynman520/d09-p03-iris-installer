@@ -102,9 +102,9 @@ test('화면 흐름: ⑦ 의 클로드 상자 아래 카드 → 나중에 · 받
   await until(() => /승인을 기다리는 중/.test(line?.textContent ?? ''), '완료 보고의 한 줄');
 
   // 승인이 끝나면 ⑧ 의 카드와 한 줄이 저절로 바뀌고, 되묻기가 멈춘다.
-  longKey = { offered: true, state: 'done', skipped: false, url: null, expiresAt: new Date(2027, 10, 27, 12).getTime(), message: '1년 열쇠를 받았습니다(만료 2027-11-27). 열쇠가 폐기되면 다시 연결하면 됩니다.' };
+  longKey = { offered: true, state: 'done', skipped: false, url: null, expiresAt: new Date(2027, 10, 27, 12).getTime(), message: '1년 열쇠를 받았습니다(만료 2027-11-27). IRIS 창의 새 대화부터 이 열쇠를 씁니다.' };
   await until(() => /1년 열쇠를 받았습니다/.test(doneBox.innerHTML), '받음');
-  assert.equal(line.textContent, '1년 열쇠 · 만료 2027-11-27');
+  assert.equal(line.textContent, 'IRIS 창용 1년 열쇠 · 만료 2027-11-27');
   assert.doesNotMatch(doneBox.innerHTML, /<button|<a /, '끝난 카드에는 누를 것이 없다');
   await sleep(300);
   const asked = count('GET /api/online/longkey');

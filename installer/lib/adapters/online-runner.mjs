@@ -11,7 +11,7 @@
 //   startRelay({ root, ... })              -> { ok, state, accounts }
 //   longKeyAvailability({ root, ... })     -> { available, reason }            (읽기만)
 //   startLongKey({ root, onFinish, ... })  -> { ok, state, already?, reason? }
-//   longKeyStatus({ root })                -> { state, url, slots, expiresAt, reason, message }
+//   longKeyStatus({ root })                -> { state, url, expiresAt, reason, message }
 //   stopLongKey({ root })                  -> { stopped }                      (자기가 띄운 PID 만)
 
 export const NOT_IMPLEMENTED = 'E-NOT-IMPLEMENTED';

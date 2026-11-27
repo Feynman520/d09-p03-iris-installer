@@ -34,7 +34,7 @@ const APPROVE_URL = `https://claude.ai/oauth/authorize?code=true&redirect_uri=ht
 const YEAR_MS = 365 * 86400000;
 
 /** 가짜 1년 열쇠 일꾼: 서버가 부르는 네 함수만 흉내 낸다(프로그램 · 파일 · 네트워크 없음). */
-function fakeLongKey({ available = true, reason = 'no-account' } = {}) {
+function fakeLongKey({ available = true, reason = 'no-tool' } = {}) {
   const calls = { start: 0, stop: 0, avail: 0 };
   let job = null;
   let onFinish = null;
@@ -44,7 +44,7 @@ function fakeLongKey({ available = true, reason = 'no-account' } = {}) {
     /** 가짜 프로그램이 결과를 냈다. 서버의 기록(영수증 한 줄)이 끝날 때까지 기다린다. */
     async finish(result) {
       job = { ...job, ...result, url: null, message: longKeyMessage(result) };
-      await onFinish?.({ state: result.state, slots: result.slots, expiresAt: result.expiresAt ?? null, reason: result.reason ?? null });
+      await onFinish?.({ state: result.state, expiresAt: result.expiresAt ?? null, reason: result.reason ?? null });
     },
     fns: {
       longKeyAvailability: async () => { calls.avail += 1; return available ? { available: true, reason: null } : { available: false, reason }; },
@@ -53,7 +53,7 @@ function fakeLongKey({ available = true, reason = 'no-account' } = {}) {
         calls.start += 1;
         onFinish = args.onFinish;
         args.log?.('longkey claude account #1 started pid=4242');
-        job = { state: 'approve', url: APPROVE_URL, startedAt: 111, slots: null, expiresAt: null, reason: null, message: longKeyMessage({ state: 'approve' }) };
+        job = { state: 'approve', url: APPROVE_URL, startedAt: 111, expiresAt: null, reason: null, message: longKeyMessage({ state: 'approve' }) };
         return { ok: true, state: 'starting', already: false };
       },
       longKeyStatus: async () => job ?? { state: 'idle', url: null },
@@ -183,12 +183,12 @@ test('둘 다 고른 설치: 클로드 로그인만 끝나도 카드가 나온�
   } finally { await s.close(); }
 });
 
-test('낼 수 없는 PC(도구 없음 · 계정 줄을 못 고름)에서는 카드가 없고 까닭만 싣는다', async () => {
-  const s = await start({ longKey: fakeLongKey({ available: false, reason: 'ambiguous' }) });
+test('낼 수 없는 PC(도구가 없음)에서는 카드가 없고 까닭만 싣는다', async () => {
+  const s = await start({ longKey: fakeLongKey({ available: false, reason: 'no-tool' }) });
   try {
     await toLoginPhase(s); await loginAll(s);
     const st = await getJson(s.url, '/api/online/status');
-    assert.deepEqual({ offered: st.longKey.offered, reason: st.longKey.reason }, { offered: false, reason: 'ambiguous' });
+    assert.deepEqual({ offered: st.longKey.offered, reason: st.longKey.reason }, { offered: false, reason: 'no-tool' });
   } finally { await s.close(); }
 });
 
@@ -241,7 +241,7 @@ test('카드를 누르지 않으면 · 「나중에」를 누르면: 영수증 �
 // ---------------------------------------------------------------------------
 // 받기 → 승인 대기 → 끝남
 // ---------------------------------------------------------------------------
-test('받기: 승인 대기(주소) → 성공. 영수증에 네 칸만 더해지고 기존 로그인 · 완료 상태는 그대로다', async () => {
+test('받기: 승인 대기(주소) → 성공. 영수증에 세 칸만 더해지고 기존 로그인 · 완료 상태는 그대로다', async () => {
   const s = await start();
   try {
     await toLoginPhase(s); await loginAll(s);
@@ -259,8 +259,9 @@ test('받기: 승인 대기(주소) → 성공. 영수증에 네 칸만 더해�
     assert.deepEqual(readReceipt(s.soulRoot), receiptBefore, '승인을 기다리는 동안에는 영수증이 그대로다');
 
     const expiresAt = Date.now() + YEAR_MS;
-    await s.longKey.finish({ state: 'done', slots: { relay: 'ok', iris: 'ok' }, expiresAt });
+    await s.longKey.finish({ state: 'done', expiresAt });
     const done = (await getJson(s.url, '/api/online/longkey')).longKey;
+    assert.deepEqual(Object.keys(done).sort(), ['expiresAt', 'message', 'offered', 'reason', 'skipped', 'startedAt', 'state', 'url'], '상태의 칸(자리별 결과 같은 것은 없다)');
     assert.deepEqual({ offered: done.offered, state: done.state, url: done.url, expiresAt: done.expiresAt }, { offered: true, state: 'done', url: null, expiresAt });
     assert.match(done.message, /1년 열쇠를 받았습니다/);
 
@@ -268,9 +269,9 @@ test('받기: 승인 대기(주소) → 성공. 영수증에 네 칸만 더해�
     const c = receipt.online.logins.claude;
     assert.equal(c.longKey, true);
     assert.equal(c.longKeyExpiresAt, expiresAt);
-    assert.deepEqual(c.longKeySlots, { relay: 'ok', iris: 'ok' });
     assert.match(c.longKeyAt, /^\d{4}-\d{2}-\d{2}T/);
-    const { longKey, longKeyExpiresAt, longKeySlots, longKeyAt, ...rest } = c;
+    assert.deepEqual(Object.keys(c).filter((k) => /longKey/.test(k)).sort(), ['longKey', 'longKeyAt', 'longKeyExpiresAt'], '더해지는 칸은 셋뿐');
+    const { longKey, longKeyExpiresAt, longKeyAt, ...rest } = c;
     assert.equal(JSON.stringify(rest), loginBefore, '로그인 칸(state · cli · relay …)은 카드 전과 글자가 같다');
     // 완료 판정 둘은 카드 전과 같은 답을 낸다(이 시험의 가짜 설치 엔진은 단계 기록을 쓰지 않아 setupAllDone 은 앞뒤 모두 false).
     assert.equal(setupAllDone(receipt), setupAllDone(receiptBefore));
@@ -299,7 +300,7 @@ test('로그인 화면에서 먼저 받은 1년 열쇠는 그 뒤 설치 완료(
     await toLoginPhase(s); await loginAll(s);
     assert.equal((await postJson(s.url, '/api/online/longkey')).ok, true);
     const expiresAt = Date.now() + YEAR_MS;
-    await s.longKey.finish({ state: 'done', slots: { relay: 'ok', iris: 'ok' }, expiresAt });
+    await s.longKey.finish({ state: 'done', expiresAt });
     assert.equal(readReceipt(s.soulRoot).online.logins.claude.longKey, true, '완료 전이어도 영수증에 한 줄 적는다');
     assert.equal(onlineDone(readReceipt(s.soulRoot)), false, '그렇다고 온라인 단계가 끝난 것으로 치지 않는다');
     assert.equal((await getJson(s.url, '/api/state')).step, 'online');
@@ -331,14 +332,14 @@ test('실패(시간 초과 · 취소): 기존 로그인과 완료 상태는 그�
     assert.equal((await postJson(s.url, '/api/online/relay')).ok, true);
     const before = readReceipt(s.soulRoot);
     await postJson(s.url, '/api/online/longkey');
-    await s.longKey.finish({ state: 'failed', slots: { relay: 'skipped', iris: 'skipped' }, reason: 'timeout' });
+    await s.longKey.finish({ state: 'failed', reason: 'timeout' });
 
     const view = (await getJson(s.url, '/api/online/longkey')).longKey;
     assert.deepEqual({ offered: view.offered, state: view.state, reason: view.reason }, { offered: true, state: 'failed', reason: 'timeout' });
     assert.match(view.message, /지금 로그인은 그대로/);
     const receipt = readReceipt(s.soulRoot);
-    const { longKey, longKeyExpiresAt, longKeySlots, longKeyAt, ...rest } = receipt.online.logins.claude;
-    assert.deepEqual({ longKey, longKeyExpiresAt, longKeySlots }, { longKey: false, longKeyExpiresAt: null, longKeySlots: null });
+    const { longKey, longKeyExpiresAt, longKeyAt, ...rest } = receipt.online.logins.claude;
+    assert.deepEqual({ longKey, longKeyExpiresAt }, { longKey: false, longKeyExpiresAt: null });
     assert.deepEqual(rest, before.online.logins.claude, '로그인 칸은 그대로');
     assert.equal(rest.state, 'done');
     assert.equal(onlineDone(receipt), true);
@@ -353,24 +354,32 @@ test('실패(시간 초과 · 취소): 기존 로그인과 완료 상태는 그�
   } finally { await s.close(); }
 });
 
-test('한 자리만 써진 결과: "받음"으로 적지 않고 어느 자리가 됐는지만 적는다 — 그 뒤의 빈손 실패가 이 줄을 지우지 않는다', async () => {
+test('한 번 받은 뒤의 실패는 "받음" 줄을 고치지 않는다(앞서 받은 열쇠는 그대로 유효하다) · 실패 뒤의 성공은 "받음"으로 바꾼다', async () => {
   const s = await start();
   try {
     await toLoginPhase(s); await loginAll(s);
     await postJson(s.url, '/api/online/relay');
     fs.writeFileSync(handoffFile(s.soulRoot), `${JSON.stringify({ schema: 1, state: 'ready', subscriptions: ['claude'] }, null, 2)}\n`);
+    // 실패 → "받지 않음"
+    await postJson(s.url, '/api/online/longkey');
+    await s.longKey.finish({ state: 'failed', reason: 'denied' });
+    assert.equal(readReceipt(s.soulRoot).online.logins.claude.longKey, false);
+    assert.equal(JSON.parse(fs.readFileSync(handoffFile(s.soulRoot), 'utf8')).claudeLongKey.state, 'not-received');
+    // 다시 받기 → 성공 → "받음"
     const expiresAt = Date.now() + YEAR_MS;
     await postJson(s.url, '/api/online/longkey');
-    await s.longKey.finish({ state: 'partial', slots: { relay: 'ok', iris: 'failed' }, expiresAt, reason: 'iris-write-failed' });
+    await s.longKey.finish({ state: 'done', expiresAt });
     let c = readReceipt(s.soulRoot).online.logins.claude;
-    assert.deepEqual({ longKey: c.longKey, longKeyExpiresAt: c.longKeyExpiresAt, longKeySlots: c.longKeySlots }, { longKey: false, longKeyExpiresAt: expiresAt, longKeySlots: { relay: 'ok', iris: 'failed' } });
-    assert.equal(JSON.parse(fs.readFileSync(handoffFile(s.soulRoot), 'utf8')).claudeLongKey.state, 'partial');
-
+    assert.deepEqual({ longKey: c.longKey, longKeyExpiresAt: c.longKeyExpiresAt }, { longKey: true, longKeyExpiresAt: expiresAt });
+    assert.equal(JSON.parse(fs.readFileSync(handoffFile(s.soulRoot), 'utf8')).claudeLongKey.state, 'received');
+    // 그 뒤의 실패(한 번 더 눌렀다가 취소) → 줄은 그대로
+    const before = fs.readFileSync(receiptFile(s.soulRoot));
     await postJson(s.url, '/api/online/longkey');
-    await s.longKey.finish({ state: 'failed', slots: { relay: 'skipped', iris: 'skipped' }, reason: 'denied' });
+    await s.longKey.finish({ state: 'failed', reason: 'timeout' });
+    assert.ok(fs.readFileSync(receiptFile(s.soulRoot)).equals(before), '영수증은 한 바이트도 다르지 않다');
     c = readReceipt(s.soulRoot).online.logins.claude;
-    assert.deepEqual(c.longKeySlots, { relay: 'ok', iris: 'failed' }, '이미 써진 자리의 기록은 남는다');
-    assert.equal(c.longKeyExpiresAt, expiresAt);
+    assert.deepEqual({ longKey: c.longKey, longKeyExpiresAt: c.longKeyExpiresAt }, { longKey: true, longKeyExpiresAt: expiresAt });
+    assert.equal(JSON.parse(fs.readFileSync(handoffFile(s.soulRoot), 'utf8')).claudeLongKey.state, 'received');
   } finally { await s.close(); }
 });
 

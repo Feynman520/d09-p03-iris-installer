@@ -42,7 +42,7 @@ import {
 import { createSetupRunner } from './lib/adapters/setup-runner.mjs';
 import { createOnlineRunner } from './lib/adapters/online-runner.mjs';
 // 2.0.66 「1년 열쇠 받기(권장)」 카드의 화면 글(순수 함수). 프로그램을 띄우는 쪽은 다른 온라인 일처럼 onlineRunner 로 부른다.
-import { longKeyMessage, reloadRelay as reloadRelayForLongKey } from './lib/longkey.mjs';
+import { longKeyMessage } from './lib/longkey.mjs';
 // Update mode only (POST /api/auto). The v1 `install()` is deliberately NOT
 // imported any more: an update runs the SAME v2 engine the wizard runs, with
 // the stages an update can change reset to `pending` first (lib/update-plan).
@@ -1311,12 +1311,13 @@ export function startServer({
   }));
 
   // --- ⑦-부록 1년 열쇠 받기(권장 카드, 2.0.66) ------------------------------
+  // 받는 것은 **IRIS 창 세션용 1년 열쇠 하나**다(IRIS 창 설정의 「1년 열쇠 받기」와 같은 도구 · 같은 길). 중계기 설정은 쓰지 않는다.
   // 클로드 로그인이 **끝난 뒤** 사람이 「받기」를 눌렀을 때만 움직인다. 누르지 않으면 어떤 파일도 쓰지 않는다
   // (상태 조회는 읽기만 하고 기록도 남기지 않는다). 건너뛰어도 · 실패해도 · 두 번 눌러도 · 설치 창을 닫아도
   // 기존 로그인과 설치 완료 상태는 그대로다 — 이 카드는 완료 판정(setupAllDone · onlineDone · resumeVerdict)에 들어가지 않는다.
-  //   · 진행 상태(승인 주소 포함)는 메모리에만 둔다. 승인 주소에는 계정 귀띔 칸이 있어 state.online(→ 상태 파일 · 영수증)에 넣지 않는다.
-  //   · 결과가 났을 때만 영수증 `online.logins.claude` 에 네 칸을 더한다: longKey(true/false) · longKeyExpiresAt ·
-  //     longKeySlots({relay, iris}) · longKeyAt. 이름 · 열쇠는 적지 않는다.
+  //   · 진행 상태(승인 주소 포함)는 메모리에만 둔다 — state.online(→ 상태 파일 · 영수증)에 넣지 않고 기록에도 남기지 않는다.
+  //   · 결과가 났을 때만 영수증 `online.logins.claude` 에 세 칸을 더한다: longKey(true/false) · longKeyExpiresAt · longKeyAt.
+  //     이름 · 열쇠는 적지 않는다.
   let longKeySkipped = false;      // 「나중에」 — 메모리에만
   let longKeyEverStarted = false;  // 한 번이라도 띄웠을 때만 종료 길에서 정리한다
 
@@ -1326,7 +1327,7 @@ export function startServer({
   async function longKeyView() {
     const view = {
       offered: false, state: 'idle', skipped: longKeySkipped,
-      url: null, startedAt: null, slots: null, expiresAt: null, reason: null, message: null,
+      url: null, startedAt: null, expiresAt: null, reason: null, message: null,
     };
     try {
       const root = state.soul?.root;
@@ -1336,13 +1337,13 @@ export function startServer({
       if (job && typeof job.state === 'string' && job.state !== 'idle') {
         return {
           ...view, offered: true, state: job.state, url: job.url ?? null, startedAt: job.startedAt ?? null,
-          slots: job.slots ?? null, expiresAt: job.expiresAt ?? null, reason: job.reason ?? null, message: job.message ?? null,
+          expiresAt: job.expiresAt ?? null, reason: job.reason ?? null, message: job.message ?? null,
         };
       }
       const rec = state.online.logins.claude;
       if (rec.longKey === true) {
         const expiresAt = rec.longKeyExpiresAt ?? null;
-        return { ...view, offered: true, state: 'done', slots: rec.longKeySlots ?? null, expiresAt, message: longKeyMessage({ state: 'done', expiresAt }) };
+        return { ...view, offered: true, state: 'done', expiresAt, message: longKeyMessage({ state: 'done', expiresAt }) };
       }
       if (typeof onlineRunner.longKeyAvailability !== 'function') return view;
       const avail = await onlineRunner.longKeyAvailability({ root, nodeDir: state.nodeDir });
@@ -1352,17 +1353,16 @@ export function startServer({
     }
   }
 
-  // 결과가 난 것만 적는다. 둘 다 넣음 = true, 그 밖(한 자리만 · 실패) = false. 아무 자리도 못 쓴 실패는 앞서 적힌 칸을 지우지 않는다.
+  // 결과가 난 것만 적는다: 받음 = true, 못 받음 = false. 이미 "받음"이 적혀 있으면 그 뒤의 실패가 그 줄을 고치지 않는다
+  // (앞서 받은 열쇠는 그대로 유효하다).
   async function recordLongKey(result) {
     try {
-      const slots = result?.slots ?? null;
-      const wroteAny = slots?.relay === 'ok' || slots?.iris === 'ok';
+      const got = result?.state === 'done';
       const prior = state.online?.logins?.claude ?? null;
-      if (!wroteAny && prior && 'longKey' in prior) return;
+      if (!got && prior?.longKey === true) return;
       const patch = {
-        longKey: result?.state === 'done',
-        longKeyExpiresAt: wroteAny ? (result?.expiresAt ?? null) : null,
-        longKeySlots: wroteAny ? { relay: slots.relay, iris: slots.iris } : null,
+        longKey: got,
+        longKeyExpiresAt: got ? (result?.expiresAt ?? null) : null,
         longKeyAt: new Date().toISOString(),
       };
       if (prior) state.online.logins.claude = { ...prior, ...patch };
@@ -1388,6 +1388,7 @@ export function startServer({
   }
 
   // 설치 창이 닫힐 때: 자기가 띄운 그 프로그램(PID 하나)만 끝낸다. 띄운 적이 없으면 아무것도 하지 않는다.
+  // (서버 프로세스가 여기까지 오지 못하고 죽어도 자식은 남지 않는다 — lib/longkey.mjs 머리말.)
   async function stopOwnLongKey() {
     if (!longKeyEverStarted || typeof onlineRunner.stopLongKey !== 'function') return;
     try { await onlineRunner.stopLongKey({ root: state.soul?.root }); } catch { /* 종료 길을 막지 않는다 */ }
@@ -1411,11 +1412,7 @@ export function startServer({
     longKeyEverStarted = true;
     let started;
     try {
-      started = await onlineRunner.startLongKey({
-        root: state.soul.root, nodeDir: state.nodeDir, log, onFinish: recordLongKey,
-        // 도구가 계정 줄을 썼는데 다시 읽기 부탁이 닿지 않았을 때만, 조금 뒤 한 번 더 부탁한다(lib/longkey.mjs).
-        reloadFn: () => reloadRelayForLongKey(),
-      });
+      started = await onlineRunner.startLongKey({ root: state.soul.root, nodeDir: state.nodeDir, log, onFinish: recordLongKey });
     } catch (err) {
       started = { ok: false, reason: 'spawn-failed' };
       log(`longkey start threw: ${String(err?.message ?? err)}`);

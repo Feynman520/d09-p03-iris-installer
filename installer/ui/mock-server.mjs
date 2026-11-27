@@ -9,8 +9,8 @@
 //   --legacy     1.x IRIS 자료가 있는 자리               --fail venv 그 단계에서 설치가 멈춘다
 //   --reinstall  1.x 영수증을 자동 업데이트로 연 상태     --speed     단계 하나에 걸리는 시간(기본 700ms)
 //   --login-reason window-closed|page-blocked|import-failed   로그인이 그 까닭으로 실패한다
-//   --longkey ok|partial|fail|wait|none   「1년 열쇠 받기(권장)」 카드에서 「받기」를 누른 뒤의 모습(2.0.66)
-//             ok = 승인 대기 → 받음(기본) · partial = 한 자리만 · fail = 시간 초과 · wait = 승인 대기에서 멈춤 · none = 카드 없음
+//   --longkey ok|fail|wait|none   「1년 열쇠 받기(권장)」 카드에서 「받기」를 누른 뒤의 모습(2.0.66)
+//             ok = 승인 대기 → 받음(기본) · fail = 시간 초과 · wait = 승인 대기에서 멈춤 · none = 카드 없음
 //             카드는 Claude 로그인이 끝난 뒤에만 보인다(ChatGPT 만 고르면 없다). 가짜라 아무것도 받지 않고 쓰지 않는다.
 
 import { createServer } from 'node:http';
@@ -167,8 +167,8 @@ function allLoginsDone() {
 // ---------------------------------------------------------------- 1년 열쇠 받기(권장) 카드 — 가짜
 const LONGKEY_MODE = value('longkey', 'ok');
 // 가짜 승인 주소(모양만 진짜와 같다 — 눌러도 Claude 가 거절하는 값이고, 이 서버는 어디에도 요청하지 않는다).
-const FAKE_APPROVE_URL = 'https://claude.ai/oauth/authorize?code=true&client_id=mock&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fcallback&scope=user%3Ainference+user%3Aprofile&state=mock';
-const longKey = { state: 'idle', skipped: false, url: null, startedAt: null, slots: null, expiresAt: null, reason: null };
+const FAKE_APPROVE_URL = 'https://claude.ai/oauth/authorize?code=true&client_id=mock&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fcallback&scope=user%3Ainference&state=mock';
+const longKey = { state: 'idle', skipped: false, url: null, startedAt: null, expiresAt: null, reason: null };
 let longKeyTimers = [];
 function longKeyView() {
   const claude = state.online.logins && state.online.logins.claude;
@@ -178,14 +178,13 @@ function longKeyView() {
 function startLongKey() {
   if (longKey.state === 'starting' || longKey.state === 'approve') return { ok: true, already: true };
   for (const t of longKeyTimers) clearTimeout(t);
-  Object.assign(longKey, { state: 'starting', skipped: false, url: null, startedAt: Date.now(), slots: null, expiresAt: null, reason: null });
+  Object.assign(longKey, { state: 'starting', skipped: false, url: null, startedAt: Date.now(), expiresAt: null, reason: null });
   longKeyTimers = [setTimeout(() => { Object.assign(longKey, { state: 'approve', url: FAKE_APPROVE_URL }); }, SPEED)];
   if (LONGKEY_MODE === 'wait') return { ok: true };
   longKeyTimers.push(setTimeout(() => {
     const year = Date.now() + 365 * 86400000;
-    if (LONGKEY_MODE === 'fail') Object.assign(longKey, { state: 'failed', url: null, slots: { relay: 'skipped', iris: 'skipped' }, reason: 'timeout' });
-    else if (LONGKEY_MODE === 'partial') Object.assign(longKey, { state: 'partial', url: null, slots: { relay: 'ok', iris: 'failed' }, expiresAt: year, reason: 'iris-write-failed' });
-    else Object.assign(longKey, { state: 'done', url: null, slots: { relay: 'ok', iris: 'ok' }, expiresAt: year, reason: null });
+    if (LONGKEY_MODE === 'fail') Object.assign(longKey, { state: 'failed', url: null, reason: 'timeout' });
+    else Object.assign(longKey, { state: 'done', url: null, expiresAt: year, reason: null });
   }, SPEED * 4));
   return { ok: true };
 }
@@ -315,7 +314,7 @@ const server = createServer(async (req, res) => {
           claudeLongKey: !((state.choice && state.choice.subscriptions) || []).includes('claude')
             ? { state: 'not-needed', expiresAt: null, howTo: null }
             : longKey.state === 'done' ? { state: 'received', expiresAt: new Date(longKey.expiresAt).toISOString(), howTo: null }
-              : { state: longKey.state === 'partial' ? 'partial' : 'not-received', expiresAt: null, howTo: '설정 → 계정 · 보안 → 1년 열쇠 받기' },
+              : { state: 'not-received', expiresAt: null, howTo: '설정 → 계정 · 보안 → 1년 열쇠 받기' },
         },
         pendingCapabilities: ['edge', 'office'],
       });

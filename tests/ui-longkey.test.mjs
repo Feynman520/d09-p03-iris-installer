@@ -46,26 +46,33 @@ test('카드는 서버가 낼 수 있다고 한 때에만 보인다 — 클로�
 test('처음 모습: 제목 "1년 열쇠 받기(권장)" · 정해진 글 · 「받기」와 「나중에」', () => {
   const html = ctx.longKeyCardHtml(idle);
   assert.equal(ctx.LONGKEY_TITLE, '1년 열쇠 받기(권장)');
-  assert.equal(ctx.LONGKEY_BODY, '유효 기간이 긴 열쇠를 받아 다시 로그인하는 일을 줄입니다. 브라우저 승인을 한 번 더 합니다. 열쇠가 폐기되면 다시 연결하면 됩니다.');
+  assert.equal(ctx.LONGKEY_BODY, '유효 기간이 긴 열쇠를 받아 IRIS 창의 대화가 다시 로그인을 요구하는 일을 줄입니다. 브라우저 승인을 한 번 더 합니다. 나중에 IRIS 창의 설정 → 계정 · 보안에서도 받을 수 있습니다.');
   assert.ok(html.includes(`<h4>${ctx.LONGKEY_TITLE}</h4>`));
   assert.ok(html.includes(ctx.LONGKEY_BODY));
   assert.match(html, /받지 않아도 설치는 그대로 끝납니다/);
   assert.deepEqual(buttons(html), ['get:받기', 'later:나중에']);
 });
 
+const EVERY_CARD = [idle, { ...idle, skipped: true }, { offered: true, state: 'starting' }, { offered: true, state: 'approve', url: APPROVE_URL }, { offered: true, state: 'done' }, { offered: true, state: 'failed' }];
+
 test('글은 장담하지 않는다 — "1년 동안 … 나오지 않습니다" 같은 말이 화면 글 어디에도 없다', () => {
-  const all = [ctx.LONGKEY_TITLE, ctx.LONGKEY_BODY, ctx.LONGKEY_SKIP_NOTE, ctx.LONGKEY_LATER_TEXT, ctx.LONGKEY_WAIT_NOTE,
-    ...[idle, { ...idle, skipped: true }, { offered: true, state: 'approve', url: APPROVE_URL }, { offered: true, state: 'done' }, { offered: true, state: 'failed' }, { offered: true, state: 'partial' }].map((x) => ctx.longKeyCardHtml(x)),
-  ].join('\n');
+  const all = [ctx.LONGKEY_TITLE, ctx.LONGKEY_BODY, ctx.LONGKEY_SKIP_NOTE, ctx.LONGKEY_LATER_TEXT, ctx.LONGKEY_WAIT_NOTE, ...EVERY_CARD.map((x) => ctx.longKeyCardHtml(x))].join('\n');
   for (const promise of [/1년 동안/, /나오지 않습니다/, /다시 로그인하지 않/, /로그인이 필요 없/, /절대/, /영구/]) assert.doesNotMatch(all, promise);
   assert.match(all, /줄입니다/, '"줄인다"고만 말한다');
-  assert.match(all, /폐기되면 다시 연결/);
+});
+
+test('글의 범위: 받는 것은 IRIS 창의 대화가 쓰는 열쇠라고만 말한다 — 계정 연결(중계기)의 계정이 바뀐다는 말이 없다', () => {
+  const all = [ctx.LONGKEY_TITLE, ctx.LONGKEY_BODY, ctx.LONGKEY_SKIP_NOTE, ctx.LONGKEY_LATER_TEXT, ctx.LONGKEY_WAIT_NOTE, ...EVERY_CARD.map((x) => ctx.longKeyCardHtml(x)),
+    ctx.longKeyReportLine({ offered: true, state: 'done', expiresAt: 1 }, null, ['claude']), ctx.longKeyReportLine(null, null, ['claude'])].join('\n');
+  assert.doesNotMatch(all, /중계기|계정 연결|TeamClaude|두 자리|한 자리/);
+  assert.match(ctx.LONGKEY_BODY, /IRIS 창의 대화가 다시 로그인을 요구하는 일을 줄입니다/);
+  assert.match(ctx.LONGKEY_BODY, /IRIS 창의 설정 → 계정 · 보안에서도 받을 수 있습니다/);
 });
 
 test('「나중에」를 누른 뒤: 접힌 한 줄 + 「지금 받기」 — 어디서 받는지 알려 준다', () => {
   const html = ctx.longKeyCardHtml({ ...idle, skipped: true });
   assert.match(html, /나중에 받기로 했습니다/);
-  assert.match(html, /IRIS 설정 → 계정 · 보안 → 1년 열쇠 받기/);
+  assert.match(html, /IRIS 창의 설정 → 계정 · 보안에서 받을 수 있습니다/);
   assert.deepEqual(buttons(html), ['get:지금 받기']);
 });
 
@@ -88,11 +95,12 @@ test('링크는 Claude 승인 주소일 때만 건다 — 다른 주소 · 스�
   assert.doesNotMatch(html, /<script>/, '주소 속 꺾쇠 · 따옴표는 글자로 바뀐다');
 });
 
-test('끝남: 받음 = ✓ 와 서버의 글(단추 없음) · 한 자리만 · 실패 = 글 + 「다시 받기」', () => {
-  const done = ctx.longKeyCardHtml({ offered: true, state: 'done', message: '1년 열쇠를 받았습니다(만료 2027-11-27). 열쇠가 폐기되면 다시 연결하면 됩니다.' });
+test('끝남: 받음 = ✓ 와 서버의 글(단추 없음) · 실패 = 글 + 「다시 받기」', () => {
+  const done = ctx.longKeyCardHtml({ offered: true, state: 'done', message: '1년 열쇠를 받았습니다(만료 2027-11-27). IRIS 창의 새 대화부터 이 열쇠를 씁니다.' });
   assert.match(done, /class="ok">✓/);
   assert.match(done, /만료 2027-11-27/);
   assert.deepEqual(buttons(done), []);
+  assert.match(ctx.longKeyCardHtml({ offered: true, state: 'done' }), /IRIS 창의 새 대화부터/, '서버 글이 없어도 범위를 말한다');
 
   const failed = ctx.longKeyCardHtml({ offered: true, state: 'failed', reason: 'timeout', message: '승인을 기다리다 시간이 지났습니다. 지금 로그인은 그대로 쓸 수 있습니다.' });
   assert.match(failed, /class="bad">✗/);
@@ -100,22 +108,18 @@ test('끝남: 받음 = ✓ 와 서버의 글(단추 없음) · 한 자리만 · 
   assert.deepEqual(buttons(failed), ['get:다시 받기']);
   assert.match(ctx.longKeyCardHtml({ offered: true, state: 'failed' }), /지금 로그인은 그대로/, '서버 글이 없어도 "그대로"라고 말한다');
 
-  const partial = ctx.longKeyCardHtml({ offered: true, state: 'partial', message: '열쇠는 받아 계정 연결에 넣었지만 …' });
-  assert.match(partial, /class="warn">!/);
-  assert.deepEqual(buttons(partial), ['get:다시 받기']);
-
   assert.doesNotMatch(ctx.longKeyCardHtml({ offered: true, state: 'failed', message: '<img src=x onerror=1>' }), /<img/, '서버 글도 글자로만 넣는다');
 });
 
-test('완료 보고의 한 줄: 받았으면 "1년 열쇠 · 만료일", 아니면 어디서 받는지 — 클로드를 고르지 않았으면 줄이 없다', () => {
+test('완료 보고의 한 줄: 받았으면 "IRIS 창용 1년 열쇠 · 만료일", 아니면 어디서 받는지 — 클로드를 고르지 않았으면 줄이 없다', () => {
   const exp = new Date(2027, 10, 27, 12).getTime();
-  assert.equal(ctx.longKeyReportLine({ offered: true, state: 'done', expiresAt: exp }, null, ['claude']), '1년 열쇠 · 만료 2027-11-27');
-  assert.equal(ctx.longKeyReportLine(null, { state: 'received', expiresAt: new Date(exp).toISOString() }, ['claude', 'chatgpt']), '1년 열쇠 · 만료 2027-11-27', '설치기를 다시 열었을 때는 인수 문서의 값으로');
-  assert.equal(ctx.longKeyReportLine(idle, { state: 'not-received' }, ['claude']), '1년 열쇠: 아직 받지 않았습니다 — IRIS 설정 → 계정 · 보안 → 1년 열쇠 받기.');
-  assert.equal(ctx.longKeyReportLine(null, null, ['claude']), '1년 열쇠: 아직 받지 않았습니다 — IRIS 설정 → 계정 · 보안 → 1년 열쇠 받기.');
+  const NOT_YET = 'IRIS 창용 1년 열쇠: 아직 받지 않았습니다 — IRIS 창의 설정 → 계정 · 보안 → 1년 열쇠 받기.';
+  assert.equal(ctx.longKeyReportLine({ offered: true, state: 'done', expiresAt: exp }, null, ['claude']), 'IRIS 창용 1년 열쇠 · 만료 2027-11-27');
+  assert.equal(ctx.longKeyReportLine(null, { state: 'received', expiresAt: new Date(exp).toISOString() }, ['claude', 'chatgpt']), 'IRIS 창용 1년 열쇠 · 만료 2027-11-27', '설치기를 다시 열었을 때는 인수 문서의 값으로');
+  assert.equal(ctx.longKeyReportLine(idle, { state: 'not-received' }, ['claude']), NOT_YET);
+  assert.equal(ctx.longKeyReportLine(null, null, ['claude']), NOT_YET);
+  assert.equal(ctx.longKeyReportLine({ offered: true, state: 'failed', reason: 'timeout' }, null, ['claude']), NOT_YET);
   assert.match(ctx.longKeyReportLine({ offered: true, state: 'approve' }, null, ['claude']), /승인을 기다리는 중/);
-  assert.match(ctx.longKeyReportLine({ offered: true, state: 'partial' }, null, ['claude']), /한 자리에만 넣었습니다 — IRIS 설정 → 계정 · 보안 → 1년 열쇠 받기/);
-  assert.equal(ctx.longKeyReportLine({ offered: false, state: 'idle', reason: 'already' }, null, ['claude']), '1년 열쇠를 이미 쓰고 있습니다.');
   assert.equal(ctx.longKeyReportLine({ offered: true, state: 'done', expiresAt: exp }, null, ['chatgpt']), '');
   assert.equal(ctx.longKeyReportLine(null, null, undefined), '');
   assert.equal(ctx.longKeyDay('not a date'), '');
@@ -173,8 +177,8 @@ async function mockLogin(m, subs) {
   await m.until('/api/online/status', (b) => subs.every((p) => b.logins[p].state === 'done'), '로그인 끝');
 }
 
-test('가짜 서버: 카드는 클로드 로그인이 끝난 뒤에만 · --longkey ok|fail|wait|partial 로 세 모습을 본다', async () => {
-  for (const [mode, end] of [['ok', 'done'], ['fail', 'failed'], ['partial', 'partial'], ['wait', 'approve']]) {
+test('가짜 서버: 카드는 클로드 로그인이 끝난 뒤에만 · --longkey ok|fail|wait 로 세 모습을 본다', async () => {
+  for (const [mode, end] of [['ok', 'done'], ['fail', 'failed'], ['wait', 'approve']]) {
     const m = await startMock(['--longkey', mode]);
     try {
       await m.post('/api/choice', { subscriptions: ['claude'] });
