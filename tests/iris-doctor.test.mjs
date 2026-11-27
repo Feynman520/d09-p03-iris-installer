@@ -24,7 +24,10 @@ import { loadRules } from '../build/rules.mjs';
 import { isStageError } from '../installer/lib/errors.mjs';
 import { planUpdateReset, RELAY_PARTS, KEEP_DONE } from '../installer/lib/update-plan.mjs';
 import { doctorStartFile, DOCTOR_START_FILE } from '../installer/lib/handoff.mjs';
-import { doctorBundleProblems, doctorTrustProblems, DOCTOR_PART_ZIP, DOCTOR_REQUIRED_FILES } from '../verify/doctor-bundle.mjs';
+import {
+  doctorBundleProblems, doctorTrustProblems, doctorPartRequired,
+  DOCTOR_PART_ZIP, DOCTOR_PART_ID, DOCTOR_FIRST_PACKAGE_VERSION, DOCTOR_REQUIRED_FILES,
+} from '../verify/doctor-bundle.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
@@ -615,6 +618,54 @@ test('T8 ㉒ 여섯째 자리: 저장소의 사본은 윈도우 인증서 처리
   }
 });
 
+// 2026-11-28 두 번째 코드 검토(2-6): 하위 링크는 거절하면서 검사 대상 뿌리는 따라가서 읽었다 — 뿌리가 멀쩡한 묶음을 가리키는
+// 연결 폴더면 통과했다(설치기의 doctorBundleCheck 와 달랐다).
+test('T9 ㉓ Doctor 묶음 온전: 검사 대상 뿌리 폴더가 링크 · 연결 폴더면 거절한다(안의 파일이 전부 맞아도)', (t) => {
+  const real = brokenCopy('root-real', () => {});
+  assert.deepEqual(doctorBundleProblems(real), [], '진짜 폴더는 통과');
+  const made = [];
+  const viaJunction = path.join(path.dirname(real), 'root-junction');
+  try { fs.symlinkSync(real, viaJunction, 'junction'); made.push(['junction', viaJunction]); } catch { /* 이 PC 에서 못 만든다 */ }
+  const viaSymlink = path.join(path.dirname(real), 'root-symlink');
+  try { fs.symlinkSync(real, viaSymlink, 'dir'); made.push(['symlink', viaSymlink]); } catch { /* 권한 없음 */ }
+  if (!made.length) { t.skip('이 PC 에서는 연결 폴더도 심볼릭 링크도 만들 수 없다'); return; }
+  t.diagnostic(`확인한 종류: ${made.map((m) => m[0]).join(', ')}`);
+  try {
+    for (const [kind, link] of made) {
+      assert.ok(fs.existsSync(path.join(link, 'iris-doctor.mjs')), `${kind}: 링크를 따라가면 묶음이 보인다`);
+      const problems = doctorBundleProblems(link);
+      assert.equal(problems.length, 1, `${kind}: ${problems.join(' | ')}`);
+      assert.match(problems[0], /링크 · 연결 폴더다/);
+    }
+  } finally {
+    for (const [, link] of made) { try { fs.rmdirSync(link); } catch { try { fs.unlinkSync(link); } catch { /* 남으면 임시 폴더와 함께 지워진다 */ } } }
+  }
+  assert.deepEqual(doctorBundleProblems(real), [], '연결만 끊겼고 진짜 폴더는 그대로다');
+  // 없는 폴더 · 폴더가 아닌 것
+  assert.match(doctorBundleProblems(path.join(real, 'no-such'))[0], /폴더가 없다/);
+  assert.match(doctorBundleProblems(path.join(real, 'iris-doctor.mjs'))[0], /폴더가 없다/);
+});
+
+// 2026-11-28 두 번째 코드 검토(2-5): ③ⓜ 은 새 판 잠금표에 부품이 없으면 통째로 건너뛰었다 — 나중 판에서 그 줄이 빠져도 몰랐다.
+test('T10 ③ⓜ 부품 필수: 처음 실린 판(상수 하나)부터는 잠금표에 Doctor 부품이 반드시 있어야 한다 — 그보다 옛 판만 건너뛴다', () => {
+  assert.equal(DOCTOR_PART_ID, 'iris-doctor');
+  assert.match(DOCTOR_FIRST_PACKAGE_VERSION, /^\d+\.\d+\.\d+$/);
+  const [a, b, c] = DOCTOR_FIRST_PACKAGE_VERSION.split('.').map(Number);
+  assert.equal(doctorPartRequired(DOCTOR_FIRST_PACKAGE_VERSION), true, '처음 실린 판');
+  assert.equal(doctorPartRequired(`${a}.${b}.${c + 1}`), true);
+  assert.equal(doctorPartRequired(`${a}.${b + 1}.0`), true);
+  assert.equal(doctorPartRequired(`${a + 1}.0.0`), true);
+  assert.equal(doctorPartRequired(`${a}.${b}.${c + 34}`), true, '자릿수가 달라도 숫자로 견준다(글자 비교가 아니다)');
+  if (c > 0) assert.equal(doctorPartRequired(`${a}.${b}.${c - 1}`), false, '바로 앞 판은 건너뛴다');
+  assert.equal(doctorPartRequired(`${a}.${b}.9`), c <= 9, '2.0.9 < 2.0.66 — 숫자로 견준다');
+  assert.equal(doctorPartRequired('1.4.5'), false);
+  for (const odd of [undefined, null, '', 'latest', '2.0']) assert.equal(doctorPartRequired(odd), true, `읽히지 않는 판(${odd})은 "있어야 한다"로 본다`);
+  // 이 저장소의 잠금표에는 부품이 있다. 잠금표의 판 줄은 릴리스 때 올리므로(그 전에는 앞 판 번호다) 여기서 판과 묶어 보지 않는다
+  // — 판이 처음 실린 판 이상으로 올라간 뒤에 그 줄이 빠지면 게이트의 필수 확인이 잡는다.
+  assert.ok(LOCK.parts[DOCTOR_PART_ID]);
+  assert.match(String(LOCK.package.version), /^\d+\.\d+\.\d+$/);
+});
+
 test('T8 · T9 · T10 배선: 정적 검사와 업그레이드 게이트가 그 판정을 실제로 부른다(㉒ 의 자리 수는 손으로 적은 숫자가 아니다)', () => {
   const st = fs.readFileSync(path.join(REPO, 'verify', 'static.mjs'), 'utf8');
   assert.match(st, /import \{ doctorBundleProblems, doctorTrustProblems, DOCTOR_PART_ZIP \} from '\.\/doctor-bundle\.mjs'/);
@@ -625,8 +676,14 @@ test('T8 · T9 · T10 배선: 정적 검사와 업그레이드 게이트가 그 
   assert.match(st, /const problems = doctorDir \? doctorBundleProblems\(doctorDir\) : \[`missing payload\/\$\{DOCTOR_PART_ZIP\}`\]/);
   assert.match(st, /'㉓ IRIS Doctor bundle is whole/);
   const up = fs.readFileSync(path.join(REPO, 'verify', 'upgrade.mjs'), 'utf8');
-  assert.match(up, /import \{ doctorBundleProblems \} from '\.\/doctor-bundle\.mjs'/);
+  assert.match(up, /import \{ doctorBundleProblems, doctorPartRequired, DOCTOR_PART_ID, DOCTOR_FIRST_PACKAGE_VERSION \} from '\.\/doctor-bundle\.mjs'/);
   assert.match(up, /check\('③ⓜ IRIS Doctor 부품이 제자리에 있고 지문 목록과 같다'/);
+  // 새 판이 "처음 실린 판" 이상이면 잠금표에 부품이 반드시 있어야 한다 — 그 확인은 "부품이 있을 때만" 묶음의 **밖**에 있다
+  const required = up.indexOf('if (doctorPartRequired(doctorPackageVersion)) {');
+  const whenPresent = up.indexOf("if (nextLock?.parts?.['iris-doctor']) {");
+  assert.ok(required > 0 && whenPresent > required, '필수 확인이 "있을 때만" 묶음보다 앞 · 밖에 있다');
+  assert.match(up.slice(required, whenPresent), /check\(`③ⓜ 새 판\(\$\{doctorPackageVersion\}\)의 잠금표에 \$\{DOCTOR_PART_ID\} 부품이 있다[^`]*`, !!nextLock\?\.parts\?\.\[DOCTOR_PART_ID\]/);
+  assert.ok(!/2\.0\.66/.test(up.slice(required, whenPresent)), '고정 숫자는 doctor-bundle.mjs 의 상수 하나뿐이다');
   assert.match(up, /\['iris-doctor', path\.join\(SOUL_ROOT, '_agent', 'shared', 'tools', 'iris-doctor', 'iris-doctor\.mjs'\)\]/, '③ⓔ 문법 대상');
   // 게이트가 Doctor 에게 부르는 명령은 통신 0 인 둘뿐이다(실제 호출 · 3456 을 두드리는 검진 · Doctor 의 집을 만드는 명령은 부르지 않는다)
   const called = [...up.matchAll(/runDoctor\('([^']+)'\)/g)].map((m) => m[1]).sort();

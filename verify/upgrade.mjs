@@ -20,7 +20,7 @@
 //                 ⓚ 업데이트 전 코덱스 대화(연결 이름 openai)가 업데이트 뒤 IRIS 창의 재개 호환으로 지금 연결 이름에 맞춰진다(2.0.54)
 //                 ⓛ 업데이트 전에 깔려 있던 선택 모듈(메신저 등)이 새 판 잠금표에 없어도 한 바이트도 달라지지 않는다 — 판·공식 표시·
 //                    로그인 state(2.0.64, 메신저를 설치 패키지에서 뺀 판부터. 옛 판이 메신저를 동봉한 2.0.63 이하에서 올 때 실제로 잰다)
-//                 ⓜ IRIS Doctor(2.0.66, 새 판 잠금표에 그 부품이 있을 때): 부품이 제자리에 있고 지문 목록과 한 바이트도 다르지 않다 ·
+//                 ⓜ IRIS Doctor(새 판이 2.0.66 이상이면 잠금표에 그 부품이 **반드시** 있어야 한다 — 없으면 실패): 부품이 제자리에 있고 지문 목록과 한 바이트도 다르지 않다 ·
 //                    옛 판에 없던 부품이면 `.prev` 가 없다 · 동봉 node 로 통신 없이 뜬다(자체 확인 · 판 출력 — 모델 호출 0) ·
 //                    연습 실행이므로 바로가기는 "만들지 않았음"으로 기록돼 있다 · 설치기가 Doctor 의 집을 만들지 않았다
 //
@@ -47,7 +47,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { extractZip } from '../lib/zip.mjs';
 import { driveInstall, getJson } from './offline.mjs';
-import { doctorBundleProblems } from './doctor-bundle.mjs';
+import { doctorBundleProblems, doctorPartRequired, DOCTOR_PART_ID, DOCTOR_FIRST_PACKAGE_VERSION } from './doctor-bundle.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LAST_BUILD_JSON = path.join(ROOT_DIR, '_build', 'out', 'last-build.json');
@@ -567,7 +567,14 @@ async function main() {
     }
 
     // ③ⓜ IRIS Doctor(2.0.66) ----------------------------------------------------
-    // 새 판 잠금표에 Doctor 부품이 있을 때만 잰다(옛 판끼리의 쌍을 다시 잴 때는 건너뛴다).
+    // 새 판이 이 부품이 처음 실린 판(doctor-bundle.mjs DOCTOR_FIRST_PACKAGE_VERSION) 이상이면 잠금표에 부품이 **반드시** 있어야 한다
+    // — 없으면 실패다(전에는 "잠금표에 없으면 통째로 건너뜀"이라, 나중 판에서 그 줄이 빠져도 이 항목이 조용히 사라졌다).
+    // 그보다 옛 판끼리의 쌍을 다시 잴 때만 건너뛴다. 판 = 새 판 잠금표의 package.version(없으면 zip 이름의 판).
+    const doctorPackageVersion = nextLock?.package?.version ?? nextVersion;
+    if (doctorPartRequired(doctorPackageVersion)) {
+      check(`③ⓜ 새 판(${doctorPackageVersion})의 잠금표에 ${DOCTOR_PART_ID} 부품이 있다(${DOCTOR_FIRST_PACKAGE_VERSION} 부터 반드시)`, !!nextLock?.parts?.[DOCTOR_PART_ID],
+        nextLock?.parts?.[DOCTOR_PART_ID] ? String(nextLock.parts[DOCTOR_PART_ID].dest) : '잠금표에 그 부품이 없다');
+    }
     if (nextLock?.parts?.['iris-doctor']) {
       const doctorDir = path.join(SOUL_ROOT, ...String(nextLock.parts['iris-doctor'].dest).split('/'));
       const doctorEntry = path.join(doctorDir, 'iris-doctor.mjs');

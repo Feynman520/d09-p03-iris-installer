@@ -12,6 +12,20 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 
 export const DOCTOR_PART_ZIP = 'tools/iris-doctor.zip';
+export const DOCTOR_PART_ID = 'iris-doctor';
+// 이 부품이 **처음 실린 설치 패키지 판**. 이 판부터는 잠금표에 부품이 반드시 있어야 한다 — 고정 숫자는 여기 한 곳뿐이다
+// (나중 판에서 잠금표의 그 줄이 실수로 빠지면, "부품이 없으니 건너뛴다"가 아니라 실패로 잡는다).
+export const DOCTOR_FIRST_PACKAGE_VERSION = '2.0.66';
+
+/** 그 판의 설치 패키지에 Doctor 부품이 반드시 있어야 하는가(판 = lock.json 의 package.version, 'a.b.c'). 읽히지 않는 판은 "있어야 한다". */
+export function doctorPartRequired(packageVersion) {
+  const parse = (v) => { const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(v ?? '')); return m ? m.slice(1).map(Number) : null; };
+  const have = parse(packageVersion);
+  const first = parse(DOCTOR_FIRST_PACKAGE_VERSION);
+  if (!have) return true;
+  for (let i = 0; i < 3; i++) if (have[i] !== first[i]) return have[i] > first[i];
+  return true;
+}
 export const DOCTOR_REQUIRED_FILES = Object.freeze(['iris-doctor.mjs', 'IRIS Doctor.cmd', 'lib/session.mjs', 'lib/start-check.ps1', 'guide/cannot-start.ko.txt']);
 // 실리면 안 되는 것: 만드는 사람용 문서 · 시험 · 묶는 도구와 시험장 · 그 PC 만의 자리 표 · 열쇠 파일 · 저장소 기록 · 임시와 사본.
 const FORBIDDEN = [
@@ -53,7 +67,12 @@ function walk(dir) {
  */
 export function doctorBundleProblems(dir) {
   const problems = [];
-  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return [`Doctor 묶음 폴더가 없다: ${path.basename(dir)}`];
+  // 뿌리 폴더도 따라가지 않고(lstat) 본다: 뿌리가 **다른 곳의 멀쩡한 묶음을 가리키는 링크 · 연결 폴더**면 안의 파일은 전부 맞게
+  // 읽히지만, 설치 폴더에 놓인 것은 묶음이 아니라 "남의 자리로 가는 길"이다(설치기의 doctorBundleCheck 도 같은 것을 거절한다).
+  let rootStat = null;
+  try { rootStat = fs.lstatSync(dir); } catch { return [`Doctor 묶음 폴더가 없다: ${path.basename(dir)}`]; }
+  if (rootStat.isSymbolicLink()) return [`Doctor 묶음 폴더가 링크 · 연결 폴더다(진짜 폴더가 아니다): ${path.basename(dir)}`];
+  if (!rootStat.isDirectory()) return [`Doctor 묶음 폴더가 없다: ${path.basename(dir)}`];
   let tree;
   try { tree = walk(dir); } catch (err) { return [`Doctor 묶음을 읽지 못했다: ${err?.code ?? 'error'}`]; }
   const { files, links } = tree;
