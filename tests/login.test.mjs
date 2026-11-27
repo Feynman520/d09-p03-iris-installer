@@ -519,6 +519,37 @@ test('countProviderAccounts: claude = accounts with no provider field or provide
   }
 });
 
+test('countAllAccounts: 계정 배열의 길이만 — 공급자 · 꺼짐 여부를 가리지 않고, 못 읽으면 null (2.0.67)', async () => {
+  const { countAllAccounts } = await import('../installer/lib/login.mjs');
+  const dir = tmpRoot('count-all');
+  fs.mkdirSync(dir, { recursive: true });
+  const put = (name, text) => { const p = path.join(dir, name); fs.writeFileSync(p, text, 'utf8'); return p; };
+  try {
+    const mixed = put('mixed.json', JSON.stringify({
+      accounts: [
+        { name: 'a@localhost', refreshToken: 'test-only' },
+        { name: 'b@localhost', provider: 'anthropic', disabled: true },
+        { name: 'codex-1', provider: 'codex' },
+        { name: 'g1', provider: 'google', source: 'agy' },
+        { name: 'x1', provider: 'some-future-provider' },
+      ],
+    }));
+    assert.equal(await countAllAccounts({ teamclaudeConfigPath: mixed }), 5);
+    // 공급자별 세기는 그대로다(구글 · 모르는 공급자는 어느 쪽에도 안 세어진다).
+    assert.equal(await countProviderAccounts({ teamclaudeConfigPath: mixed, provider: 'claude' }), 2);
+    assert.equal(await countProviderAccounts({ teamclaudeConfigPath: mixed, provider: 'chatgpt' }), 1);
+    assert.equal(await countAllAccounts({ teamclaudeConfigPath: put('empty.json', JSON.stringify({ accounts: [] })) }), 0);
+    assert.equal(await countAllAccounts({ teamclaudeConfigPath: put('none.json', JSON.stringify({ proxy: { port: 3456 } })) }), 0, '계정 칸이 없는 새 설정 = 0');
+    assert.equal(await countAllAccounts({ teamclaudeConfigPath: put('notarray.json', JSON.stringify({ accounts: { a: 1 } })) }), 0);
+    assert.equal(await countAllAccounts({ teamclaudeConfigPath: put('broken.json', '{ "accounts": [') }), null, '깨진 파일 = 알 수 없음');
+    assert.equal(await countAllAccounts({ teamclaudeConfigPath: path.join(dir, 'missing.json') }), null, '없는 파일 = 알 수 없음');
+    assert.equal(await countAllAccounts({}), null);
+    assert.equal(await countAllAccounts(), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('relayStatus: "done" once that provider\'s account count is accountsBefore+1; a new account of the OTHER provider does not flip it', async () => {
   const configPath = path.join(tmpRoot('relay-status'), 'teamclaude.json');
   fs.mkdirSync(path.dirname(configPath), { recursive: true });

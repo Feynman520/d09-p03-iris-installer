@@ -36,6 +36,23 @@
 //   node verify/upgrade.mjs --from <옛 zip> --zip <새 zip>
 //   node verify/upgrade.mjs --expect-fail         (회귀 증명용) 판정이 실패해야 종료 코드 0
 //   node verify/upgrade.mjs --keep                연습용 루트와 _build/upgrade 를 남긴다
+//   node verify/upgrade.mjs --via-applier         ② 를 **적용기 길**로 밟는다(2.0.67) — 아래
+//
+// --via-applier (2.0.67): IRIS 안 「업데이트」가 실제로 밟는 길.
+//   ② 를 "새 zip 의 server.mjs 를 --auto 로 직접 띄우기" 대신 이렇게 한다:
+//     ⓐ 새 zip 을 창이 받아 두는 자리(<연습 루트>\_agent\shared\downloads\update-<시각>\package)에 풀고
+//     ⓑ 창이 쓰는 꼴 그대로의 계획(plan.json — 설치 패키지 한 부품)을 그 옆에 쓰고
+//     ⓒ **① 이 깐 옛 판의 적용기**(<연습 루트>\_agent\shared\tools\updater\apply.mjs)를 옛 판의 동봉 node 로 띄운다(창이 띄우는 꼴:
+//        `apply.mjs --plan <계획>` · 작업 폴더 = 적용기 폴더)
+//     ⓓ 적용기가 새 zip 의 `IRIS-설치.cmd --auto` 를 띄우고 → bootstrap.ps1 이 지문을 확인하고 node 를 풀어 → 설치기 서버가 스스로 시작한다
+//   그 뒤의 판정(③ⓑ ~ ③ⓜ)은 직접 길과 **같은 코드**이고, 적용기 길에서만 보는 판정(ⓝ)이 더해진다(verify/upgrade-applier.mjs):
+//   적용기의 끝 · 결과 파일(update-result.json) · 적용기 기록(update.log) · 계획이 그대로인지 · 「내 것 유지」가 잠겨 있는지.
+//   **적용기와 설치기는 고치지 않는다 — 지금 동작을 굳히는 검사다.** 그래서 ⓝ 가운데 「지금 동작」이라고 적힌 것은 고치고 싶은
+//   동작도 있는 그대로 적은 것이다(적용기는 설치기를 띄운 직후 ok:true 를 쓰고, 설치기는 그 파일을 다시 쓰지 않는다).
+//   안전: 계획의 데몬 번호 · 포트는 이미 끝난 것 · 닫힌 것을 넣고 relaunch 는 false 다(넘기기가 실패해도 연습 루트의 IRIS 창을
+//   띄우지 않게). 시작 파일은 브라우저를 열므로, **받아 둔 사본**의 bootstrap.ps1 에서 그 한 줄만 끈다(zip · 원본 무변경).
+//   적용기가 띄운 프로세스들은 이 스크립트의 직계 자식이 아니다 — 끝낼 때는 스스로 끝나기를 기다리고, 남았으면
+//   "연습용 상태 폴더의 node 로 뜬 그 번호"임을 실행 파일 경로로 확인한 것만 번호로 끝낸다(이름 기반 종료 없음).
 
 import fs from 'node:fs';
 import net from 'node:net';
@@ -48,6 +65,10 @@ import { createRequire } from 'node:module';
 import { extractZip } from '../lib/zip.mjs';
 import { driveInstall, getJson } from './offline.mjs';
 import { doctorBundleProblems, doctorPartRequired, DOCTOR_PART_ID, DOCTOR_FIRST_PACKAGE_VERSION } from './doctor-bundle.mjs';
+import {
+  PACKAGE_DIR, NO_BROWSER_ENV, stagingDir, buildPlan, writePlan, applierCommand, shimBootstrapNoBrowser, startedCmdPid,
+  judgeHandoff, describeHandoffMoment, judgeApplierLog, judgeAfterInstaller, judgeKeepFilesLocked,
+} from './upgrade-applier.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LAST_BUILD_JSON = path.join(ROOT_DIR, '_build', 'out', 'last-build.json');
@@ -66,6 +87,7 @@ const flag = (n) => args.includes(n);
 const opt = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null; };
 const KEEP = flag('--keep');
 const EXPECT_FAIL = flag('--expect-fail');
+const VIA_APPLIER = flag('--via-applier');
 
 const results = [];
 function check(name, cond, detail = '') {
@@ -350,6 +372,175 @@ function nodeChecks(file) {
 }
 
 // ---------------------------------------------------------------------------
+// ② 적용기 길(--via-applier, 2.0.67) — 조각 · 판정은 verify/upgrade-applier.mjs
+// ---------------------------------------------------------------------------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const INSTALLER_WORK = path.join(STATE_DIR, 'IRIS-Installer'); // bootstrap.ps1 의 %LOCALAPPDATA%\IRIS-Installer (연습용 상태 폴더 아래)
+const readText = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return null; } };
+
+/** 지금 닫혀 있는 포트 번호 하나(잠깐 열었다 닫는다). 계획의 daemonPort 로 쓴다. */
+function closedPort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.once('error', reject);
+    s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
+  });
+}
+/** 이미 끝난 프로세스의 번호 하나(이 스크립트가 띄워 끝까지 기다린 node). 계획의 daemonPid 로 쓴다. */
+function finishedPid() {
+  return spawnSync(process.execPath, ['-e', ''], { windowsHide: true, timeout: 30000 }).pid ?? null;
+}
+/** 그 번호의 실행 파일 경로 · 명령줄(없거나 못 읽으면 null). 읽기만 한다. */
+function procInfo(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    // 큰따옴표를 쓰지 않는다(파워셸의 -Command 인자 안에서 벗겨질 수 있다).
+    `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction SilentlyContinue; if ($p) { [Console]::Out.Write((@{ path = $p.ExecutablePath; cmd = $p.CommandLine } | ConvertTo-Json -Compress)) }`],
+  { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  try { return r.status === 0 && r.stdout ? JSON.parse(r.stdout) : null; } catch { return null; }
+}
+const samePath = (a, b) => typeof a === 'string' && typeof b === 'string' && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+function killTree(pid) {
+  return new Promise((resolve) => {
+    const t = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    t.on('exit', () => resolve()); t.on('error', () => resolve());
+  });
+}
+
+/**
+ * 적용기가 띄운 설치기 서버가 아직 떠 있으면 끝낸다. 이 스크립트의 직계 자식이 아니므로 "우리 것"임을 먼저 증명한다:
+ * bootstrap.ps1 이 연습용 상태 폴더에 적은 server.pid 의 번호이고, 그 실행 파일이 **연습용 상태 폴더 안에 푼 node.exe** 일 때만.
+ * 증명되면 스스로 끝내라고 부탁하고(POST /api/quit), 그래도 남으면 그 번호만 끝낸다. 증명되지 않으면 아무것도 끝내지 않고 알린다.
+ */
+async function stopStagedInstaller() {
+  if (!await portInUse(PORT)) return { stopped: false, reason: 'not-running' };
+  const pid = Number(String(readText(path.join(INSTALLER_WORK, 'server.pid')) ?? '').trim());
+  const info = procInfo(pid);
+  const ours = !!info && samePath(info.path, path.join(INSTALLER_WORK, 'node', 'node.exe'));
+  if (!ours) {
+    console.error(`warning: something answers on port ${PORT} but it is not provably the installer this run started (server.pid=${pid || '(none)'}) -- leaving it alone`);
+    return { stopped: false, reason: 'not-proven-ours', pid: pid || null };
+  }
+  try { await fetch(`http://127.0.0.1:${PORT}/api/quit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch { /* 이미 끝나는 중 */ }
+  for (let i = 0; i < 100 && await portInUse(PORT); i++) await sleep(100);
+  if (await portInUse(PORT)) await killTree(pid);
+  for (let i = 0; i < 40 && await portInUse(PORT); i++) await sleep(100);
+  return { stopped: true, pid };
+}
+/** 적용기가 띄운 시작 파일(cmd.exe)이 남아 있으면 — 명령줄에 받아 둔 설치 패키지 폴더가 있을 때만 — 그 번호를 끝낸다. */
+async function stopStagedCmd(pid, packageDir) {
+  const info = procInfo(pid);
+  if (!info) return false;
+  if (!String(info.cmd ?? '').toLowerCase().includes(packageDir.toLowerCase())) return false;
+  await killTree(pid);
+  return true;
+}
+
+/**
+ * ② 를 적용기 길로 밟는다. 돌려주는 값 = { autoResult, serverOut, tUpdate } — 뒤의 판정(③)이 직접 길과 같은 것을 받는다.
+ * 적용기 길에서만 보는 판정(ⓝ)은 여기서 찍는다. `staged` 에 끝낼 때 볼 것(받아 둔 폴더 · 시작 파일 번호)을 적어 둔다.
+ */
+async function updateViaApplier({ nextZip, nextVersion, prevVersion, staged }) {
+  const setupDir = path.join(SOUL_ROOT, '_agent', 'setup');
+  const resultFile = path.join(setupDir, 'update-result.json');
+  const updateLog = path.join(setupDir, 'update.log');
+  const dir = stagingDir(SOUL_ROOT, Date.now());
+  const packageDir = path.join(dir, PACKAGE_DIR);
+  staged.packageDir = packageDir;
+
+  const probe = applierCommand(SOUL_ROOT, path.join(dir, 'plan.json'));
+  const haveApplier = fs.existsSync(probe.apply) && fs.existsSync(probe.exe);
+  check(`② ${prevVersion} 이 깐 적용기와 동봉 node 가 있다`, haveApplier, haveApplier ? path.relative(SOUL_ROOT, probe.apply) : `없음: ${[probe.apply, probe.exe].filter((f) => !fs.existsSync(f)).map((f) => path.relative(SOUL_ROOT, f)).join(', ')}`);
+  if (!haveApplier) return { autoResult: null, serverOut: '', tUpdate: Date.now() };
+
+  // ⓐ 창이 받아 두는 자리에 새 zip 을 푼다(창은 서명 · 지문을 확인한 뒤에 푼다 — 그 확인은 창의 검사 몫이다).
+  log(`② staging ${nextVersion} where the IRIS window keeps a download: ${path.relative(SOUL_ROOT, dir)}`);
+  await extractZip(nextZip, packageDir);
+  if (neutralizeRelaunchIfLegacy(packageDir)) log(`staged copy of ${nextVersion} predates IRIS_INSTALLER_NO_FACE_RELAUNCH -- shimmed so no IRIS window opens`);
+  const bootstrap = path.join(packageDir, 'installer', 'bootstrap.ps1');
+  const shim = shimBootstrapNoBrowser(fs.readFileSync(bootstrap, 'utf8'));
+  if (shim.changed) fs.writeFileSync(bootstrap, shim.text, 'utf8');
+  log(`staged copy: bootstrap.ps1 will not open a browser when ${NO_BROWSER_ENV}=1 (${shim.changed ? 'shimmed' : 'already present'})`);
+
+  // ⓑ 계획 — 창이 쓰는 꼴 그대로. 데몬 번호 · 포트는 이미 끝난 것 · 닫힌 것, relaunch 는 false(upgrade-applier.mjs buildPlan).
+  const plan = buildPlan({
+    root: SOUL_ROOT, packageDir, version: nextVersion,
+    daemonPort: await closedPort(), daemonPid: finishedPid(), createdAt: new Date().toISOString(), relaunch: false,
+  });
+  const planFile = writePlan(dir, plan);
+  const planAtStart = readText(planFile);
+  const logOffset = (readText(updateLog) ?? '').length;
+  const resultBefore = readText(resultFile);
+  check('② 적용 전에는 결과 파일이 없다(새로 깐 연습 루트)', resultBefore === null, resultBefore === null ? '' : '이미 있음');
+
+  // ⓒ ① 이 깐 **옛 판의 적용기**를 창이 띄우는 꼴로 띄운다. 이 프로세스는 이 스크립트의 자식이다(끝까지 기다린다).
+  log(`② starting the installed applier (${prevVersion}): node apply.mjs --plan ${path.relative(SOUL_ROOT, planFile)}`);
+  const tUpdate = Date.now();
+  const cmd = applierCommand(SOUL_ROOT, planFile);
+  const child = spawn(cmd.exe, cmd.args, { cwd: cmd.cwd, env: serverEnv({ [NO_BROWSER_ENV]: '1' }), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const out = []; const err = [];
+  child.stdout.on('data', (d) => out.push(String(d)));
+  child.stderr.on('data', (d) => err.push(String(d)));
+  let exit = null;
+  child.on('exit', (code, signal) => { exit = { code, signal }; });
+  child.on('error', (e) => { exit = { code: null, signal: null, error: String(e?.message ?? e) }; });
+  // 적용기는 계획의 데몬이 사라진 것을 확인하고(이미 끝난 번호 · 닫힌 포트라 곧바로) 시작 파일을 띄운 뒤 끝난다.
+  const applierDeadline = Date.now() + 3 * 60 * 1000;
+  while (!exit && Date.now() < applierDeadline) await sleep(100);
+  if (!exit) { try { child.kill(); } catch { /* already gone */ } exit = { code: null, signal: 'timeout' }; }
+  const receiptVersionAtExit = (() => { try { return readJson(receiptFile())?.package?.version ?? null; } catch { return null; } })();
+  const resultAtExit = readText(resultFile);
+  let resultObj = null; try { resultObj = resultAtExit ? JSON.parse(resultAtExit) : null; } catch { resultObj = null; }
+  const applierLog = (readText(updateLog) ?? '').slice(logOffset);
+  staged.cmdPid = startedCmdPid(applierLog);
+  for (const r of judgeHandoff({ exit, stdout: out.join(''), result: resultObj, version: nextVersion })) check(r.name, r.ok, r.detail);
+  // 기록만(판정 아님): 넘긴 직후의 영수증 판은 시점에 따라 옛 판일 수도 새 판일 수도 있다 — 통과 · 실패는 최종 상태로 가른다.
+  log(describeHandoffMoment({ receiptVersionAtExit, prevVersion, nextVersion }));
+  for (const r of judgeApplierLog({ logText: applierLog, version: nextVersion, soulName: SOUL_NAME })) check(r.name, r.ok, r.detail);
+  if (err.join('').trim()) log(`applier stderr: ${err.join('').trim().slice(0, 400)}`);
+
+  // ⓓ 적용기가 띄운 설치기: 시작 파일 → bootstrap.ps1(지문 확인 · node 풀기) → 서버가 --auto 로 스스로 시작 → 끝나면 스스로 종료.
+  let autoResult = null; let installerDoneMs = NaN; let seenUp = false;
+  if (resultObj?.handedOffToInstaller === true) {
+    const url = `http://127.0.0.1:${PORT}`;
+    const upDeadline = Date.now() + 10 * 60 * 1000;   // 지문 확인(수백 MB)과 node 풀기가 먼저 돈다
+    const deadline = Date.now() + 25 * 60 * 1000;
+    for (;;) {
+      let st = null;
+      try { st = await getJson(url, '/api/state'); } catch { st = null; }
+      if (st?.name === 'iris-installer') {
+        seenUp = true;
+        if (st.autoResult) { autoResult = st.autoResult; installerDoneMs = Date.now(); break; }
+      } else if (seenUp) break; // 떴다가 사라졌다 = 끝나고 스스로 종료했다(마지막 말은 state.json)
+      if (!seenUp && Date.now() > upDeadline) break;
+      if (Date.now() > deadline) break;
+      await sleep(300);
+    }
+    if (!autoResult) {
+      try { autoResult = readJson(path.join(INSTALLER_WORK, 'state.json')).autoResult ?? null; } catch { autoResult = null; }
+      if (autoResult) installerDoneMs = Date.now();
+    }
+    const until = Date.now() + 30000;
+    while (await portInUse(PORT) && Date.now() < until) await sleep(200);
+  }
+  const bootstrapLog = readText(path.join(INSTALLER_WORK, 'bootstrap.log')) ?? '';
+  const serverOut = [readText(path.join(INSTALLER_WORK, 'server.out.log')), readText(path.join(INSTALLER_WORK, 'server.err.log')), bootstrapLog].filter(Boolean).join('\n');
+  check('ⓝ 시작 파일(IRIS-설치.cmd → bootstrap.ps1)이 새 판의 설치기 서버를 띄웠다', seenUp && /Server process started \(pid \d+\)/.test(bootstrapLog),
+    (bootstrapLog.match(/(Server process started|Could not unpack Node|Setup server did not respond|Please extract)[^\r\n]*/g) ?? ['(bootstrap 기록 없음)']).slice(-1)[0].slice(0, 120));
+  // bootstrap.ps1 은 브라우저 열기 함수를 부른 뒤 늘 "Opened browser …" 줄을 적는다 — 열지 않았다는 증거는 덧댄 줄이 남긴 기록이다.
+  check('ⓝ 연습 실행이라 브라우저를 열지 않았다(받아 둔 사본에만 덧댄 손잡이)', /Browser not opened/.test(bootstrapLog),
+    (bootstrapLog.match(/Browser not opened[^\r\n]*/) ?? ['"Browser not opened" 줄이 없다 — 브라우저가 열렸을 수 있다'])[0].slice(0, 100));
+  log(`② finished in ${Math.round((Date.now() - tUpdate) / 1000)}s (via the applier)`);
+
+  for (const r of judgeAfterInstaller({
+    resultAtExit, resultAtEnd: readText(resultFile), installerDoneMs,
+    planAtStart, planAtEnd: readText(planFile), packageDirExists: fs.existsSync(path.join(packageDir, 'lock.json')),
+  })) check(r.name, r.ok, r.detail);
+  for (const r of judgeKeepFilesLocked({ capabilitiesText: readText(path.join(cmd.cwd, 'capabilities.json')) })) check(r.name, r.ok, r.detail);
+  return { autoResult, serverOut, tUpdate };
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 async function main() {
@@ -369,6 +560,7 @@ async function main() {
   fs.mkdirSync(SCRATCH_DIR, { recursive: true });
 
   let server = null;
+  const staged = { packageDir: null, cmdPid: null }; // --via-applier: 끝낼 때 볼 것(받아 둔 설치 패키지 폴더 · 적용기가 띄운 시작 파일의 번호)
   try {
     log('extracting both zips');
     await extractZip(prevZip, ZIP_PREV);
@@ -436,28 +628,35 @@ async function main() {
     const rolesBefore = fs.readdirSync(SOUL_ROOT).filter((n) => /^R\d{2}-/.test(n)).sort();
 
     // ② 새 판 --auto -----------------------------------------------------------
-    log(`② updating to ${nextVersion} with --auto`);
-    const tUpdate = Date.now();
-    server = await startInstaller(ZIP_NEXT, { auto: true, freshState: false });
-    let autoResult = null; let lastState = null;
-    const deadline = Date.now() + 10 * 60 * 1000;
-    for (;;) {
-      if (server.exited()) break;
-      try { lastState = await getJson(server.url, '/api/state'); if (lastState?.autoResult) { autoResult = lastState.autoResult; } } catch { /* mid-exit */ }
-      if (autoResult) break;
-      if (Date.now() > deadline) break;
-      await new Promise((r) => setTimeout(r, 300));
+    let autoResult = null; let serverOut = ''; let tUpdate = Date.now();
+    if (VIA_APPLIER) {
+      // 적용기 길(2.0.67): 창이 받아 둔 계획 → ① 이 깐 옛 판의 적용기 → 새 zip 의 시작 파일 → 설치기. 조각 = 위 updateViaApplier.
+      log(`② updating to ${nextVersion} through the installed applier (--via-applier)`);
+      ({ autoResult, serverOut, tUpdate } = await updateViaApplier({ nextZip, nextVersion, prevVersion, staged }));
+    } else {
+      log(`② updating to ${nextVersion} with --auto`);
+      tUpdate = Date.now();
+      server = await startInstaller(ZIP_NEXT, { auto: true, freshState: false });
+      let lastState = null;
+      const deadline = Date.now() + 10 * 60 * 1000;
+      for (;;) {
+        if (server.exited()) break;
+        try { lastState = await getJson(server.url, '/api/state'); if (lastState?.autoResult) { autoResult = lastState.autoResult; } } catch { /* mid-exit */ }
+        if (autoResult) break;
+        if (Date.now() > deadline) break;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      // 서버는 끝나면 스스로 종료한다(finish → quit). state.json 이 마지막 말.
+      if (!autoResult) {
+        const sf = path.join(STATE_DIR, 'IRIS-Installer', 'state.json');
+        if (fs.existsSync(sf)) { try { autoResult = readJson(sf).autoResult ?? null; } catch { /* ignore */ } }
+      }
+      const until = Date.now() + 15000;
+      while (!server.exited() && Date.now() < until) await new Promise((r) => setTimeout(r, 200));
+      serverOut = server.output();
+      await server.stop(); server = null;
+      log(`② finished in ${Math.round((Date.now() - tUpdate) / 1000)}s`);
     }
-    // 서버는 끝나면 스스로 종료한다(finish → quit). state.json 이 마지막 말.
-    if (!autoResult) {
-      const sf = path.join(STATE_DIR, 'IRIS-Installer', 'state.json');
-      if (fs.existsSync(sf)) { try { autoResult = readJson(sf).autoResult ?? null; } catch { /* ignore */ } }
-    }
-    const until = Date.now() + 15000;
-    while (!server.exited() && Date.now() < until) await new Promise((r) => setTimeout(r, 200));
-    const serverOut = server.output();
-    await server.stop(); server = null;
-    log(`② finished in ${Math.round((Date.now() - tUpdate) / 1000)}s`);
     check('② --auto 결과 ok', autoResult?.ok === true, autoResult ? JSON.stringify(autoResult).slice(0, 300) : 'autoResult 없음(시간 초과?)');
 
     // ③ 판정 ---------------------------------------------------------------------
@@ -656,11 +855,11 @@ async function main() {
 
     // 결과 -----------------------------------------------------------------------
     const failed = results.filter((r) => !r.ok);
-    const summary = { prevVersion, nextVersion, prevZip, nextZip, startedAt: new Date(t0).toISOString(), tookMs: Date.now() - t0, results, autoResult, expectFail: EXPECT_FAIL };
+    const summary = { prevVersion, nextVersion, prevZip, nextZip, startedAt: new Date(t0).toISOString(), tookMs: Date.now() - t0, results, autoResult, expectFail: EXPECT_FAIL, viaApplier: VIA_APPLIER };
     fs.writeFileSync(RESULT_FILE, JSON.stringify(summary, null, 2), 'utf8');
     if (failed.length) fs.writeFileSync(path.join(SCRATCH_DIR, 'server-auto.log'), serverOut, 'utf8');
     console.log('');
-    console.log(`upgrade verify ${prevVersion} -> ${nextVersion}: ${results.length - failed.length}/${results.length} pass, ${failed.length} fail (${Math.round((Date.now() - t0) / 1000)}s)`);
+    console.log(`upgrade verify ${prevVersion} -> ${nextVersion}${VIA_APPLIER ? ' (via the applier)' : ''}: ${results.length - failed.length}/${results.length} pass, ${failed.length} fail (${Math.round((Date.now() - t0) / 1000)}s)`);
     if (EXPECT_FAIL) {
       console.log(failed.length ? 'expected failure observed -- the gate catches this pair (exit 0)' : 'NO failure observed but --expect-fail was given (exit 1)');
       process.exitCode = failed.length ? 0 : 1;
@@ -669,6 +868,11 @@ async function main() {
     }
   } finally {
     if (server) { try { await server.stop(); } catch { /* ignore */ } }
+    if (VIA_APPLIER) {
+      // 적용기가 띄운 것들은 보통 스스로 끝나 있다. 남았으면 "우리 것"으로 증명된 번호만 끝낸다(연습 루트를 지우기 전에).
+      try { await stopStagedInstaller(); } catch (e) { console.error(`warning: could not check the staged installer: ${e?.message ?? e}`); }
+      if (staged.cmdPid && staged.packageDir) { try { await stopStagedCmd(staged.cmdPid, staged.packageDir); } catch { /* 이미 끝남 */ } }
+    }
     if (!KEEP) {
       if (fs.existsSync(SOUL_ROOT) && !await removeDirHard(SOUL_ROOT)) console.error(`warning: could not remove ${SOUL_ROOT}`);
       for (const d of [ZIP_PREV, ZIP_NEXT, STATE_DIR]) fs.rmSync(d, { recursive: true, force: true });

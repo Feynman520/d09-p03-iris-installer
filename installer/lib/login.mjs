@@ -704,6 +704,31 @@ export async function countProviderAccounts({ teamclaudeConfigPath, provider } =
 }
 
 /**
+ * How many account entries the relay's config file holds, whatever their
+ * provider and whether or not they are switched off. Reads ONLY the array
+ * length -- never an entry, never a token.
+ *
+ * Used for ONE thing: online.mjs startRelay subtracts the Claude + ChatGPT
+ * count from it to get "how many lines of any OTHER provider are on file",
+ * and refuses a relay that carries more of those than the file has. It is
+ * NOT compared with the relay's total: the relay loads only lines that have
+ * a usable credential when it starts (its resolve-accounts.js), so a line
+ * can be on file and not in the relay. It is not a sign-in test either --
+ * countProviderAccounts() stays that.
+ *
+ * @returns {Promise<number|null>} null = the file could not be read (unknown)
+ */
+export async function countAllAccounts({ teamclaudeConfigPath } = {}) {
+  let config;
+  try {
+    config = readJsonFile(teamclaudeConfigPath);
+  } catch {
+    return null;
+  }
+  return Array.isArray(config?.accounts) ? config.accounts.length : 0;
+}
+
+/**
  * Poll TeamClaude's config file for that provider's account count. `done`
  * once the count passes `accountsBefore` -- i.e. at least one new account of
  * this provider joined. Reads ONLY counts -- never tokens.

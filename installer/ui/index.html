@@ -81,6 +81,10 @@ label.pick:hover { background: var(--raised); }
 label.pick input { margin-top: 4px; }
 label.pick b { font-weight: 600; }
 label.pick .sub { display: block; }
+/* 2.0.67 — 잠긴 줄(Antigravity): 보이지만 고를 수 없다. 꼬리표 「곧 열립니다」. */
+label.pick.locked { cursor: default; opacity: .62; }
+label.pick.locked:hover { background: transparent; }
+.soon { font-size: 11.5px; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 999px; padding: 1px 8px; margin-left: 6px; white-space: nowrap; }
 
 .mini { font-family: var(--mono); font-size: 12px; letter-spacing: .4px; }
 .mini .bar-fill { color: var(--iris); }
@@ -91,6 +95,8 @@ label.pick .sub { display: block; }
 .login-choice .lc-label { font-weight: 600; }
 .login-choice label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .login-choice .lc-note { flex-basis: 100%; color: var(--ink-2); font-size: 12px; }
+.login-choice label.lc-locked { cursor: default; opacity: .62; }
+.login-choice label.lc-locked .soon { margin-left: 2px; }
 .longkey { border: 1px dashed var(--line-2); border-radius: 8px; padding: 12px 13px; margin-top: 12px; }
 .longkey h4 { margin: 0 0 6px; font-size: 14px; }
 .longkey p.sub { margin: 0 0 4px; font-size: 13px; color: var(--ink-2); }
@@ -218,6 +224,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
       <p class="hint">가지고 계신 <b>유료 구독</b>을 모두 고르세요. 무료 계정으로는 비서가 일할 수 없습니다. 둘 다 고르면 Claude 쪽이 앞장서고, 그 뒤로는 둘 다 씁니다.</p>
       <label class="pick"><input type="checkbox" id="sub-claude" value="claude"><span><b>Claude 구독</b> — claude.ai 유료 요금제(예: Pro, Max)<span class="sub">비서가 Claude로 일합니다(도구 이름: Claude Code). 둘 다 있으면 이쪽이 앞장섭니다.</span></span></label>
       <label class="pick"><input type="checkbox" id="sub-chatgpt" value="chatgpt"><span><b>ChatGPT 구독</b> — chatgpt.com 유료 요금제(예: Plus, Pro)<span class="sub">비서가 ChatGPT로 일합니다(도구 이름: Codex).</span></span></label>
+      <label class="pick locked" id="pick-antigravity" aria-disabled="true"><input type="checkbox" id="sub-antigravity" value="antigravity" disabled><span><b>Antigravity</b><span class="soon">곧 열립니다</span><span class="sub" id="sub-antigravity-note">준비 중입니다. 곧 열립니다.</span></span></label>
       <div id="choice-note"></div>
       <div class="acts">
         <button class="ghost" id="btn-back-choice">이전</button>
@@ -308,6 +315,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
         <span class="lc-label">이번 설치에서 쓸 구독</span>
         <label><input type="checkbox" id="chk-claude"> Claude</label>
         <label><input type="checkbox" id="chk-chatgpt"> ChatGPT</label>
+        <label class="lc-locked" id="lc-antigravity" aria-disabled="true" title="준비 중입니다. 곧 열립니다."><input type="checkbox" id="chk-antigravity" disabled> Antigravity <span class="soon">곧 열립니다</span></label>
         <button class="ghost" id="btn-choice-apply">바꾼 대로 적용</button>
         <span class="lc-note" id="choice-note">한쪽 로그인이 잘 안 되면 체크를 풀고 적용하세요. 나중에 IRIS 안에서 다시 더할 수 있습니다.</span>
       </div>
@@ -709,6 +717,19 @@ $('btn-choice').onclick = async () => {
   show('summary');
 };
 let interviewMode = false;
+
+// 2.0.67 — Antigravity 잠긴 줄(③ 구독 고르기 · ⑦ 「이번 설치에서 쓸 구독」). 보이지만 고를 수 없다 — 꼬리표 「곧 열립니다」.
+// 이 판에는 받는 장치가 없어 **열쇠가 열린 PC 에서도 고를 수 없다**: 서버가 준 잠금 값(GET /api/state 의 locks)은 설명 한 줄만 바꾼다.
+// 위의 「다음」과 ⑦ 의 「바꾼 대로 적용」은 이 체크 상자를 읽지 않는다(서버도 받은 값을 버린다).
+const AGY_NOTE_LOCKED = '준비 중입니다. 곧 열립니다.';
+const AGY_NOTE_KEY = '이 PC 는 시험 열쇠가 있지만, 설치 프로그램에서 받는 기능은 아직 준비 중입니다.';
+function renderAgyRow(locks) {
+  const text = locks && locks.antigravity === 'open' ? AGY_NOTE_KEY : AGY_NOTE_LOCKED;
+  const sub = $('sub-antigravity-note'); if (sub) sub.textContent = text;
+  const lc = $('lc-antigravity'); if (lc) lc.title = text;
+  for (const id of ['sub-antigravity', 'chk-antigravity']) { const c = $(id); if (c) { c.checked = false; c.disabled = true; } }
+}
+renderAgyRow(null);
 
 // ---------------------------------------------------------------------------
 // ④ 작업 폴더 구성 — 편집기(왼쪽) + 나무 미리보기(오른쪽).
@@ -1849,6 +1870,7 @@ async function restore() {
   let st = {};
   try { ({ body: st } = await api('/api/state')); } catch { show('precheck'); runPrecheck(); return; }
   if (st.version) $('ver').textContent = 'v' + st.version;
+  renderAgyRow(st.locks);
 
   if (st.step === 'reinstall-required') { enterReinstallMode(); return; }
   if (st.step === 'auto') { enterAutoMode(); return; }

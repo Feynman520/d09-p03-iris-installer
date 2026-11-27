@@ -845,6 +845,233 @@ test('startRelay: 실행 중계기의 계정 수가 설정 파일과 다르면 �
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+// 2.0.67 — 계정 수 대조는 양쪽을 같은 잣대로: 이 설치기가 로그인시키는 두 공급자(클로드 · 챗지피티)의 수끼리.
+//
+// 고친 고장: 실행 중계기의 목록에는 공급자를 가리지 않고 전부 들어 있는데 설정 파일 쪽은 클로드 + 챗지피티만 세어,
+// 셋째 공급자(구글)의 계정이 실려 있으면 같은 설정 파일을 읽는 중계기인데도 늘 "어긋남"으로 실패했다.
+//
+// 중계기가 무엇을 세는가(중계기 소스를 읽어 확인 — 2026-11-28):
+//   · 시작할 때 **쓸 열쇠가 있는 줄만** 싣는다(resolve-accounts.js): 열쇠 없는 oauth 줄 · 읽히지 않는 importFrom ·
+//     로그인이 없는 구글 폴더 · 키 없는 apikey · 모르는 type 은 건너뛴다. 그래서 설정의 줄 수 ≠ 실린 수일 수 있다.
+//   · 꺼 둔(disabled) 줄은 싣고, 상태 목록에 `disabled:true` 로 낸다(센다).
+//   · 중복 줄은 싣을 때 걸러내지 않는다(걸러내기는 로그인 · 가져오기가 설정에 쓰기 전에 한다).
+//   · 다시 읽기(reload) 때는 설정의 모든 줄을 다시 들인다(sync-accounts.js) — 시작 때 건너뛴 줄도 그때 실린다.
+// 아래의 가짜 중계기는 그 규칙으로 "이 설정이면 무엇이 실리는가"를 만들어, 진짜 relayHealth 가 읽는 상태 응답으로 내준다
+// (빈 루프백 포트의 임시 서버 — 진짜 중계기 포트에 닿지 않는다). 세기 함수는 주입하지 않는다(진짜 설정 파일 · 진짜 세기).
+const CLAUDE_ACC = (n = 1, over = {}) => ({ name: `claude-${n}@localhost`, type: 'oauth', accessToken: 'test-only', refreshToken: 'test-only', ...over });
+const CODEX_ACC = (n = 1, over = {}) => ({ name: `codex-${n}`, type: 'oauth', provider: 'codex', importFrom: 'X:\\nowhere\\auth.json', ...over });
+const GOOGLE_ACC = (n = 1, over = {}) => ({ name: `g${n}`, type: 'oauth', provider: 'google', source: 'agy', importFrom: `X:\\nowhere\\g${n}`, ...over });
+
+/** 중계기가 그 설정에서 싣는 줄(중계기 resolve-accounts.js 의 규칙). unreadable = 열쇠 파일을 읽지 못하는 줄의 이름들. */
+function relayLoads(accounts, { unreadable = [], reloaded = false } = {}) {
+  const live = [];
+  for (const a of accounts) {
+    const provider = ['anthropic', 'codex', 'google'].includes(a.provider) ? a.provider : 'anthropic'; // 모르는 공급자 = 기본값
+    let loaded;
+    if (reloaded) loaded = true; // 다시 읽기는 설정의 모든 줄을 들인다
+    else if (a.type === 'apikey') loaded = !!a.apiKey;
+    else if (a.type !== 'oauth') loaded = false;
+    else if (provider === 'google') loaded = !!a.importFrom && !unreadable.includes(a.name);
+    else if (a.importFrom || (provider === 'codex' && !a.accessToken)) loaded = !unreadable.includes(a.name);
+    else loaded = !!a.accessToken;
+    if (loaded) live.push({ name: a.name, displayName: a.name, provider, type: a.type, disabled: a.disabled || false, status: a.disabled ? 'disabled' : 'active' });
+  }
+  return live;
+}
+/** 상태 응답을 내주는 임시 서버 위에서 startRelay 를 돌린다. liveList = 중계기의 계정 목록(null = 목록을 주지 않는 옛 실행본). */
+async function relayCase(name, accounts, liveList, { stripProvider = false } = {}) {
+  const root = tmpRoot(name);
+  const cfg = path.join(root, 'tc.json');
+  fs.writeFileSync(cfg, JSON.stringify({ proxy: { port: 3456, apiKey: 'test-only' }, accounts }), 'utf8');
+  const { default: http } = await import('node:http');
+  const list = liveList && stripProvider ? liveList.map(({ provider, ...rest }) => rest) : liveList;
+  const body = JSON.stringify(list ? { accounts: list, activity: [], google: { supported: true, halt: null } } : { activity: [] });
+  const server = http.createServer((req, res) => { res.writeHead(req.url === '/teamclaude/status' ? 200 : 404, { 'Content-Type': 'application/json' }); res.end(body); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const livePort = server.address().port;
+  const asked = [];
+  try {
+    const { relayHealth } = await import('../installer/lib/online.mjs');
+    const r = await startRelay({
+      root,
+      resolveConfigPathFn: () => cfg,
+      ensureProxyFn: async () => ({ alive: true, started: false }),
+      healthFn: (port, opts) => { asked.push({ port, opts }); return relayHealth(livePort, opts); },
+    });
+    return { r, root, cfg, asked, receipt: readReceipt(root).online.relay };
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+const verdict = (c) => ({ ok: c.r.ok, state: c.r.state, accounts: c.r.accounts });
+
+test('startRelay: 클로드 1 + 구글 2 가 다 실린 중계기 → 통과 (2.0.66 까지는 "중계기 3 · 설정 1"로 늘 실패했다, 2.0.67)', async () => {
+  const accounts = [CLAUDE_ACC(), GOOGLE_ACC(1), GOOGLE_ACC(2)];
+  const c = await relayCase('relaygoogle', accounts, relayLoads(accounts));
+  assert.deepEqual(verdict(c), { ok: true, state: 'done', accounts: 3 });
+  assert.deepEqual(c.receipt, { state: 'done', accounts: 3, code: null });
+  assert.deepEqual(c.asked, [{ port: 3456, opts: { byProvider: true } }], '상태를 공급자별 수로 받는다(이름 · 열쇠는 넘어오지 않는다)');
+});
+
+test('startRelay: 구글 줄이 설정에는 있지만 중계기가 싣지 못했다(그 폴더에 로그인이 없다) → 통과 — 전체 줄 수로 견주지 않는다 (2.0.67)', async () => {
+  const accounts = [CLAUDE_ACC(), CODEX_ACC(), GOOGLE_ACC(1), GOOGLE_ACC(2)];
+  const none = await relayCase('relaygdrop', accounts, relayLoads(accounts, { unreadable: ['g1', 'g2'] }));
+  assert.deepEqual(verdict(none), { ok: true, state: 'done', accounts: 2 }, '구글 둘 다 못 실음');
+  const one = await relayCase('relaygdrop1', accounts, relayLoads(accounts, { unreadable: ['g2'] }));
+  assert.deepEqual(verdict(one), { ok: true, state: 'done', accounts: 3 }, '구글 하나만 실음');
+});
+
+test('startRelay: 클로드만 · 코덱스만 · 둘 다 — 지금까지와 같다 (2.0.67)', async () => {
+  for (const [name, accounts] of [
+    ['relayonlyclaude', [CLAUDE_ACC()]],
+    ['relayonlycodex', [CODEX_ACC()]],
+    ['relayboth', [CLAUDE_ACC(), CODEX_ACC()]],
+    ['relaybothmany', [CLAUDE_ACC(1), CLAUDE_ACC(2), CODEX_ACC(1), CODEX_ACC(2), CODEX_ACC(3)]],
+  ]) {
+    const c = await relayCase(name, accounts, relayLoads(accounts));
+    assert.deepEqual(verdict(c), { ok: true, state: 'done', accounts: accounts.length }, name);
+  }
+});
+
+test('startRelay: 꺼 둔(disabled) 계정 — 중계기도 싣고 세므로 양쪽 수가 같다 (2.0.67)', async () => {
+  const accounts = [CLAUDE_ACC(1), CLAUDE_ACC(2, { disabled: true }), CODEX_ACC(1, { disabled: true }), GOOGLE_ACC(1, { disabled: true })];
+  const live = relayLoads(accounts);
+  assert.deepEqual(live.map((a) => a.disabled), [false, true, true, true], '중계기는 꺼 둔 줄도 목록에 낸다');
+  const c = await relayCase('relaydisabled', accounts, live);
+  assert.deepEqual(verdict(c), { ok: true, state: 'done', accounts: 4 });
+});
+
+test('startRelay: 중복 줄 — 중계기는 싣을 때 걸러내지 않으므로 양쪽 수가 같다 (2.0.67)', async () => {
+  const accounts = [CLAUDE_ACC(1), CLAUDE_ACC(1), CODEX_ACC(1), CODEX_ACC(1), GOOGLE_ACC(1), GOOGLE_ACC(1)];
+  const c = await relayCase('relaydup', accounts, relayLoads(accounts));
+  assert.deepEqual(verdict(c), { ok: true, state: 'done', accounts: 6 });
+});
+
+test('startRelay: 다른 중계 프로그램이 포트를 쓰는 PC — 여전히 실패, 구글 줄이 있는 설정에서도 (TC-02 를 잃지 않는다, 2.0.67)', async () => {
+  // 고치지 않은 공식 프로그램은 목록에 provider 칸이 없다 — 중계기의 기본값처럼 클로드 쪽으로 센다.
+  const foreign5 = Array.from({ length: 5 }, (_, i) => ({ name: `other-${i + 1}`, type: 'oauth' }));
+  const a = await relayCase('relayforeign5', [CODEX_ACC()], foreign5);
+  assert.equal(a.r.ok, false);
+  assert.equal(a.r.code, CODES.relay);
+  assert.match(a.r.message, /우리 설정 파일을 읽고 있지 않습니다\(중계기 계정 5개, 설정 파일 1개\)/);
+  assert.deepEqual(a.r.detail, { alive: true, started: false, status: 200, liveAccounts: 5, fileAccounts: 1, port: 3456, liveByProvider: { anthropic: 5, codex: 0, other: 0 }, fileOther: 0 });
+  assert.deepEqual(a.receipt, { state: 'failed', accounts: 5, code: CODES.relay });
+
+  // 우리 설정 = 클로드 1 + 구글 2(줄 수 3). 계정 3개짜리 남의 프로그램은 "줄 수가 같다"로 넘어가지 않는다.
+  const foreign3 = [{ name: 'x', type: 'oauth', provider: 'anthropic' }, { name: 'y', type: 'oauth', provider: 'codex' }, { name: 'z', type: 'oauth' }];
+  const b = await relayCase('relayforeign3', [CLAUDE_ACC(), GOOGLE_ACC(1), GOOGLE_ACC(2)], foreign3);
+  assert.equal(b.r.ok, false, '전체 줄 수(3 = 3)가 아니라 두 공급자의 수(3 ≠ 1)로 본다');
+  assert.match(b.r.message, /중계기 계정 3개, 설정 파일 1개/);
+
+  // 우리 설정에 없는 공급자의 계정을 더 많이 실은 중계기도 우리 것이 아니다.
+  const c = await relayCase('relayforeigng', [CLAUDE_ACC(), GOOGLE_ACC(1)], [{ name: 'c', type: 'oauth', provider: 'anthropic' }, { name: 'g1', provider: 'google' }, { name: 'g2', provider: 'google' }]);
+  assert.equal(c.r.ok, false);
+  assert.match(c.r.message, /중계기 계정 3개, 설정 파일 2개/);
+  assert.deepEqual(c.r.detail.liveByProvider, { anthropic: 1, codex: 0, other: 2 });
+  assert.equal(c.r.detail.fileOther, 1);
+});
+
+test('startRelay: 알려진 한계(2.0.13 부터 그대로) — 클로드 · 챗지피티 줄이 열쇠를 잃어 중계기가 싣지 못하면 어긋남으로 본다 (2.0.67 에서 바꾸지 않았다)', async () => {
+  // 열쇠 없는 클로드 줄: 갓 시작한 중계기는 건너뛴다 → 중계기 1 · 설정 2.
+  const tokenless = [CLAUDE_ACC(1), { name: 'no-token@localhost', type: 'oauth' }];
+  const fresh = await relayCase('relayreject', tokenless, relayLoads(tokenless));
+  assert.equal(fresh.r.ok, false);
+  assert.match(fresh.r.message, /중계기 계정 1개, 설정 파일 2개/);
+  // 같은 설정이라도 중계기가 다시 읽은 뒤에는 그 줄도 실려 있다 → 같다.
+  const reloaded = await relayCase('relayreject2', tokenless, relayLoads(tokenless, { reloaded: true }));
+  assert.deepEqual(verdict(reloaded), { ok: true, state: 'done', accounts: 2 });
+  // 코덱스 줄의 로그인 파일이 사라진 PC(로그아웃)도 같다.
+  const loggedOut = [CLAUDE_ACC(1), CODEX_ACC(1)];
+  const gone = await relayCase('relayreject3', loggedOut, relayLoads(loggedOut, { unreadable: ['codex-1'] }));
+  assert.equal(gone.r.ok, false);
+  assert.match(gone.r.message, /중계기 계정 1개, 설정 파일 2개/);
+  // 키 없는 apikey 줄 · 모르는 type 의 줄(둘 다 공급자 칸이 없어 설정 쪽에서는 클로드로 센다).
+  const junk = [CLAUDE_ACC(1), { name: 'k', type: 'apikey' }, { name: 'w', type: 'weird' }];
+  const j = await relayCase('relayreject4', junk, relayLoads(junk));
+  assert.equal(j.r.ok, false);
+  assert.match(j.r.message, /중계기 계정 1개, 설정 파일 3개/);
+});
+
+test('startRelay: 실행 중계기가 목록을 안 주면 설정 파일 수로 — 그 수는 지금까지처럼 클로드 + 챗지피티 (2.0.67)', async () => {
+  const a = await relayCase('relaynolist', [CLAUDE_ACC(), CODEX_ACC()], null);
+  assert.deepEqual(verdict(a), { ok: true, state: 'done', accounts: 2 });
+  const g = await relayCase('relaynolistg', [CLAUDE_ACC(), GOOGLE_ACC(1), GOOGLE_ACC(2)], null);
+  assert.deepEqual(verdict(g), { ok: true, state: 'done', accounts: 1 }, '목록이 없을 때의 수는 바꾸지 않았다');
+});
+
+test('startRelay: 구글 계정만 있는 설정 — 대조는 통과하지만 로그인 완료 판정은 그대로다 (2.0.67)', async () => {
+  const accounts = [GOOGLE_ACC(1), GOOGLE_ACC(2)];
+  const root = tmpRoot('relaygoogleonlycfg');
+  const cfg = path.join(root, 'tc.json');
+  fs.writeFileSync(cfg, JSON.stringify({ accounts }), 'utf8');
+  const c = await relayCase('relaygoogleonly', accounts, relayLoads(accounts));
+  assert.deepEqual(verdict(c), { ok: true, state: 'done', accounts: 2 });
+  // 공급자별 세기와 그것을 쓰는 로그인 완료 판정은 구글 계정을 어느 쪽에도 세지 않는다(바꾸지 않았다).
+  const { countProviderAccounts, relayStatus, countAllAccounts } = await import('../installer/lib/login.mjs');
+  assert.equal(await countProviderAccounts({ teamclaudeConfigPath: cfg, provider: 'claude' }), 0);
+  assert.equal(await countProviderAccounts({ teamclaudeConfigPath: cfg, provider: 'chatgpt' }), 0);
+  assert.equal(await relayStatus({ teamclaudeConfigPath: cfg, provider: 'claude', accountsBefore: 0 }), 'pending');
+  assert.equal(await relayStatus({ teamclaudeConfigPath: cfg, provider: 'chatgpt', accountsBefore: 0 }), 'pending');
+  assert.equal(await countAllAccounts({ teamclaudeConfigPath: cfg }), 2);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('startRelay: 공급자별 수가 오지 않으면(목록의 수만) 2.0.66 의 견줌 그대로 · 세기 함수를 부르는 차례 (2.0.67)', async () => {
+  const root = tmpRoot('relaylegacy');
+  const counted = [];
+  let all = 0;
+  const run = (health) => startRelay({
+    root,
+    resolveConfigPathFn: () => path.join(root, 'tc.json'),
+    ensureProxyFn: async () => ({ alive: true, started: false }),
+    healthFn: async () => health,
+    countAccountsFn: async ({ provider }) => { counted.push(provider); return provider === 'claude' ? 1 : 0; },
+    countAllAccountsFn: async (a) => { all += 1; assert.deepEqual(Object.keys(a), ['teamclaudeConfigPath']); return 3; },
+  });
+  // 수만 온 경우: 전체 수(3)를 클로드 + 챗지피티(1)와 견준다 — 옛 규칙 그대로 실패. 전체 세기는 부르지 않는다.
+  const legacy = await run({ ok: true, status: 200, liveAccounts: 3 });
+  assert.equal(legacy.ok, false);
+  assert.match(legacy.message, /중계기 계정 3개, 설정 파일 1개/);
+  assert.deepEqual(legacy.detail, { alive: true, started: false, status: 200, liveAccounts: 3, fileAccounts: 1, port: 3456 });
+  assert.equal(all, 0);
+  // 공급자별 수가 온 경우: 클로드 1 = 1, 그 밖 2 ≤ (3 - 1) → 통과. 전체 세기는 이때 한 번.
+  const by = await run({ ok: true, status: 200, liveAccounts: 3, liveByProvider: { anthropic: 1, codex: 0, other: 2 } });
+  assert.deepEqual({ ok: by.ok, accounts: by.accounts }, { ok: true, accounts: 3 });
+  assert.equal(all, 1);
+  // 설정 파일을 읽지 못해 전체 수를 모르면(null) 그 밖의 공급자는 보지 않는다 — 두 공급자의 수만으로 판정한다.
+  const unknown = await startRelay({
+    root, resolveConfigPathFn: () => path.join(root, 'tc.json'), ensureProxyFn: async () => ({ alive: true, started: false }),
+    healthFn: async () => ({ ok: true, status: 200, liveAccounts: 9, liveByProvider: { anthropic: 1, codex: 0, other: 8 } }),
+    countAccountsFn: async ({ provider }) => (provider === 'claude' ? 1 : 0), countAllAccountsFn: async () => null,
+  });
+  assert.equal(unknown.ok, true);
+  assert.deepEqual(counted, ['claude', 'chatgpt', 'claude', 'chatgpt'], '공급자별 세기는 지금까지처럼 클로드 · 챗지피티 차례로 한 번씩');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('countLiveByProvider · relayHealth(byProvider): 공급자 칸이 없는 줄은 클로드 쪽, 모르는 공급자는 그 밖 — 이름은 넘어오지 않는다 (2.0.67)', async () => {
+  const { countLiveByProvider, relayHealth } = await import('../installer/lib/online.mjs');
+  assert.deepEqual(countLiveByProvider([{ provider: 'anthropic' }, {}, { provider: '' }, { provider: 'codex' }, { provider: 'google' }, { provider: 'x' }, null, { provider: 7 }]),
+    { anthropic: 5, codex: 1, other: 2 });
+  assert.deepEqual(countLiveByProvider(null), { anthropic: 0, codex: 0, other: 0 });
+  const { default: http } = await import('node:http');
+  const body = JSON.stringify({ accounts: [{ name: 'secret-name@localhost', provider: 'google' }, { name: 'c' }], activity: [] });
+  const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(body); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const port = server.address().port;
+    assert.deepEqual(await relayHealth(port), { ok: true, status: 200, liveAccounts: 2 }, '묻지 않으면 지금까지의 모양 그대로');
+    const asked = await relayHealth(port, { byProvider: true });
+    assert.deepEqual(asked, { ok: true, status: 200, liveAccounts: 2, liveByProvider: { anthropic: 1, codex: 0, other: 1 } });
+    assert.doesNotMatch(JSON.stringify(asked), /secret-name/);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+  }
+});
+
 test('startRelay: will not start -> E-ONLINE-RELAY', async () => {
   const root = tmpRoot('relayfail');
   const r = await startRelay({
