@@ -882,6 +882,14 @@ test('doctor is treating (a live treat.lock): refused -- nothing is deleted, mov
     fs.utimesSync(lock, old, old);
     r = runUninstall(sc, ['-Root', root, '-DryRun', ...doctorOpts(sc)]);
     assert.equal(r.json.status, 'dry-run', why(r));
+    // an unreadable lock whose WRITE TIME is in the future (clock set back, damaged time stamp) must not
+    // count as "just written" for as long as it stays ahead of the clock (2026-11-28 second code review)
+    for (const ahead of [5 * 60_000, 365 * 86400_000]) {
+      const future = new Date(Date.now() + ahead);
+      fs.utimesSync(lock, future, future);
+      r = runUninstall(sc, ['-Root', root, '-DryRun', ...doctorOpts(sc)]);
+      assert.equal(r.json.status, 'dry-run', `unreadable lock written ${ahead} ms ahead: ${why(r)}`);
+    }
   } finally {
     await stopHolder(doctor);
   }

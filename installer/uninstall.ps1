@@ -532,7 +532,13 @@ function Test-DoctorTreating([string]$root) {
     if (([string]$j.pid -match '^\d{1,9}$') -and [int]::TryParse([string]$j.pid, [ref]$ownerPid)) { $wellFormed = $true }
   }
   if (-not $wellFormed) {
-    try { return (([DateTime]::UtcNow - [IO.File]::GetLastWriteTimeUtc($f)).TotalMilliseconds -le 60000) } catch { return $false }
+    # Within one minute of now, in EITHER direction: a write time from the future (the clock was
+    # set back, or the time stamp was damaged along with the content) must not count as "just
+    # written" for as long as it stays ahead of the clock.
+    try {
+      $sinceWrite = ([DateTime]::UtcNow - [IO.File]::GetLastWriteTimeUtc($f)).TotalMilliseconds
+      return (($sinceWrite -le 60000) -and ($sinceWrite -ge -60000))
+    } catch { return $false }
   }
   $alive = $false
   try {
