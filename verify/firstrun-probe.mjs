@@ -40,12 +40,22 @@
 //     있어서 그 인수를 빼고 띄운다(claudeArgs 의 설명).
 //   · 에이전트 심(shims\claude.cmd · codex.cmd)은 쓰지 않는다 — 심은 살아 있는 중계기 주소를 박아 넣는다.
 //     같은 까닭으로 config.toml 의 중계기 주소만 죽은 주소로 바꾼다(그 밖의 글자는 설치기가 쓴 그대로).
-//   · 로그인하지 않는다. 열쇠는 형식만 갖춘 가짜다. 프로세스는 이 스크립트가 띄운 PID 만 PID 로 끝낸다.
-//   · 정리 순서 = 자식 종료 → 폴더 정리(예외가 나도 finally 로). 자식이 끝나지 않았으면 폴더를 지우지 않고 실패로 끝낸다.
+//   · 준비 단계도 같다: 잠금 판을 받는 설치기 함수(installClaude)가 띄우는 프로세스(`--version` 확인)에는 관측 단계와
+//     같은 격리 환경을 주고, npm 대체 설치(이 PC 의 npm 설정 · 캐시를 읽는 프로세스)는 쓰지 않는다(prepareClaude).
+//   · 이 스크립트가 cmd 를 부를 때는 언제나 `/d`(레지스트리의 AutoRun 명령을 돌리지 않는다 — codexCmdArgs).
+//     CLI 가 **스스로** 띄우는 셸(클로드가 훅의 `python.cmd` 를 돌릴 때 등)에는 이 스크립트가 손댈 수 없다.
+//   · 로그인하지 않는다. 열쇠는 형식만 갖춘 가짜다. 요청문 · Enter 를 보내지 않는다. 보내는 키는 코덱스의 경고 보기(F2 ·
+//     화살표)뿐이고, 그것도 화면이 기대한 그 화면(가라앉은 대기 화면 / 경고 보기 창)일 때만 보낸다(probeCodex).
+//   · 프로세스는 이 스크립트가 띄운 PID 와 **그 자손**만, PID 로 끝낸다(이름으로 찾지 않는다). 띄운 때부터 프로세스 표를
+//     떠서 자손을 모아 두고, 끝낸 뒤 그 나무에 살아 있는 것이 없을 때만 "끝났다"로 본다(ProcessTree). 남은 것이 있으면
+//     그 PID 들만 한 번 더 끝내 보고, 그래도 남으면 실패다.
+//   · 정리 순서 = 자식 종료 → 폴더 정리. 실행 폴더를 만든 바로 다음부터 try/finally 라 그 뒤 무엇이 던져도 거친다.
+//     끝나지 않은 프로세스가 있으면 폴더를 지우지 않고 실패로 끝낸다.
 //
 // 종료 코드:
-//   0 = 잠금 판 검증 통과(본 에이전트 전부: 판 일치 · 가라앉음 · 판정 전부 · 자식 종료 · 폴더 정리)
-//   1 = 실패(판정 실패 · 띄울 판이 잠금표와 다름 · 자식이 끝나지 않음 · 작업 폴더를 지우지 못함 · 예외)
+//   0 = 잠금 판 검증 통과(본 에이전트 전부: 판 일치 · 가라앉음 · 판정 전부 · 프로세스 나무 종료 · 폴더 정리).
+//       예외 하나: `--keep` 을 주면 폴더를 일부러 남긴 채 0 이 될 수 있다(남긴 경로를 찍는다) — 사람이 들여다볼 때만 쓴다.
+//   1 = 실패(판정 실패 · 띄울 판이 잠금표와 다름 · 프로세스가 끝나지 않음 · 작업 폴더를 지우지 못함 · 예외)
 //   2 = 준비물이 없어 못 본 에이전트가 있음(창의 가상 터미널 · CLI · 판을 읽지 못함) — 통과로 읽지 않는다
 //   3 = 견주기(`--compare`)로 돌았고 본 것은 전부 맞음 — 다른 판 · 대조군을 보는 용도이며 잠금 판 검증이 아니다
 //
@@ -62,13 +72,14 @@ import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as adapters from '../installer/setup/adapters.mjs';
 import { CLAUDE_START_NUDGES, CLAUDE_MAX_PERMISSIONS, claudeConfigJsonPath, claudeSettingsPath, codexConfigTomlPath } from '../installer/lib/firstrun.mjs';
 import { CODEX_RELAY_BASE_URL, CODEX_PROVIDER_ID } from '../installer/lib/shims.mjs';
 import { installClaude, readLock } from '../installer/lib/online.mjs';
+import { run } from '../lib/run.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -155,7 +166,14 @@ export function findDialogs(text, agent) {
   return START_DIALOGS.filter((d) => (d.agent === '*' || d.agent === agent) && d.re.test(s)).map((d) => d.id);
 }
 
-const HOOK_ERROR_RE = /hook error|ParserError|Git Bash was not found|requires bash|hook (timed out|failed)/i;
+/** 끝내기 결과 한 줄: 띄운 PID · 장부에 모인 프로세스 수 · 따로 끝낸 자손 · 남은 PID. */
+function stopDetail(obs) {
+  const s = obs.stopInfo ?? {};
+  return `pid=${obs.pid ?? '-'} stop=${obs.stopped ?? '-'} 나무=${s.tracked ?? '-'}개`
+    + `${(s.retried ?? []).length ? ` 따로 끝낸 자손 pid=${s.retried.join(',')}` : ''}${(s.left ?? []).length ? ` 남은 pid=${s.left.join(',')}` : ''}${s.reason ? ` (${s.reason})` : ''}`;
+}
+
+const HOOK_ERROR_RE =/hook error|ParserError|Git Bash was not found|requires bash|hook (timed out|failed)/i;
 
 export function judgeClaude(obs) {
   const out = [];
@@ -178,7 +196,7 @@ export function judgeClaude(obs) {
   if (obs.expectHookCall) add('⑦ 시작 훅이 실제로 불림', (obs.hookCalls ?? 0) > 0, `훅 호출 ${obs.hookCalls ?? 0}회`);
   add('⑧ 기록 저장 꺼짐 표시 없음', !/Transcript saving is off/i.test(all), /Transcript saving is off/i.test(all) ? '세션 표식이 자식 환경에 샜다' : 'ok');
   if (obs.expectDefaultMode !== undefined) add('⑨ 설정의 기본 권한이 씨앗 그대로', obs.defaultModeAfter === obs.expectDefaultMode, `settings.json permissions.defaultMode=${obs.defaultModeAfter ?? '없음'}`);
-  if (obs.childGone !== undefined) add('⑩ 띄운 프로세스가 끝남', obs.childGone === true, `pid=${obs.pid ?? '-'} stop=${obs.stopped ?? '-'}`);
+  if (obs.childGone !== undefined) add('⑩ 띄운 프로세스 나무가 전부 끝남', obs.childGone === true, stopDetail(obs));
   return out;
 }
 
@@ -200,12 +218,14 @@ export function judgeCodex(obs) {
   const pages = Array.isArray(obs.warningView) ? obs.warningView : [];
   const startup = pages.filter((p) => /Warnings · \d+ of \d+ · Startup/.test(p)).map((p) => p.split('\n').slice(1).join(' ').replace(/\s+/g, ' ').trim());
   const mcp = pages.filter((p) => /Warnings · \d+ of \d+ · MCP/.test(p)).length;
-  add('④ 경고가 입력 칸을 가리지 않음', final.status === 'idle', `상태줄 경고 ${badge}건${pages.length ? `(시작 ${startup.length} · MCP ${mcp} — MCP 는 가짜 영혼의 부산물)` : ''}`);
+  const peek = String(obs.warningPeek ?? '');
+  add('④ 경고가 입력 칸을 가리지 않음', final.status === 'idle', `상태줄 경고 ${badge}건${pages.length ? `(시작 ${startup.length} · MCP ${mcp} — MCP 는 가짜 영혼의 부산물)` : ''}`
+    + `${/^(not-seen|partial)/.test(peek) ? ` · 경고 글 못 봄(${peek.replace(/^[a-z-]+: /, '')})` : ''}`);
   // CLI 가 자기 표(신뢰 · 안내 "봤음" 등)를 덧붙이는 것은 괜찮다 — 설치기가 쓴 줄이 없어지면 실패.
   const removed = obs.configDiff?.removed ?? [];
   add('⑤ 설치기가 쓴 설정 줄을 CLI 가 지우지 않음', removed.length === 0,
     removed.length ? `없어진 줄: ${removed.slice(0, 3).join(' | ')}` : `ok${obs.configChanged ? ` (CLI 가 더한 줄 ${(obs.configDiff?.added ?? []).length})` : ''}`);
-  if (obs.childGone !== undefined) add('⑥ 띄운 프로세스가 끝남', obs.childGone === true, `pid=${obs.pid ?? '-'} stop=${obs.stopped ?? '-'}`);
+  if (obs.childGone !== undefined) add('⑥ 띄운 프로세스 나무가 전부 끝남', obs.childGone === true, stopDetail(obs));
   return { checks: out, warnings: startup, mcpArtifacts: mcp, warningBadge: badge };
 }
 
@@ -460,36 +480,150 @@ function armExitGuard() {
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(sig, () => process.exit(EXIT.failed));
 }
 
-/** 이 스크립트가 띄운 PID 하나(와 그 자식)만 끝낸다. 이름으로 찾지 않는다. */
+/** 이 스크립트가 띄운 PID 하나와 그 자식 나무를 끝낸다(taskkill /T). 이름으로 찾지 않는다. */
 export function endOwnPid(pid) {
   if (!pid || !pidAlive(pid)) return 'already-gone';
   try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); return 'ended'; } catch { return pidAlive(pid) ? 'failed' : 'already-gone'; }
+}
+
+/** PID 하나만 끝낸다(나무를 따라가지 않는다) — 남은 자손을 그 PID 로 다시 끝내 볼 때 쓴다. */
+export function endOnePid(pid) {
+  if (!pid || !pidAlive(pid)) return 'already-gone';
+  try { execFileSync('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore' }); return 'ended'; } catch { return pidAlive(pid) ? 'failed' : 'already-gone'; }
+}
+
+// ---------------------------------------------------------------------------
+// 프로세스 나무 — 띄운 PID 의 자손까지 끝났는지 본다
+// ---------------------------------------------------------------------------
+// `taskkill /T` 는 그 순간 살아 있는 부모-자식 줄을 따라간다. 부모가 먼저 죽으면 줄이 끊겨 자손이 남을 수 있고
+// (코덱스 = cmd → node → codex.exe → MCP 서버들), 직접 띄운 PID 만 보면 그것을 "끝났다"로 읽는다.
+// 그래서 띄운 때부터 주기적으로 프로세스 표(PID · 부모 PID · 만든 시각)를 떠서 자손을 모아 두고, 끝낸 뒤 그 가운데
+// 살아 있는 것이 없을 때만 "끝났다"로 본다. PID 는 다시 쓰이므로 (PID, 만든 시각) 한 쌍으로 같은 프로세스인지 가린다.
+
+// 세 칸만 묻는다(전부 물으면 이 PC 에서 6초, 세 칸이면 2초 안쪽 — 2026-11-28 실측).
+const PS_PROCESS_TABLE = "Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.CreationDate.Ticks }";
+
+/** `<pid> <ppid> <만든 시각>` 줄들 -> [{ pid, ppid, born }] */
+export function parseProcessTable(text) {
+  const out = [];
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)$/);
+    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), born: m[3].padStart(20, '0') });
+  }
+  return out;
+}
+
+const tableEnv = () => { const e = {}; for (const k of ['SystemRoot', 'SystemDrive', 'windir', 'ComSpec', 'PATHEXT', 'PATH', 'Path', 'TEMP', 'TMP', 'USERPROFILE', 'ProgramData', 'ProgramFiles', 'PSModulePath']) if (process.env[k] !== undefined) e[k] = process.env[k]; return e; };
+
+/** 지금의 프로세스 표(읽기만). 못 읽으면 null — 그때는 "끝났다"고 말하지 않는다. */
+export function listProcesses() {
+  try {
+    const text = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', PS_PROCESS_TABLE], { encoding: 'utf8', timeout: 20000, windowsHide: true, env: tableEnv() });
+    const table = parseProcessTable(text);
+    return table.length ? table : null;
+  } catch { return null; }
+}
+
+/** 같은 표를 기다리지 않고 받는다(관측 도중에 화면 읽기를 멈추지 않으려고). */
+export function listProcessesAsync() {
+  return new Promise((resolve) => {
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', PS_PROCESS_TABLE], { encoding: 'utf8', timeout: 20000, windowsHide: true, env: tableEnv() },
+      (err, stdout) => { const table = err ? [] : parseProcessTable(stdout); resolve(table.length ? table : null); });
+  });
+}
+
+/**
+ * 띄운 PID 하나에서 시작해 자손을 모아 두는 장부.
+ *   absorb(table)  표에서 "장부에 있는 프로세스의 자식"을 더한다(끝까지 되풀이). 부모가 이미 죽어 표에 없어도, 그 부모를
+ *                  예전 표에서 봤다면 자식을 잡는다. 부모의 PID 를 다른 프로세스가 다시 쓰고 있으면 그 뒤에 태어난 것은 남의 자식이다.
+ *   alive(table)   장부에 있는 것 가운데 지금 표에 (PID, 만든 시각)이 그대로 있는 것.
+ */
+export class ProcessTree {
+  constructor(rootPid) { this.rootPid = Number(rootPid); this.tracked = new Map(); this.rootSeen = false; }
+  absorb(table) {
+    if (!Array.isArray(table)) return this;
+    const byPid = new Map(table.map((p) => [p.pid, p]));
+    const root = byPid.get(this.rootPid);
+    if (root && !this.rootSeen) { this.tracked.set(root.pid, { ...root }); this.rootSeen = true; }
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const p of table) {
+        const known = this.tracked.get(p.pid);
+        if (known && known.born === p.born) continue;
+        if (known) continue; // 같은 PID 를 다시 쓰는 다른 프로세스 — 우리 것이 아니다
+        const parent = this.tracked.get(p.ppid);
+        if (!parent || p.born < parent.born) continue;
+        const cur = byPid.get(p.ppid);
+        if (cur && cur.born !== parent.born && p.born >= cur.born) continue; // 부모의 PID 를 물려받은 남의 프로세스가 낳았다
+        this.tracked.set(p.pid, { ...p }); changed = true;
+      }
+    }
+    return this;
+  }
+  alive(table) {
+    const byPid = new Map((table ?? []).map((p) => [p.pid, p]));
+    return [...this.tracked.values()].filter((t) => byPid.get(t.pid)?.born === t.born);
+  }
+  get size() { return this.tracked.size; }
 }
 
 /**
  * watchFirstScreen -- CLI 를 띄워 첫 화면이 가라앉을 때까지 본다(아무것도 입력하지 않는다).
  * 가라앉음 = 출력이 quietMs 동안 멈췄고 화면 판정이 busy 가 아님(최소 minMs, 최대 maxMs). 한도에 닿으면 settled=false —
  * 그 관측은 통과가 될 수 없다(판정 ⓪). 끝내지는 않는다 — 부른 쪽이 stop() 을 부른다(probe* 가 finally 로 보장).
- * 보는 도중에 무엇이 던지면 띄운 프로세스를 끝낸 뒤 다시 던진다. kill = 끝내는 함수(시험이 "끝내기 실패"를 흉내 낼 때 바꾼다).
+ * 보는 도중에 무엇이 던지면 띄운 프로세스를 끝낸 뒤 다시 던진다.
+ * stop() -> { how, left, retried, tracked, reason }:
+ *   how = 'ended' | 'already-gone' | 'ended-after-retry' | 'failed'. 'failed' 가 아닐 때만 "띄운 나무가 전부 끝났다".
+ *   끝낸 뒤 표를 다시 떠서 자손까지 본다. 남은 것이 있으면 **그 PID 들만** 한 번 더 끝내 보고(killOne), 그래도 남으면 failed.
+ *   프로세스 표를 읽지 못하면 끝났다고 말할 수 없으므로 failed.
+ * kill · killOne · list · listAsync 는 시험이 바꿔 끼우는 자리다(끝내기 실패 · 자손이 남는 경우).
  */
-export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUILTIN_SCREEN_RE, cols = 120, rows = 36, quietMs = 6000, minMs = 10000, maxMs = 90000, tickMs = 400, kill = endOwnPid, stopWaitMs = 5000 }) {
+export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUILTIN_SCREEN_RE, cols = 120, rows = 36, quietMs = 6000, minMs = 10000, maxMs = 90000, tickMs = 400,
+  kill = endOwnPid, killOne = endOnePid, list = listProcesses, listAsync = listProcessesAsync, treeEveryMs = 2500, stopWaitMs = 5000 }) {
   const t0 = Date.now();
   armExitGuard();
   const term = driver.open({ file, args, cwd, env, cols, rows });
-  if (term.state.pid) ownPids.add(term.state.pid);
+  const rootPid = term.state.pid;
+  if (rootPid) ownPids.add(rootPid);
+  const tree = new ProcessTree(rootPid);
+  let treeBusy = false; let treeAt = 0;
+  const sampleTree = () => {
+    if (treeBusy || Date.now() - treeAt < treeEveryMs) return;
+    treeBusy = true; treeAt = Date.now();
+    Promise.resolve().then(() => listAsync()).then((t) => { if (t) tree.absorb(t); }, () => {}).finally(() => { treeBusy = false; });
+  };
   const stop = async () => {
-    const how = kill(term.state.pid);
-    for (let waited = 0; waited < stopWaitMs && pidAlive(term.state.pid); waited += 200) await sleep(200);
+    const before = list();
+    if (before) tree.absorb(before);
+    let how = kill(rootPid);
+    for (let waited = 0; waited < stopWaitMs && pidAlive(rootPid); waited += 200) await sleep(200);
     term.dispose();
-    const gone = !pidAlive(term.state.pid);
-    if (gone) ownPids.delete(term.state.pid);
-    return gone ? how : 'failed';
+    let table = list();
+    if (!table) return { how: 'failed', left: [], retried: [], tracked: tree.size, reason: '프로세스 표를 읽지 못해 자손이 끝났는지 알 수 없음' };
+    let left = tree.absorb(table).alive(table);
+    const retried = left.map((p) => p.pid);
+    if (left.length) {
+      for (const p of left) killOne(p.pid); // 장부에 있는 그 PID 들만
+      for (let waited = 0; waited < stopWaitMs; waited += 500) {
+        await sleep(500);
+        table = list();
+        if (!table) break;
+        left = tree.absorb(table).alive(table);
+        if (!left.length) break;
+      }
+      if (!table) return { how: 'failed', left: retried, retried, tracked: tree.size, reason: '프로세스 표를 읽지 못해 자손이 끝났는지 알 수 없음' };
+    }
+    const gone = left.length === 0 && !pidAlive(rootPid);
+    if (gone) ownPids.delete(rootPid); else for (const p of left) ownPids.add(p.pid);
+    if (!gone) how = 'failed'; else if (retried.length) how = 'ended-after-retry';
+    return { how, left: left.map((p) => p.pid), retried, tracked: tree.size, reason: gone ? null : `끝나지 않은 프로세스 pid=${left.map((p) => p.pid).join(',') || rootPid}` };
   };
   const timeline = [];
   let last = null; let final = classifyScreen([], re); let settled = false;
   try {
     for (;;) {
       await sleep(tickMs);
+      sampleTree();
       const lines = (await term.lines()).map((l) => l.replace(/\s+$/, ''));
       const text = lines.join('\n').replace(/\n+$/, '');
       final = classifyScreen(lines, re);
@@ -525,6 +659,15 @@ export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUIL
 
 /** 창이 기록 폴더 이름을 만드는 식(창 daemon/agents/claude.mjs claudeProjectSlug 와 같다). */
 export const claudeProjectSlug = (cwd) => String(cwd).replace(/[^A-Za-z0-9]/g, '-');
+
+/** 띄운 프로세스를 끝내고 결과를 관측값에 적는다(던지지 않는다). */
+async function finishChild(obs) {
+  const s = await obs.stop().catch((e) => ({ how: 'failed', left: [], retried: [], tracked: null, reason: String(e?.message || e) }));
+  obs.stopped = s.how; obs.stopInfo = s; obs.childGone = s.how !== 'failed';
+}
+
+/** 코덱스 실행 꾸러미(codex.cmd)를 cmd 로 돌릴 인수. `/d` = 레지스트리의 AutoRun 명령을 돌리지 않는다. */
+export const codexCmdArgs = (cmdFile, args = []) => ['/d', '/c', cmdFile, ...args];
 
 function countHookCalls(hookLog) {
   try { return fs.readFileSync(hookLog, 'utf8').split(/\r?\n/).filter((l) => l.trim()).length; } catch { return 0; }
@@ -566,8 +709,8 @@ export async function probeClaude({ root, exe, env, driver, re, model = 'claude-
     obs.cmdline = [path.basename(cmd.file), ...cmd.args.map((a) => (a === fast ? '<fast-mode.json>' : a))].join(' ');
     obs.expectDefaultMode = expectDefaultMode;
   } finally {
-    // 무엇을 보다가 던졌든 띄운 프로세스부터 끝낸다. 끝났는지는 판정에 들어간다(⑩).
-    if (obs) { obs.stopped = await obs.stop().catch(() => 'failed'); obs.childGone = obs.stopped !== 'failed'; }
+    // 무엇을 보다가 던졌든 띄운 프로세스부터 끝낸다. 나무 전체가 끝났는지는 판정에 들어간다(⑩).
+    if (obs) await finishChild(obs);
   }
   obs.checks = judgeClaude(obs);
   return obs;
@@ -579,7 +722,7 @@ export async function probeCodex({ root, cmdFile, env, driver, re, model = 'gpt-
   const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return null; } };
   const before = read(toml);
   const args = ['-m', model, '-c', `model_reasoning_effort=${effort}`, '-c', 'service_tier=fast', '--dangerously-bypass-hook-trust'];
-  const cmd = launch ?? { file: env.ComSpec || 'cmd.exe', args: ['/c', cmdFile, ...args] };
+  const cmd = launch ?? { file: env.ComSpec || 'cmd.exe', args: codexCmdArgs(cmdFile, args) };
   let obs = null;
   try {
     obs = await watchFirstScreen({ driver, file: cmd.file, args: cmd.args, cwd: root, env, re, ...watch });
@@ -591,20 +734,40 @@ export async function probeCodex({ root, cmdFile, env, driver, re, model = 'gpt-
     obs.cmdline = ['codex', ...args].join(' ');
     // 코덱스는 시작 경고를 상태줄에 "⚠ N warnings · f2 to view" 로 접어 둔다. 판정에 쓸 화면은 이미 잡았으니,
     // 살아 있으면 보기 키(F2)를 한 번 눌러 경고 글을 기록에 남긴다(무엇이 경고인지 사람이 읽게).
+    // 키는 화면이 기대한 그 화면일 때만 보낸다 — 다른 화면(물음 · 입력란에 글이 든 화면)에 키가 먹히지 않게:
+    //   F2      가라앉은 대기 화면(입력 칸 · 물음 없음)이고 상태줄에 경고 배지가 보일 때만
+    //   화살표  바로 앞에 읽은 화면이 경고 보기 창("Warnings · N of M")일 때만
+    // 조건이 안 맞으면 보내지 않고 경고 글을 "못 봄"으로 적는다(warningPeek). 경고 글은 기록용이라 판정(④는 배지가
+    // 입력 칸을 가리지 않는가)에는 쓰지 않는다 — 못 봐도 종료 코드는 그대로다.
     obs.warningView = null;
-    if (peekWarnings && obs.alive && /warnings? · f2 to view/i.test(obs.final.tail ?? '')) {
-      try {
-        const pages = [];
-        let page = await obs.peek('\x1bOQ');
-        const total = Math.min(Number((/Warnings · \d+ of (\d+)/.exec(page.join('\n')) || [])[1] ?? 1), 30);
-        pages.push(page);
-        for (let i = 1; i < total; i++) { page = await obs.peek('\x1b[C', 500); pages.push(page); }
-        // 쪽마다 머리(판 · 폴더 · 권한 줄)와 꼬리(키 안내)는 같다 — 경고 글만 남긴다.
-        obs.warningView = pages.map((p) => p.filter((l) => !/^\s*(>_ OpenAI Codex|~?\\|[A-Za-z]:\\|permissions:)/.test(l) && !/keep & next · esc dismiss/.test(l)).join('\n'));
-      } catch { obs.warningView = null; }
+    obs.warningPeek = 'no-badge';
+    const isWarningPage = (page) => /Warnings · \d+ of \d+/.test((page ?? []).join('\n'));
+    if (peekWarnings && /warnings? · f2 to view/i.test(obs.final.tail ?? '')) {
+      const calm = obs.settled === true && obs.alive && obs.final.status === 'idle' && !obs.final.attention && !obs.final.updatePrompt
+        && /(^|\n)\s*(›|»)(\s|$)/.test(obs.final.tail ?? '') && findDialogs(obs.timelineText, 'codex').length === 0;
+      if (!calm) obs.warningPeek = 'not-seen: 가라앉은 대기 화면이 아니라 보기 키를 보내지 않음';
+      else {
+        try {
+          const pages = [];
+          let page = await obs.peek('\x1bOQ');
+          if (!isWarningPage(page)) obs.warningPeek = 'not-seen: 보기 키 뒤의 화면이 경고 보기 창이 아니라 더 보내지 않음';
+          else {
+            const total = Math.min(Number((/Warnings · \d+ of (\d+)/.exec(page.join('\n')) || [])[1] ?? 1), 30);
+            pages.push(page);
+            obs.warningPeek = 'seen';
+            for (let i = 1; i < total; i++) {
+              page = await obs.peek('\x1b[C', 500);
+              if (!isWarningPage(page)) { obs.warningPeek = `partial: ${pages.length}/${total}쪽 뒤 화면이 경고 보기 창이 아니라 멈춤`; break; }
+              pages.push(page);
+            }
+            // 쪽마다 머리(판 · 폴더 · 권한 줄)와 꼬리(키 안내)는 같다 — 경고 글만 남긴다.
+            obs.warningView = pages.map((p) => p.filter((l) => !/^\s*(>_ OpenAI Codex|~?\\|[A-Za-z]:\\|permissions:)/.test(l) && !/keep & next · esc dismiss/.test(l)).join('\n'));
+          }
+        } catch (e) { obs.warningView = null; obs.warningPeek = `not-seen: ${String(e?.message || e).slice(0, 80)}`; }
+      }
     }
   } finally {
-    if (obs) { obs.stopped = await obs.stop().catch(() => 'failed'); obs.childGone = obs.stopped !== 'failed'; }
+    if (obs) await finishChild(obs);
   }
   const j = judgeCodex(obs);
   obs.checks = j.checks; obs.warnings = j.warnings; obs.mcpArtifacts = j.mcpArtifacts; obs.warningBadge = j.warningBadge;
@@ -659,6 +822,34 @@ export function removeRunDir(dir) {
   if (!dir || !/^run-[A-Za-z0-9]{6}$/.test(path.basename(dir))) return { removed: false, error: 'not a run folder made by this script' };
   try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 }); } catch (e) { return { removed: false, error: String(e?.message || e) }; }
   return fs.existsSync(dir) ? { removed: false, error: 'still exists' } : { removed: true };
+}
+
+// ---------------------------------------------------------------------------
+// 준비 — 잠금 판 클로드 받기(네트워크를 쓴다). 여기서 띄우는 프로세스도 격리 환경으로
+// ---------------------------------------------------------------------------
+
+/**
+ * prepareClaude -- 설치기 함수 installClaude 로 잠금 판을 실행 폴더 안(<work>\cli)에 받는다.
+ * 내려받기 자체는 이 node 프로세스가 한다(바깥 망이 필요하다). installClaude 가 **띄우는 프로세스**에는 이 PC 의 환경을
+ * 물려주지 않는다 — 그 함수의 주입 자리 둘에 격리된 것을 준다:
+ *   · runFn       받은 실행 파일의 `--version` 확인. 관측 단계와 같은 격리 환경(설정 · 홈 · 임시 폴더 = 실행 폴더, 죽은 주소)으로 돌린다.
+ *   · npmInstall  출처 2(npm 대체 설치). 이 검사에서는 **쓰지 않는다** — 대체 설치는 이 PC 의 npm 설정 · 캐시를 읽는 프로세스를
+ *                 띄우게 되므로, 출처 1(공식 배포)이 안 되면 받지 못한 것으로 끝낸다(→ 못 봄, 종료 코드 2. `--claude-exe` 로 준다).
+ * installClaude 의 `env` 인자는 "오프라인 표시" 한 칸을 읽는 데만 쓰이고 자식에게 넘어가지 않는다 — 그대로 둔다.
+ *   -> { ok: true, exe, version, source } | { ok: false, reason }
+ */
+export async function prepareClaude({ work, lock, deadUrl, install = installClaude, runFn = run, base = process.env }) {
+  const dl = path.join(work, 'cli');
+  fs.mkdirSync(path.join(dl, '_agent', 'setup'), { recursive: true });
+  const env = isolatedEnv({ root: dl, home: path.join(work, 'prep-home'), deadUrl, base });
+  const isolatedRun = (exe, args, opts = {}) => runFn(exe, args, { ...opts, env });
+  const noNpm = async () => ({ code: 1, out: '', err: 'firstrun-probe: 출처 2(npm 대체 설치)는 이 검사에서 쓰지 않는다' });
+  let got;
+  try { got = await install({ root: dl, nodeDir: path.dirname(process.execPath), lock, subscriptions: ['claude'], log: () => {}, runFn: isolatedRun, npmInstall: noNpm }); }
+  catch (e) { got = { ok: false, message: String(e?.message || e) }; }
+  if (!got?.ok) return { ok: false, reason: `잠금 판 Claude Code 를 받지 못함(${got?.code ?? got?.state ?? '-'} ${got?.message ?? ''}) — 공식 배포 주소에 닿는지 확인하거나 --claude-exe` };
+  const version = String(got.version ?? lock?.parts?.claude?.version);
+  return { ok: true, exe: path.join(dl, '_agent', 'shared', 'tools', 'claude', version, lock?.parts?.claude?.binName ?? 'claude.exe'), version, source: got.source ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -727,48 +918,49 @@ async function main(argv) {
   const skip = (agent, reason) => { results[agent] = { state: 'skipped', reason }; console.log(`SKIP ${agent} -- ${reason}`); };
   const fail = (agent, name, detail) => { results[agent] = { state: 'failed', reason: `${name}: ${detail}` }; console.log(`FAIL ${agent} ${name} -- ${detail}`); };
 
-  // 받은 경로는 지우지 않는다 — 그 아래에 이번 실행의 폴더를 새로 만들고 그 폴더만 정리한다.
-  const work = makeRunDir(workBase);
-  fs.mkdirSync(logDir, { recursive: true });
   console.log(opt.compare
     ? 'mode: 견주기(--compare) — 이 실행의 결과는 "잠금 판 검증 통과"가 아니다'
     : `mode: 잠금 판 검증 (claude ${lockVer.claude ?? '-'} · codex ${lockVer.codex ?? '-'})`);
 
-  const faceDir = resolveFaceDir({ arg: opt.face, lock });
-  const driver = loadPtyDriver(faceDir);
-  const screenRe = loadFaceScreenRegexes(faceDir);
-  log(`screen rules: ${screenRe.source}${screenRe.drift.length ? ` (창의 식이 사본과 다름: ${screenRe.drift.join(', ')})` : ''}${screenRe.missing.length && screenRe.source === 'face' ? ` (창에서 못 읽음: ${screenRe.missing.join(', ')})` : ''}`);
-
-  const dead = await startDeadServer();
+  // 받은 경로는 지우지 않는다 — 그 아래에 이번 실행의 폴더를 새로 만들고 그 폴더만 정리한다.
+  // 폴더를 만든 **바로 다음 줄부터** try/finally 다: 그 뒤 무엇이 던져도(기록 폴더 · 화면 규칙 · 죽은 주소 띄우기) 정리를 거친다.
+  const work = makeRunDir(workBase);
   const root = path.join(work, 'soul');
   const home = path.join(work, 'home');
+  let dead = null;
   let keepWork = opt.keep;
   let cleanup = { state: 'pending' };
-  const out = { at: new Date().toISOString(), label, mode: opt.compare ? 'compare' : 'lock', lock: lockVer,
-    control: opt.control, screenRules: { source: screenRe.source, drift: screenRe.drift, missing: screenRe.missing }, agents: {} };
-
-  // 띄우려는 실행 파일의 판을 잠금표와 견준다. 잠금 판 검증에서는 맞을 때만 띄운다(false 를 돌려주면 띄우지 않는다).
-  const versionGate = (agent, versionText) => {
-    const gate = checkLockVersion(versionText, lockVer[agent]);
-    log(`${agent} ${versionText ?? '(판을 읽지 못함)'}${opt.compare ? ` (잠금표 ${lockVer[agent] ?? '-'} — 견주기)` : ''}`);
-    const d = decideLaunch(gate, { compare: opt.compare });
-    if (d.launch) return gate;
-    if (d.state === 'failed') fail(agent, 'ⓥ 띄울 판 = 잠금 판', d.detail); else skip(agent, d.detail);
-    return null;
-  };
-  const record = (agent, obs, gate, extra) => {
-    if (!opt.compare) obs.checks.unshift({ name: 'ⓥ 띄운 판 = 잠금 판', ok: true, detail: `${gate.actual}` });
-    const bad = obs.checks.filter((c) => !c.ok).length;
-    for (const c of obs.checks) console.log(`${c.ok ? 'OK  ' : 'FAIL'} ${agent} ${c.name} -- ${c.detail}`);
-    writeScreenLog(path.join(logDir, `${label}-${agent}.screen.txt`), `${agent} ${gate.actual ?? ''} (${label})`, obs);
-    fs.writeFileSync(path.join(logDir, `${label}-${agent}.raw.log`), obs.rawAtSettle, 'utf8');
-    results[agent] = { state: bad ? 'failed' : 'ok' };
-    if (obs.childGone === false) keepWork = true; // 끝나지 않은 자식이 있다 — 복구 자료(작업 폴더)를 지우지 않는다
-    out.agents[agent] = { version: gate.actual, lockVersion: lockVer[agent], versionState: gate.state, state: results[agent].state, cmdline: obs.cmdline, settled: obs.settled, ms: obs.ms,
-      final: { ...obs.final, tail: undefined }, finalTail: obs.final.tail, dialogs: findDialogs(obs.timelineText, agent), stopped: obs.stopped, childGone: obs.childGone, ...extra, checks: obs.checks };
-  };
-
+  const out = { at: new Date().toISOString(), label, mode: opt.compare ? 'compare' : 'lock', lock: lockVer, control: opt.control, agents: {} };
   try {
+    fs.mkdirSync(logDir, { recursive: true });
+    const faceDir = resolveFaceDir({ arg: opt.face, lock });
+    const driver = loadPtyDriver(faceDir);
+    const screenRe = loadFaceScreenRegexes(faceDir);
+    out.screenRules = { source: screenRe.source, drift: screenRe.drift, missing: screenRe.missing };
+    log(`screen rules: ${screenRe.source}${screenRe.drift.length ? ` (창의 식이 사본과 다름: ${screenRe.drift.join(', ')})` : ''}${screenRe.missing.length && screenRe.source === 'face' ? ` (창에서 못 읽음: ${screenRe.missing.join(', ')})` : ''}`);
+    dead = await startDeadServer();
+
+    // 띄우려는 실행 파일의 판을 잠금표와 견준다. 잠금 판 검증에서는 맞을 때만 띄운다(null 을 돌려주면 띄우지 않는다).
+    const versionGate = (agent, versionText) => {
+      const gate = checkLockVersion(versionText, lockVer[agent]);
+      log(`${agent} ${versionText ?? '(판을 읽지 못함)'}${opt.compare ? ` (잠금표 ${lockVer[agent] ?? '-'} — 견주기)` : ''}`);
+      const d = decideLaunch(gate, { compare: opt.compare });
+      if (d.launch) return gate;
+      if (d.state === 'failed') fail(agent, 'ⓥ 띄울 판 = 잠금 판', d.detail); else skip(agent, d.detail);
+      return null;
+    };
+    const record = (agent, obs, gate, extra) => {
+      if (!opt.compare) obs.checks.unshift({ name: 'ⓥ 띄운 판 = 잠금 판', ok: true, detail: `${gate.actual}` });
+      const bad = obs.checks.filter((c) => !c.ok).length;
+      for (const c of obs.checks) console.log(`${c.ok ? 'OK  ' : 'FAIL'} ${agent} ${c.name} -- ${c.detail}`);
+      writeScreenLog(path.join(logDir, `${label}-${agent}.screen.txt`), `${agent} ${gate.actual ?? ''} (${label})`, obs);
+      fs.writeFileSync(path.join(logDir, `${label}-${agent}.raw.log`), obs.rawAtSettle, 'utf8');
+      results[agent] = { state: bad ? 'failed' : 'ok' };
+      if (obs.childGone === false) keepWork = true; // 끝나지 않은 프로세스가 있다 — 복구 자료(작업 폴더)를 지우지 않는다
+      out.agents[agent] = { version: gate.actual, lockVersion: lockVer[agent], versionState: gate.state, state: results[agent].state, cmdline: obs.cmdline, settled: obs.settled, ms: obs.ms,
+        final: { ...obs.final, tail: undefined }, finalTail: obs.final.tail, dialogs: findDialogs(obs.timelineText, agent), stopped: obs.stopped, stopInfo: obs.stopInfo, childGone: obs.childGone, ...extra, checks: obs.checks };
+    };
+
     if (!driver.ok) { for (const a of want) skip(a, driver.reason); }
     else {
       const seeded = await seedSoul({ root, lock, deadUrl: dead.url, control: opt.control });
@@ -778,13 +970,10 @@ async function main(argv) {
       if (want.includes('claude')) {
         let exe = opt.claudeExe ? path.resolve(opt.claudeExe) : null;
         if (!exe) {
-          // 준비 단계 — 여기서는 네트워크를 쓴다(설치기와 같은 함수 · 같은 지문 검증으로 잠금 판을 받는다).
-          const dl = path.join(work, 'cli');
-          fs.mkdirSync(path.join(dl, '_agent', 'setup'), { recursive: true });
+          // 준비 단계 — 내려받기는 네트워크를 쓴다. 받은 것을 확인하려고 띄우는 프로세스에는 격리 환경을 준다(prepareClaude).
           log(`downloading Claude Code ${lockVer.claude} (lock) ...`);
-          const got = await installClaude({ root: dl, nodeDir: path.dirname(process.execPath), lock, subscriptions: ['claude'], log: () => {} }).catch((e) => ({ ok: false, message: e?.message }));
-          if (got?.ok) exe = path.join(dl, '_agent', 'shared', 'tools', 'claude', String(got.version ?? lockVer.claude), lock.parts.claude.binName ?? 'claude.exe');
-          else skip('claude', `잠금 판 Claude Code 를 받지 못함(${got?.code ?? got?.state ?? '-'} ${got?.message ?? ''}) — 인터넷을 확인하거나 --claude-exe`);
+          const got = await prepareClaude({ work, lock, deadUrl: dead.url });
+          if (got.ok) exe = got.exe; else skip('claude', got.reason);
         }
         if (exe && !fs.existsSync(exe)) { skip('claude', `실행 파일이 없음: ${path.basename(exe)}`); exe = null; }
         const gate = exe ? versionGate('claude', cliVersion(exe, ['--version'], env)) : null;
@@ -805,27 +994,27 @@ async function main(argv) {
           else skip('codex', `빌드 캐시에 잠금 판 코덱스(${lockVer.codex})가 없음(있는 판: ${meta?.version ?? '없음'}) — build 를 한 번 돌리거나 --codex-cmd`);
         }
         if (cmdFile && !fs.existsSync(cmdFile)) { skip('codex', `실행 꾸러미가 없음: ${path.basename(cmdFile)}`); cmdFile = null; }
-        const gate = cmdFile ? versionGate('codex', cliVersion(env.ComSpec || 'cmd.exe', ['/c', cmdFile, '--version'], env)) : null;
+        const gate = cmdFile ? versionGate('codex', cliVersion(env.ComSpec || 'cmd.exe', codexCmdArgs(cmdFile, ['--version']), env)) : null;
         if (gate) {
           writeFakeCodexAuth(env.CODEX_HOME, opt.codexAuth);
           const obs = await probeCodex({ root, cmdFile, env, driver, re: screenRe.re });
           if (obs.warningView) fs.writeFileSync(path.join(logDir, `${label}-codex.warnings.txt`), `${obs.warningView.join('\n\n')}\n`, 'utf8');
-          record('codex', obs, gate, { warningBadge: obs.warningBadge, warnings: obs.warnings, mcpArtifacts: obs.mcpArtifacts, configChanged: obs.configChanged, configDiff: obs.configDiff });
+          record('codex', obs, gate, { warningBadge: obs.warningBadge, warningPeek: obs.warningPeek, warnings: obs.warnings, mcpArtifacts: obs.mcpArtifacts, configChanged: obs.configChanged, configDiff: obs.configDiff });
         }
       }
     }
   } catch (e) {
-    // 관측 · 판정 · 기록 중에 던진 것은 실패다. 띄운 프로세스는 probe* 의 finally 가 이미 끝냈다(못 끝냈으면 아래에서 잡힌다).
+    // 준비 · 관측 · 판정 · 기록 중에 던진 것은 실패다. 띄운 프로세스는 probe* 의 finally 가 이미 끝냈다(못 끝냈으면 아래에서 잡힌다).
     results.error = { state: 'failed', reason: String(e?.message || e) };
     console.log(`FAIL firstrun-probe 예외 -- ${e?.stack || e}`);
   } finally {
-    // 정리 순서: ① 자식 종료(probe* 의 finally — 여기서는 남은 것이 있는지 확인) → ② 폴더 정리. 자식이 남았으면 폴더를 지우지 않는다.
-    await dead.close().catch(() => {});
+    // 정리 순서: ① 자식 종료(probe* 의 finally — 여기서는 남은 것이 있는지 확인) → ② 폴더 정리. 남은 것이 있으면 폴더를 지우지 않는다.
+    if (dead) await dead.close().catch(() => {});
     const left = [...ownPids].filter((pid) => pidAlive(pid));
     if (left.length) {
       keepWork = true;
       results.children = { state: 'failed', reason: `띄운 프로세스가 끝나지 않음 pid=${left.join(',')}` };
-      console.log(`FAIL firstrun-probe 띄운 프로세스가 끝나지 않음 -- pid=${left.join(',')} (작업 폴더를 남긴다)`);
+      console.log(`FAIL firstrun-probe 띄운 프로세스(또는 그 자손)가 끝나지 않음 -- pid=${left.join(',')} (작업 폴더를 남긴다)`);
     }
     if (keepWork) cleanup = { state: 'kept', path: work };
     else {
@@ -833,14 +1022,15 @@ async function main(argv) {
       const r = removeRunDir(work);
       cleanup = r.removed ? { state: 'removed' } : { state: 'failed', path: work, error: r.error };
     }
-    out.deadServer = { requests: dead.hits.length, byTarget: summarizeHits(dead.hits) };
+    out.deadServer = { requests: dead?.hits.length ?? 0, byTarget: summarizeHits(dead?.hits ?? []) };
     out.results = results;
     out.cleanup = cleanup;
     out.exitCode = exitCodeOf(results, { compare: opt.compare, cleanupFailed: cleanup.state === 'failed' });
     try { fs.writeFileSync(path.join(logDir, `${label}.json`), `${JSON.stringify(out, null, 2)}\n`, 'utf8'); } catch (e) { console.log(`WARN 결과 파일을 쓰지 못함 -- ${e?.message}`); }
   }
-  log(`dead address received ${dead.hits.length} request(s) from the CLI under observation; logs -> ${path.relative(REPO, logDir) || logDir}`);
-  if (cleanup.state === 'kept') console.log(`kept work folder: ${cleanup.path}`);
+  log(`dead address received ${dead?.hits.length ?? 0} request(s) from the CLI under observation; logs -> ${path.relative(REPO, logDir) || logDir}`);
+  // --keep 은 사람이 폴더를 보려고 일부러 남기는 것이다 — 통과(0)여도 폴더가 남는다. 남은 경로를 찍는다.
+  if (cleanup.state === 'kept') console.log(`kept work folder${opt.keep ? ' (--keep)' : ''}: ${cleanup.path}`);
   // 정리 실패는 통과로 덮지 않는다: 무엇인가 그 폴더의 파일을 쥐고 있다는 뜻이고(끝나지 않은 자식일 수 있다), 받은 실행 파일이 남는다.
   if (cleanup.state === 'failed') console.log(`FAIL firstrun-probe 정리 -- 작업 폴더를 지우지 못함: ${cleanup.path} (${cleanup.error})`);
   const code = out.exitCode;

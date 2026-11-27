@@ -19,6 +19,7 @@ import {
   judgeClaude, judgeCodex, startDeadServer, isolatedEnv, leakedKeys, seedSoul, writeFakeCodexAuth, FAKE_LOGIN_EMAIL,
   pipeDriver, watchFirstScreen, probeClaude, probeCodex, endOwnPid, parseArgs, exitCodeOf, EXIT,
   claudeArgs, parseCliVersion, checkLockVersion, decideLaunch, makeRunDir, removeRunDir, claudeProjectSlug, resolveFaceDir, loadPtyDriver,
+  parseProcessTable, ProcessTree, listProcesses, endOnePid, codexCmdArgs, prepareClaude,
 } from '../verify/firstrun-probe.mjs';
 import { spawnSync } from 'node:child_process';
 import { CLAUDE_START_NUDGES, claudeConfigJsonPath, claudeSettingsPath, codexConfigTomlPath } from '../installer/lib/firstrun.mjs';
@@ -30,7 +31,11 @@ const LOCK = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
 const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 'iris-frp-'));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); });
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-const FAST = { quietMs: 400, minMs: 600, maxMs: 15000, tickMs: 100 };
+// 화면 판정을 보는 시험은 프로세스 표를 빈 표로 바꿔 끼운다(진짜 표는 한 번에 2초쯤 걸린다) — 그때 "끝났다"는 띄운 PID 가
+// 죽었는가로만 정해진다. 자손까지 보는 나무 확인은 REAL_TREE 를 쓰는 시험들이 진짜 표로 따로 묶는다.
+const NO_TREE = { list: () => [], listAsync: async () => [] };
+const FAST = { quietMs: 400, minMs: 600, maxMs: 15000, tickMs: 100, ...NO_TREE };
+const REAL_TREE = { quietMs: 400, minMs: 600, maxMs: 15000, tickMs: 100, treeEveryMs: 300 };
 const fakeLaunch = (scene, ...extra) => ({ file: process.execPath, args: [FAKE, scene, ...extra] });
 
 // 2026-11-27 실제 재현에서 옮긴 화면(경로만 줄임).
@@ -430,7 +435,7 @@ test('가짜 코덱스: 깨끗한 화면 = 통과 + 접힌 경고를 펼쳐 읽�
 });
 
 test('watchFirstScreen: 계속 바쁜 화면은 가라앉지 않고 한도에서 멈춘다(통과로 읽지 않는다)', { timeout: 60_000 }, async () => {
-  const obs = await watchFirstScreen({ driver: pipeDriver(), ...fakeLaunch('codex-busy'), cwd: tmp, env: process.env, quietMs: 300, minMs: 300, maxMs: 1500, tickMs: 100 });
+  const obs = await watchFirstScreen({ driver: pipeDriver(), ...fakeLaunch('codex-busy'), cwd: tmp, env: process.env, quietMs: 300, minMs: 300, maxMs: 1500, tickMs: 100, ...NO_TREE });
   try {
     assert.equal(obs.settled, false);
     assert.equal(obs.final.status, 'busy');
@@ -445,7 +450,7 @@ test('watchFirstScreen: 계속 바쁜 화면은 가라앉지 않고 한도에서
 
 test('가짜 클로드: 입력 칸은 보이지만 출력이 멈추지 않으면(한도 시간에 닿음) 통과가 아니다', { timeout: 60_000 }, async () => {
   await withSoul('e2e-chatty', async ({ root, env }) => {
-    const obs = await probeClaude({ root, exe: 'unused', env, driver: pipeDriver(), launch: fakeLaunch('claude-chatty'), watch: { quietMs: 400, minMs: 600, maxMs: 2500, tickMs: 100 } });
+    const obs = await probeClaude({ root, exe: 'unused', env, driver: pipeDriver(), launch: fakeLaunch('claude-chatty'), watch: { quietMs: 400, minMs: 600, maxMs: 2500, tickMs: 100, ...NO_TREE } });
     assert.equal(obs.settled, false, '한도까지 가라앉지 않았다');
     assert.equal(obs.final.status, 'idle', '화면만 보면 대기다 — 그래서 가라앉음을 따로 요구한다');
     assert.equal(obs.final.promptNear, true);
@@ -456,13 +461,15 @@ test('가짜 클로드: 입력 칸은 보이지만 출력이 멈추지 않으면
 
 test('가짜 클로드: 띄운 프로세스를 끝내지 못하면 화면이 깨끗해도 실패(⑩)이고, 그 PID 는 살아 있는 것으로 보고된다', { timeout: 60_000 }, async () => {
   await withSoul('e2e-nokill', async ({ root, env }) => {
-    // 끝내기가 실패한 것처럼: kill 이 아무것도 하지 않는다
-    const obs = await probeClaude({ root, exe: 'unused', env, driver: pipeDriver(), launch: fakeLaunch('claude-clean'), watch: { ...FAST, kill: () => 'ended', stopWaitMs: 600 } });
+    // 끝내기가 실패한 것처럼: 나무를 끝내는 것도, 남은 PID 를 다시 끝내는 것도 아무것도 하지 않는다(프로세스 표는 진짜)
+    const obs = await probeClaude({ root, exe: 'unused', env, driver: pipeDriver(), launch: fakeLaunch('claude-clean'), watch: { ...REAL_TREE, kill: () => 'ended', killOne: () => 'ended', stopWaitMs: 600 } });
     try {
       assert.equal(obs.stopped, 'failed', 'kill 이 "끝냈다"고 해도 실제로 살아 있으면 failed');
       assert.equal(obs.childGone, false);
       assert.deepEqual(failed(obs.checks), ['⑩']);
       assert.equal(pidAlive(obs.pid), true);
+      assert.ok(obs.stopInfo.left.includes(obs.pid), `남은 PID 를 찍는다: ${obs.stopInfo.left}`); // 콘솔 도우미 같은 자식이 함께 잡힐 수 있다
+      assert.match(obs.checks.find((c) => c.name.startsWith('⑩')).detail, new RegExp(`남은 pid=${obs.pid}`));
     } finally {
       endOwnPid(obs.pid);
       for (let i = 0; i < 25 && pidAlive(obs.pid); i++) await new Promise((r) => setTimeout(r, 200));
@@ -516,6 +523,222 @@ test('스크립트 실행: 잠금표와 다른 판의 실행 파일을 주면 �
   assert.deepEqual(fs.readdirSync(base).filter((f) => f.startsWith('run-')), [], '자기가 만든 실행 폴더는 정리했다');
   const j = JSON.parse(fs.readFileSync(path.join(logs, 't-mismatch.json'), 'utf8'));
   assert.equal(j.mode, 'lock'); assert.equal(j.exitCode, r.status); assert.equal(j.cleanup.state, 'removed');
+});
+
+// ---------------------------------------------------------------------------
+// 프로세스 나무 — 자손까지 끝났는지
+// ---------------------------------------------------------------------------
+
+test('parseProcessTable / ProcessTree: 자손을 모으고, 부모가 먼저 죽어도 놓치지 않고, 다시 쓰인 PID 의 남의 자식은 줍지 않는다', () => {
+  const t = parseProcessTable('100 1 5000\r\n  200 100 5100\r\n\r\nheader junk\r\n300 200 5200\r\n900 1 4000\r\n');
+  assert.deepEqual(t.map((p) => [p.pid, p.ppid]), [[100, 1], [200, 100], [300, 200], [900, 1]]);
+  const P = (pid, ppid, born) => ({ pid, ppid, born: String(born).padStart(20, '0') });
+  const pids = (list) => list.map((p) => p.pid).sort((a, b) => a - b);
+
+  // 손자까지, 남의 프로세스는 빼고
+  const tree = new ProcessTree(100);
+  tree.absorb([P(100, 1, 5000), P(200, 100, 5100), P(300, 200, 5200), P(900, 1, 4000), P(901, 900, 4100)]);
+  assert.deepEqual(pids([...tree.tracked.values()]), [100, 200, 300]);
+
+  // 부모(200)가 먼저 죽었다: 표에 200 은 없지만 손자 300 은 아직 있고, 뒤늦게 300 이 낳은 400 도 잡는다
+  const later = [P(300, 200, 5200), P(400, 300, 5300), P(900, 1, 4000)];
+  tree.absorb(later);
+  assert.deepEqual(pids(tree.alive(later)), [300, 400], '띄운 PID 는 죽었어도 자손이 남았다');
+
+  // 전부 끝났다
+  assert.deepEqual(tree.alive([P(900, 1, 4000)]), []);
+
+  // 죽은 200 의 PID 를 남의 프로세스가 다시 쓴다: 그것(과 그 자식)은 우리 것이 아니다
+  const reused = [P(200, 1, 9000), P(500, 200, 9100)];
+  tree.absorb(reused);
+  assert.ok(!tree.tracked.has(500), '다시 쓰인 PID 의 자식을 줍지 않는다');
+  assert.deepEqual(tree.alive(reused), [], '같은 PID 라도 만든 시각이 다르면 살아 있는 우리 프로세스로 치지 않는다');
+
+  // 다시 쓰이기 전에 태어난 진짜 자식은 잡는다(부모 PID 자리에 다른 프로세스가 들어온 뒤에 표를 떴어도)
+  const t2 = new ProcessTree(10).absorb([P(10, 1, 100), P(20, 10, 110)]);
+  t2.absorb([P(20, 1, 900), P(30, 20, 120), P(40, 20, 950)]);
+  assert.ok(t2.tracked.has(30) && !t2.tracked.has(40));
+
+  // 띄운 PID 가 한 번도 표에 안 잡혔으면(곧바로 끝남) 아무것도 모으지 않는다
+  assert.equal(new ProcessTree(77).absorb([P(1, 0, 1), P(2, 1, 2)]).size, 0);
+  assert.equal(new ProcessTree(77).absorb(null).size, 0);
+});
+
+test('listProcesses: 진짜 표에 이 시험 프로세스가 있고 부모 PID 가 맞다', () => {
+  const table = listProcesses();
+  assert.ok(Array.isArray(table) && table.length > 5, '프로세스 표를 읽는다');
+  const me = table.find((p) => p.pid === process.pid);
+  assert.ok(me, '자기 자신이 표에 있다');
+  assert.equal(me.ppid, process.ppid);
+});
+
+test('codexCmdArgs: cmd 는 언제나 /d 로(레지스트리의 AutoRun 명령을 돌리지 않는다)', () => {
+  assert.deepEqual(codexCmdArgs('X:\\codex.cmd', ['--version']), ['/d', '/c', 'X:\\codex.cmd', '--version']);
+  assert.equal(codexCmdArgs('x')[0], '/d');
+  const src = fs.readFileSync(path.join(REPO, 'verify', 'firstrun-probe.mjs'), 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  const bare = code.split('\n').filter((l) => /\[\s*'\/c'/.test(l));
+  assert.deepEqual(bare, [], `/d 없이 /c 로 시작하는 cmd 인수를 만들지 않는다: ${bare.join(' | ')}`);
+});
+
+test('가짜 CLI + 진짜 프로세스 표: 부모만 끝나고 자손이 남으면 그 PID 만 다시 끝내고, 다 끝난 뒤에만 "끝났다"', { timeout: 120_000 }, async () => {
+  await withSoul('e2e-tree', async ({ root, env }) => {
+    const pidFile = path.join(tmp, 'e2e-tree', 'child.pid');
+    const rootOnly = (pid) => { try { process.kill(pid); return 'ended'; } catch { return 'already-gone'; } }; // 나무를 따라가지 않는 끝내기
+    const killed = [];
+    const obs = await probeClaude({ root, exe: 'unused', env, driver: pipeDriver(), launch: fakeLaunch('claude-clean', '--spawn-child', pidFile),
+      watch: { ...REAL_TREE, kill: rootOnly, killOne: (pid) => { killed.push(pid); return endOnePid(pid); } } });
+    const child = Number(fs.readFileSync(pidFile, 'utf8'));
+    try {
+      assert.ok(child > 0 && child !== obs.pid);
+      assert.equal(pidAlive(obs.pid), false, '부모는 끝났다');
+      assert.ok(obs.stopInfo.retried.includes(child), `남은 자손을 찾았다: ${obs.stopInfo.retried}`);
+      assert.deepEqual(killed, obs.stopInfo.retried, '장부에 있던 그 PID 들만 다시 끝냈다');
+      assert.ok(!killed.includes(process.pid) && !killed.includes(process.ppid), '시험 프로세스 쪽은 건드리지 않았다');
+      assert.equal(obs.stopped, 'ended-after-retry');
+      assert.equal(obs.childGone, true);
+      assert.deepEqual(obs.stopInfo.left, []);
+      assert.deepEqual(failed(obs.checks), []);
+      assert.match(obs.checks.find((c) => c.name.startsWith('⑩')).detail, new RegExp(`따로 끝낸 자손 pid=${child}`));
+      assert.equal(pidAlive(child), false, '자손도 끝났다');
+    } finally { endOnePid(child); endOwnPid(obs.pid); }
+  });
+});
+
+test('가짜 CLI + 진짜 프로세스 표: 다시 끝내도 자손이 남으면 실패이고 남은 PID 를 찍는다(부모가 죽었어도)', { timeout: 120_000 }, async () => {
+  await withSoul('e2e-tree-left', async ({ root, env }) => {
+    const pidFile = path.join(tmp, 'e2e-tree-left', 'child.pid');
+    const rootOnly = (pid) => { try { process.kill(pid); return 'ended'; } catch { return 'already-gone'; } };
+    const obs = await probeCodex({ root, cmdFile: 'unused', env, driver: pipeDriver(), launch: fakeLaunch('codex-clean', '--spawn-child', pidFile), peekWarnings: false,
+      watch: { ...REAL_TREE, kill: rootOnly, killOne: () => 'ended', stopWaitMs: 1500 } });
+    const child = Number(fs.readFileSync(pidFile, 'utf8'));
+    try {
+      assert.equal(pidAlive(obs.pid), false, '띄운 PID 는 끝났다 — 그것만 보면 "끝났다"로 읽힌다');
+      assert.equal(pidAlive(child), true);
+      assert.equal(obs.stopped, 'failed');
+      assert.equal(obs.childGone, false);
+      assert.ok(obs.stopInfo.left.includes(child), `남은 자손을 찍는다: ${obs.stopInfo.left}`);
+      assert.ok(!obs.stopInfo.left.includes(obs.pid), '띄운 PID 는 남은 목록에 없다');
+      assert.deepEqual(failed(obs.checks), ['⑥']);
+      assert.match(obs.checks.find((c) => c.name.startsWith('⑥')).detail, new RegExp(`남은 pid=${child}`));
+      assert.equal(exitCodeOf({ codex: { state: 'failed' } }), EXIT.failed);
+    } finally {
+      endOnePid(child);
+      for (let i = 0; i < 25 && pidAlive(child); i++) await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(pidAlive(child), false);
+  });
+});
+
+test('프로세스 표를 읽지 못하면 "끝났다"고 하지 않는다', { timeout: 60_000 }, async () => {
+  const obs = await watchFirstScreen({ driver: pipeDriver(), ...fakeLaunch('claude-clean'), cwd: tmp, env: process.env, quietMs: 300, minMs: 300, maxMs: 5000, tickMs: 100, list: () => null, listAsync: async () => null });
+  const s = await obs.stop();
+  assert.equal(s.how, 'failed');
+  assert.match(s.reason, /프로세스 표를 읽지 못해/);
+  assert.equal(pidAlive(obs.pid), false, '끝내기 자체는 했다');
+});
+
+// ---------------------------------------------------------------------------
+// 키를 보내기 전의 조건 — 기대한 화면일 때만
+// ---------------------------------------------------------------------------
+
+const keysSeen = (file) => { try { return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).join(''); } catch { return ''; } };
+const F2 = '\x1bOQ'; const RIGHT = '\x1b[C';
+
+test('가짜 코덱스: 가라앉은 대기 화면 + 경고 배지일 때만 F2 를 보내고, 경고 보기 창일 때만 화살표를 보낸다', { timeout: 120_000 }, async () => {
+  await withSoul('e2e-keys', async ({ root, env }) => {
+    const dir = path.join(tmp, 'e2e-keys');
+    const run = async (scene, watch = FAST) => {
+      const logFile = path.join(dir, `${scene}.keys`);
+      const obs = await probeCodex({ root, cmdFile: 'unused', env, driver: pipeDriver(), launch: fakeLaunch(scene, '--stdin-log', logFile), watch });
+      return { obs, keys: keysSeen(logFile) };
+    };
+    // 기대한 흐름: F2 한 번(한 쪽짜리라 화살표 없음)
+    const ok = await run('codex-clean');
+    assert.equal(ok.keys, F2);
+    assert.equal(ok.obs.warningPeek, 'seen');
+    assert.equal(ok.obs.warnings.length, 1);
+
+    // 화면이 바뀐 CLI: F2 뒤에 경고 보기 창이 아니라 고르는 물음이 뜬다 → 더 보내지 않고 "못 봄"
+    const other = await run('codex-f2-other');
+    assert.equal(other.keys, F2, '화살표 · Enter 를 보내지 않았다');
+    assert.match(other.obs.warningPeek, /^not-seen: 보기 키 뒤의 화면이 경고 보기 창이 아니라/);
+    assert.equal(other.obs.warningView, null);
+    assert.match(other.obs.checks.find((c) => c.name.startsWith('④')).detail, /경고 글 못 봄/);
+    assert.deepEqual(failed(other.obs.checks), [], '경고 글은 기록용이다 — 못 봐도 화면 판정은 그대로');
+
+    // 세 쪽이라더니 둘째 쪽에서 다른 화면이 된다 → 화살표는 한 번만, 그 뒤로는 보내지 않는다
+    const breaks = await run('codex-pager-breaks');
+    assert.equal(breaks.keys, F2 + RIGHT);
+    assert.match(breaks.obs.warningPeek, /^partial: 1\/3쪽/);
+    assert.equal(breaks.obs.warningView.length, 1);
+
+    // 배지는 보이지만 가라앉지 않았다 → 키를 하나도 보내지 않는다
+    const chatty = await run('codex-chatty', { quietMs: 400, minMs: 600, maxMs: 2500, tickMs: 100, ...NO_TREE });
+    assert.equal(chatty.obs.settled, false);
+    assert.equal(chatty.keys, '', '가라앉지 않은 화면에는 키를 보내지 않는다');
+    assert.match(chatty.obs.warningPeek, /^not-seen: 가라앉은 대기 화면이 아니라/);
+    assert.deepEqual(failed(chatty.obs.checks), ['⓪']);
+
+    // 물음이 떠 있는 화면(업데이트 물음) → 보내지 않는다
+    const upd = await run('codex-update');
+    assert.equal(upd.keys, '');
+    for (const r of [ok, other, breaks, chatty, upd]) assert.equal(pidAlive(r.obs.pid), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 준비 단계 — 설치기 함수가 띄우는 프로세스에도 격리 환경을
+// ---------------------------------------------------------------------------
+
+test('prepareClaude: installClaude 의 주입 자리에 격리된 실행 함수를 주고, npm 대체 설치는 쓰지 않는다', async () => {
+  const work = path.join(tmp, 'prep');
+  fs.mkdirSync(work, { recursive: true });
+  const base = { ...process.env, CLAUDE_CONFIG_DIR: 'X:\\real\\claude', CODEX_HOME: 'X:\\real\\codex', ANTHROPIC_API_KEY: 'sk-real', ANTHROPIC_BASE_URL: 'http://127.0.0.1:3456',
+    CLAUDE_CODE_OAUTH_TOKEN: 'real', OPENAI_API_KEY: 'sk-real2', npm_config_userconfig: 'X:\\real\\.npmrc' };
+  const seen = { runs: [], given: null };
+  const fakeRun = async (exe, args, opts) => { seen.runs.push({ exe, args, opts }); return { code: 0, out: '9.9.9 (Claude Code)', err: '' }; };
+  const fakeInstall = async (given) => {
+    seen.given = given;
+    await given.runFn('X:\\dl\\claude.exe', ['--version'], { timeoutMs: 1234 });
+    const npm = await given.npmInstall({ nodeExe: 'n', npmCli: 'c', prefix: 'p', spec: 's', cacheDir: 'd' });
+    assert.notEqual(npm.code, 0, 'npm 대체 설치는 실패로 답한다(프로세스를 띄우지 않는다)');
+    return { ok: true, version: '9.9.9', source: 'claude.ai' };
+  };
+  const lock = { parts: { claude: { version: '9.9.9', binName: 'claude.exe' } } };
+  const got = await prepareClaude({ work, lock, deadUrl: 'http://127.0.0.1:9', install: fakeInstall, runFn: fakeRun, base });
+  assert.equal(got.ok, true);
+  assert.ok(got.exe.startsWith(path.join(work, 'cli')) && got.exe.endsWith(path.join('9.9.9', 'claude.exe')));
+  assert.ok(seen.given.root.startsWith(work), '받는 자리는 실행 폴더 안');
+  assert.equal(seen.runs.length, 1, '띄운 것은 판 확인 하나뿐');
+  const env = seen.runs[0].opts.env;
+  assert.equal(seen.runs[0].opts.timeoutMs, 1234, '설치기가 준 다른 선택은 그대로');
+  for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY', 'npm_config_userconfig']) assert.equal(env[k], undefined, k);
+  for (const k of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP']) assert.ok(String(env[k]).startsWith(work), `${k} 는 실행 폴더 안: ${env[k]}`);
+  assert.equal(env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:9');
+  assert.ok(!Object.values(env).some((v) => /X:\\real|127\.0\.0\.1:3456|sk-real/.test(String(v))), '이 PC 의 설정 폴더 · 중계기 주소 · 열쇠가 어디에도 없다');
+  assert.deepEqual(leakedKeys(env, base), []);
+
+  // 못 받으면 못 본 것이다(사유를 돌려준다, 던지지 않는다)
+  const bad = await prepareClaude({ work, lock, deadUrl: 'http://127.0.0.1:9', install: async () => ({ ok: false, code: 'E-ONLINE-CLAUDE', message: 'no route' }), runFn: fakeRun, base });
+  assert.equal(bad.ok, false); assert.match(bad.reason, /받지 못함.*--claude-exe/);
+  const thrown = await prepareClaude({ work, lock, deadUrl: 'http://127.0.0.1:9', install: async () => { throw new Error('boom'); }, runFn: fakeRun, base });
+  assert.equal(thrown.ok, false); assert.match(thrown.reason, /boom/);
+});
+
+test('스크립트 실행: 실행 폴더를 만든 뒤 무엇이 던져도 그 폴더를 정리한다(기록 폴더를 만들 수 없는 경우)', { timeout: 120_000 }, () => {
+  const base = path.join(tmp, 'early-work');
+  fs.mkdirSync(base, { recursive: true });
+  // 기록 폴더 자리에 파일이 있다 → mkdir 가 던진다(실행 폴더를 만든 직후, 죽은 주소를 띄우기 전)
+  const blocker = path.join(tmp, 'early-logs-is-a-file');
+  fs.writeFileSync(blocker, 'x');
+  const r = spawnSync(process.execPath, [path.join(REPO, 'verify', 'firstrun-probe.mjs'), '--agent', 'claude', '--claude-exe', process.execPath, '--work', base, '--log-dir', blocker],
+    { encoding: 'utf8', timeout: 100_000, windowsHide: true });
+  const outText = `${r.stdout}\n${r.stderr}`;
+  assert.equal(r.status, EXIT.failed, outText);
+  assert.match(outText, /FAIL firstrun-probe 예외/);
+  assert.deepEqual(fs.readdirSync(base).filter((f) => f.startsWith('run-')), [], '일찍 던져도 자기가 만든 실행 폴더는 정리했다');
+  assert.ok(!/잠금 판 검증 통과/.test(outText));
 });
 
 test('가상 터미널을 못 빌리면 건너뜀 사유를 돌려준다(던지지 않는다)', () => {
