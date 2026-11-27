@@ -1237,7 +1237,7 @@ test('report: 보내기 실패는 ok:false + 까닭 + 사본 경로', async () =
 test('online: 중계기가 뜨면 검사 12·13 을 다시 재어 online.recheck 에 싣고 영수증 검사 기록의 같은 id 를 갈아 끼운다', async () => {
   const items = [
     { id: 'relay', num: 12, label: '중계기 경유(클로드)', status: 'pass', detail: '통과' },
-    { id: 'relayCodex', num: 13, label: '중계기 경유(코덱스 세션 → TeamClaude)', status: 'pass', detail: 'CA 번들 갱신' },
+    { id: 'relayCodex', num: 13, label: '중계기 경유(코덱스 세션 → IRIS Gate)', status: 'pass', detail: 'CA 번들 갱신' },
   ];
   let recheckRoot = null;
   const s = await atSetupStep({ relayRecheckFn: async (root) => { recheckRoot = root; return { at: 't', items }; } });
@@ -1248,7 +1248,7 @@ test('online: 중계기가 뜨면 검사 12·13 을 다시 재어 online.recheck
     const before = readReceipt(s.soulRoot);
     before.setup.checks = { ...(before.setup.checks ?? {}), recorded: { checks: { pass: 1, pending: 1, fail: 0 }, items: [
       { id: 'exe', num: 1, label: '실행 파일', status: 'pass', detail: 'ok' },
-      { id: 'relayCodex', num: 13, label: '중계기 경유(코덱스 세션 → TeamClaude)', status: 'pending', detail: '중계기가 응답하지 않음' },
+      { id: 'relayCodex', num: 13, label: '중계기 경유(코덱스 세션 → IRIS Gate)', status: 'pending', detail: '중계기가 응답하지 않음' },
     ] } };
     writeReceipt(s.soulRoot, before);
     await post(s.url, '/api/online/start');

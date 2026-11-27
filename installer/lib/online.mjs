@@ -1168,7 +1168,7 @@ export async function startRelay({
     }, deps);
     return {
       ok: false, state: 'failed', accounts: liveAccounts, code: CODES.relay,
-      message: `포트 ${port} 의 중계기가 우리 설정 파일을 읽고 있지 않습니다(중계기 계정 ${liveAccounts}개, 설정 파일 ${fileAccounts}개). 다른 TeamClaude 가 먼저 떠 있는 PC 일 수 있습니다 — 그 프로그램을 끄고 「계정 연결 다시 시도」를 눌러 주세요.`,
+      message: `포트 ${port} 의 중계기가 우리 설정 파일을 읽고 있지 않습니다(중계기 계정 ${liveAccounts}개, 설정 파일 ${fileAccounts}개). 다른 중계 프로그램이 먼저 떠 있는 PC 일 수 있습니다 — 그 프로그램을 끄고 「계정 연결 다시 시도」를 눌러 주세요.`,
       detail: { alive: true, started: proxy.started === true, status: health?.status ?? null, liveAccounts, fileAccounts, port },
     };
   }

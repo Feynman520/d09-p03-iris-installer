@@ -983,7 +983,7 @@ export async function checkRelayRoute(ctx, {
   if (relay.up) detailParts.push(`중계기 응답 OK(클로드 ${relay.accounts.anthropic}·코덱스 ${relay.accounts.codex})`);
   if (probe?.ok) detailParts.push(`살아 있는 요청 1건 통과(${RELAY_PROBE_MODEL}, ${probe.status}) — 대시보드 활동에 찍힘`);
   if (notes.length) detailParts.push(notes.join(' · '));
-  return item('relay', 12, '중계기 경유(클로드 세션 → TeamClaude)', status, detailParts.join(' · '), { wiring, relay, probe });
+  return item('relay', 12, '중계기 경유(클로드 세션 → IRIS Gate)', status, detailParts.join(' · '), { wiring, relay, probe });
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,7 +1036,7 @@ export async function checkRelayCodex(ctx, {
   const readText = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
 
   if (!wantsCodex) {
-    return item('relayCodex', 13, '중계기 경유(코덱스 세션 → TeamClaude)', 'pass',
+    return item('relayCodex', 13, '중계기 경유(코덱스 세션 → IRIS Gate)', 'pass',
       'ChatGPT 구독을 고르지 않은 설치라 이번에는 재지 않음(코덱스 명령은 깔려 있음). 나중에 대시보드에서 ChatGPT 계정을 추가하면 IRIS 창에서 바로 씁니다.',
       { wiring: { shim: null, provider: null }, relay: null, skipped: 'no-codex' });
   }
@@ -1089,7 +1089,7 @@ export async function checkRelayCodex(ctx, {
   detailParts.push(problems.length ? `배선·경유 문제 ${problems.length}건: ${problems.join(' / ')}` : `코덱스 = 중계기 주소 직접 지정(${CODEX_RELAY_BASE_URL}) · 웹소켓 끔 · 심에 가로채기 줄 없음`);
   if (relay.up) detailParts.push(`중계기 응답 OK(코덱스 ${relay.accounts.codex}·클로드 ${relay.accounts.anthropic})`);
   if (notes.length) detailParts.push(notes.join(' · '));
-  return item('relayCodex', 13, '중계기 경유(코덱스 세션 → TeamClaude)', status, detailParts.join(' · '), { wiring, relay });
+  return item('relayCodex', 13, '중계기 경유(코덱스 세션 → IRIS Gate)', status, detailParts.join(' · '), { wiring, relay });
 }
 
 // ---------------------------------------------------------------------------
