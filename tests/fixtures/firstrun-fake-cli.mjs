@@ -7,6 +7,7 @@
 //     --ping         ANTHROPIC_BASE_URL 로 요청 하나를 보내고 받은 상태 코드를 화면에 적는다(죽은 주소 확인용)
 //     --stdin-log    받은 키 입력을 한 줄에 하나씩 파일에 적는다(어떤 키가 왔는지 · 오지 않았는지 확인용)
 //     --spawn-child  자식 프로세스 하나를 띄우고 그 PID 를 파일에 적는다(부모만 끝나고 자손이 남는 경우 확인용)
+//     --spawn-orphan 중간 부모를 거쳐 손자를 띄우고 중간 부모는 곧 끝난다. 손자의 PID 를 파일에 적는다
 import fs from 'node:fs';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
@@ -53,6 +54,15 @@ if (typeof childFile === 'string') {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true, detached: true });
   child.unref();
   fs.writeFileSync(childFile, String(child.pid), 'utf8');
+}
+
+// --spawn-orphan: 중간 부모가 손자를 따로 떼어 띄우고 곧바로 끝난다 — 손자는 부모를 잃은 채 남는다
+// (부모-자식 줄을 따라가는 끝내기와, 프로세스 표를 주기적으로 뜨는 방식이 놓치는 꼴).
+const orphanFile = flag('--spawn-orphan');
+if (typeof orphanFile === 'string') {
+  const mid = spawn(process.execPath, ['-e', "const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore',windowsHide:true});console.log(c.pid);c.unref();setTimeout(()=>process.exit(0),100)"],
+    { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+  mid.stdout.once('data', (d) => fs.writeFileSync(orphanFile, String(d).trim(), 'utf8'));
 }
 
 const lines = SCENES[scene];
