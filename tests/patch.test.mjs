@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { applyPatches } from '../build/patch-teamclaude.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-patch-'));
@@ -80,6 +80,55 @@ test('the real teamclaude rules.json is well-formed and self-consistent', async 
   }
 });
 
+// ---------------------------------------------------------------------------
+// The two relay gates: "same bytes as the live install" and "passes its own tests"
+// ---------------------------------------------------------------------------
+
+const PKG_PREFIX = 'node_modules/@karpeleslab/teamclaude/';
+const PRISTINE_VERSION = '1.1.16';
+const readRealRules = () => JSON.parse(fs.readFileSync(path.resolve('patches/teamclaude/rules.json'), 'utf8'));
+
+// IRIS_RELEASE_GATE=1 -- set by whatever decides "this version may go out".
+//
+// Both tests below can find nothing to test on a given machine: the first
+// needs this development PC's live relay install, the second needs the
+// pristine package from the npm registry. On an ordinary run that is a skip.
+// But `npm test` exits 0 with skips in it, so at the release door a skip reads
+// as "passed" although the relay -- the one path every conversation takes --
+// was never compared and never ran its tests (code review, 2026-11-27). With
+// the gate on, each of these two skips is a FAILURE that says what was missing.
+const RELEASE_GATE = process.env.IRIS_RELEASE_GATE === '1';
+function skipOrFail(t, reason) {
+  if (RELEASE_GATE) {
+    assert.fail(`IRIS_RELEASE_GATE=1: this check may not be skipped at release -- ${reason}`);
+  }
+  t.skip(reason);
+}
+
+// One pristine install per run of this file, shared by both tests (each works
+// on its own copy). Never throws: { ok: true, prefix } or { ok: false, reason }.
+let pristineMemo = null;
+function pristineInstall() {
+  if (pristineMemo) return pristineMemo;
+  const prefix = path.join(tmp, 'pristine-shared');
+  fs.mkdirSync(prefix, { recursive: true });
+  // shell:true is required on Windows to resolve npm's .cmd shim; all args here
+  // are fixed constants (no untrusted input), so shell interpolation is safe.
+  const r = spawnSync('npm', ['install', '-g', '--prefix', prefix, `@karpeleslab/teamclaude@${PRISTINE_VERSION}`, '--no-fund', '--no-audit'], {
+    encoding: 'utf8', shell: process.platform === 'win32', windowsHide: true, timeout: 150_000,
+  });
+  const entry = path.join(prefix, ...PKG_PREFIX.split('/').filter(Boolean), 'src', 'index.js');
+  if (r.status === 0 && fs.existsSync(entry)) {
+    pristineMemo = { ok: true, prefix };
+  } else {
+    // Only npm's own error code goes into the reason (its full output names a log path).
+    const code = (`${r.stderr ?? ''}${r.stdout ?? ''}`.match(/npm (?:error|ERR!) code (\S+)/) ?? [])[1];
+    const why = r.error ? r.error.message : `npm exit ${r.status}${code ? `, ${code}` : ''}`;
+    pristineMemo = { ok: false, reason: `pristine @karpeleslab/teamclaude@${PRISTINE_VERSION} could not be fetched from the npm registry (${why})` };
+  }
+  return pristineMemo;
+}
+
 test('applyPatches on a fresh pristine install reproduces the live TeamClaude install byte-for-byte', { timeout: 180_000 }, async (t) => {
   // Acceptance test for the "derived from the live install" scope correction.
   // The live, running install (%APPDATA%\npm\node_modules\@karpeleslab\teamclaude)
@@ -88,14 +137,11 @@ test('applyPatches on a fresh pristine install reproduces the live TeamClaude in
   // path itself, and this test never writes into %APPDATA%.
   const liveSrc = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@karpeleslab', 'teamclaude');
   if (!process.env.APPDATA || !fs.existsSync(liveSrc)) {
-    t.skip(`live TeamClaude install not found at ${liveSrc} -- this rehearsal only runs on a machine with the live install present (e.g. not on CI or a different dev machine)`);
+    skipOrFail(t, `live TeamClaude install not found at ${liveSrc} -- this rehearsal only runs on a machine with the live install present (e.g. not on CI or a different dev machine)`);
     return;
   }
 
-  const rulesPath = path.resolve('patches/teamclaude/rules.json');
-  const rules = JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
-  const PKG_PREFIX = 'node_modules/@karpeleslab/teamclaude/';
-  const PRISTINE_VERSION = '1.1.16';
+  const rules = readRealRules();
 
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-t6-live-'));
   after(() => { fs.rmSync(scratch, { recursive: true, force: true }); });
@@ -118,14 +164,14 @@ test('applyPatches on a fresh pristine install reproduces the live TeamClaude in
 
   // 2. Fresh pristine install of the exact published version this patch set
   //    was derived from, isolated to a throwaway prefix.
+  //    (Installed once per run and shared with the relay-tests test below;
+  //    this test patches its own copy. With the live install present, failing
+  //    to get the pristine package is a failure here, as it always was -- the
+  //    comparison this PC exists to make could not be made.)
+  const pristine = pristineInstall();
+  assert.ok(pristine.ok, pristine.reason);
   const installRoot = path.join(scratch, 'install');
-  fs.mkdirSync(installRoot, { recursive: true });
-  // shell:true is required on Windows to resolve npm's .cmd shim; all args here
-  // are fixed constants (no untrusted input), so shell interpolation is safe.
-  execFileSync('npm', ['install', '-g', '--prefix', installRoot, `@karpeleslab/teamclaude@${PRISTINE_VERSION}`], {
-    stdio: 'pipe',
-    shell: process.platform === 'win32',
-  });
+  fs.cpSync(pristine.prefix, installRoot, { recursive: true });
 
   // 3. Apply the real rule set to the fresh pristine install.
   await applyPatches(installRoot, rules, () => {});
@@ -222,45 +268,68 @@ test('applyPatches on a fresh pristine install reproduces the live TeamClaude in
     }
   }
   assert.deepEqual(noEvidence, [], `the installer's patch check would reject: ${noEvidence.join(', ')}`);
+});
 
-  // 7. The relay's own tests travel in the rules (the package-root
-  //    *.test.js / *.test.mjs files). Run them here, on exactly the bytes a
-  //    build would ship -- the byte comparison above says "same as the live
-  //    install", this says "and that code passes its own tests".
-  //
-  //    They only use loopback servers on free ports, temp folders and fake
-  //    tokens. The environment below makes that true even by accident: no
-  //    Windows balloon, no wake guard (the one part that would look at the
-  //    login servers after a sleep), and the two default file locations --
-  //    the relay config and the Google stop file -- pointed into scratch so
-  //    nothing can land next to this PC's real relay config. The live relay
-  //    on its own port is never contacted.
-  await t.test("the relay's own tests pass on the patched pristine install", () => {
-    const relayScratch = path.join(scratch, 'relay-tests');
-    fs.mkdirSync(relayScratch, { recursive: true });
-    const env = {
-      ...process.env,
-      TEAMCLAUDE_NOTIFY: '0',
-      TEAMCLAUDE_WAKE_GUARD: '0',
-      TEAMCLAUDE_CONFIG: path.join(relayScratch, 'teamclaude.json'),
-      IRIS_GATE_GOOGLE_HALT_FILE: path.join(relayScratch, 'google-halt.json'),
-    };
-    // Set by the test runner we are inside; a nested runner that inherits it
-    // reports to its parent instead of deciding its own exit code.
-    delete env.NODE_TEST_CONTEXT;
-    const run = spawnSync(process.execPath, ['--test', '--test-timeout=120000'], {
-      cwd: madeRoot, env, encoding: 'utf8', timeout: 150_000, windowsHide: true,
-    });
-    const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
-    const count = (label) => Number((out.match(new RegExp(`^ℹ ${label} (\\d+)$`, 'm')) ?? [])[1] ?? NaN);
-    assert.equal(run.status, 0, `relay tests failed (exit ${run.status}${run.error ? `, ${run.error.message}` : ''}):\n${out.slice(-3000)}`);
-    assert.equal(count('fail'), 0, out.slice(-3000));
-    // every test file the rules carry was actually picked up and run
-    const carried = rules.files.map((f) => f.path.slice(PKG_PREFIX.length)).filter((rel) => /^[^/]+\.test\.m?js$/.test(rel));
-    assert.ok(carried.length >= 9, `expected the relay test files in the rules, found ${carried.length}`);
-    assert.ok(count('pass') >= carried.length, `only ${count('pass')} relay test(s) ran for ${carried.length} test file(s)`);
-    t.diagnostic(`relay tests: ${count('pass')} passed across ${carried.length} file(s)`);
+// The relay's own tests travel in the rules (the package-root *.test.js /
+// *.test.mjs files). Run them on exactly the bytes a build ships: pristine
+// 1.1.16 + rules. The test above says "same as the live install"; this one
+// says "and that code passes its own tests".
+//
+// It is a test of its own, NOT part of the one above, and it does not look at
+// the live install at all: on a PC without one (another developer's machine,
+// CI, a release machine) the byte comparison has nothing to compare, but the
+// relay that would be shipped can still be built and tested -- and it used to
+// be skipped along with the comparison, silently (code review, 2026-11-27).
+// The only thing it needs from outside is the pristine package; if that cannot
+// be fetched it is skipped, or fails under IRIS_RELEASE_GATE=1.
+//
+// The relay tests only use loopback servers on free ports, temp folders and
+// fake tokens. The environment below makes that true even by accident: no
+// Windows balloon, no wake guard (the one part that would look at the login
+// servers after a sleep), and the two default file locations -- the relay
+// config and the Google stop file -- pointed into scratch so nothing can land
+// next to a real relay config. A running relay on its own port is never contacted.
+test("the relay's own tests pass on pristine + rules (needs no live install)", { timeout: 300_000 }, async (t) => {
+  const pristine = pristineInstall();
+  if (!pristine.ok) {
+    skipOrFail(t, pristine.reason);
+    return;
+  }
+  const rules = readRealRules();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-relay-own-'));
+  after(() => { fs.rmSync(scratch, { recursive: true, force: true }); });
+
+  const installRoot = path.join(scratch, 'install');
+  fs.cpSync(pristine.prefix, installRoot, { recursive: true });
+  await applyPatches(installRoot, rules, () => {});
+  const madeRoot = path.join(installRoot, ...PKG_PREFIX.split('/').filter(Boolean));
+
+  const relayScratch = path.join(scratch, 'relay-tests');
+  fs.mkdirSync(relayScratch, { recursive: true });
+  const env = {
+    ...process.env,
+    TEAMCLAUDE_NOTIFY: '0',
+    TEAMCLAUDE_WAKE_GUARD: '0',
+    TEAMCLAUDE_CONFIG: path.join(relayScratch, 'teamclaude.json'),
+    IRIS_GATE_GOOGLE_HALT_FILE: path.join(relayScratch, 'google-halt.json'),
+  };
+  // Set by the test runner we are inside; a nested runner that inherits it
+  // reports to its parent instead of deciding its own exit code.
+  delete env.NODE_TEST_CONTEXT;
+  const run = spawnSync(process.execPath, ['--test', '--test-timeout=120000'], {
+    cwd: madeRoot, env, encoding: 'utf8', timeout: 240_000, windowsHide: true,
   });
+  const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+  const count = (label) => Number((out.match(new RegExp(`^ℹ ${label} (\\d+)$`, 'm')) ?? [])[1] ?? NaN);
+  assert.equal(run.status, 0, `relay tests failed (exit ${run.status}${run.error ? `, ${run.error.message}` : ''}):\n${out.slice(-3000)}`);
+  assert.equal(count('fail'), 0, out.slice(-3000));
+  // every test file the rules carry was actually picked up and run
+  const carried = rules.files.map((f) => f.path.slice(PKG_PREFIX.length)).filter((rel) => /^[^/]+\.test\.m?js$/.test(rel));
+  assert.ok(carried.length >= 9, `expected the relay test files in the rules, found ${carried.length}`);
+  for (const rel of carried) assert.ok(fs.existsSync(path.join(madeRoot, rel)), `relay test file not in the built package: ${rel}`);
+  assert.ok(count('pass') >= carried.length, `only ${count('pass')} relay test(s) ran for ${carried.length} test file(s)`);
+  assert.equal(count('skipped'), 0, `the relay's own tests skipped ${count('skipped')} test(s):\n${out.slice(-3000)}`);
+  t.diagnostic(`relay tests: ${count('pass')} passed across ${carried.length} file(s)`);
 });
 
 test('teamclaude-manage.ps1 copy stays ASCII-only', () => {
