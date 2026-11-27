@@ -33,8 +33,10 @@ const LOCK = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
 const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 'iris-frp-'));
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 // 이 시험 프로세스의 Job 추적기 — 도우미의 임시 · 홈 폴더도 시험 폴더 안에 둔다(처음 부를 때의 자리가 쓰인다).
-const helperDirsBefore = new Set(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('iris-frp-job-')));
 await getJobTracker({ home: path.join(tmp, 'job-helper-home') });
+// 이 시험이 "자리 없이" 띄운 도우미가 스스로 만든 폴더(시스템 임시 폴더 안) — 끝날 때 이 경로들만 확인한다
+// (임시 폴더 전체를 훑지 않는다: 같은 때 도는 다른 실행의 폴더는 이 시험의 것이 아니다).
+const ownHelperHomes = [];
 after(async () => {
   // Job 을 다루던 도우미도 이 시험이 띄운 프로세스다 — 닫고, 끝난 것을 확인한다.
   const jobs = await getJobTracker().catch(() => null);
@@ -43,8 +45,7 @@ after(async () => {
   await closeJobTracker();
   assert.ok(!helper || !pidAlive(helper), 'Job 도우미가 남지 않는다');
   assert.ok(!last || last.ok, `시험이 끝날 때 Job 에 이 프로세스만 남는다: ${JSON.stringify(last?.left)}`);
-  const strayDirs = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('iris-frp-job-') && !helperDirsBefore.has(n));
-  assert.deepEqual(strayDirs, [], '도우미 폴더를 시험 폴더 밖(임시 폴더)에 남기지 않는다');
+  assert.deepEqual(ownHelperHomes.filter((d) => fs.existsSync(d)), [], '이 시험이 띄운 도우미가 시험 폴더 밖에 만든 폴더를 남기지 않는다');
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 // 화면 판정을 보는 시험은 Job 추적기를 대역으로 바꿔 끼운다 — 그때 "끝났다"는 띄운 PID 가 죽었는가로만 정해진다.
@@ -647,6 +648,8 @@ test('startJobTracker: 이 스크립트가 죽은 것처럼 표준 입력이 그
 
 test('startJobTracker: 도우미가 준비되지 못하면(없는 PID) ok=false 와 까닭, 물음은 null', { timeout: 60_000 }, async () => {
   const t = startJobTracker({ targetPid: 4194300 }); // 있을 수 없는 PID
+  ownHelperHomes.push(t.home); // 자리를 주지 않았으니 도우미가 시스템 임시 폴더에 스스로 만들었다
+  assert.ok(path.dirname(t.home) === os.tmpdir() || t.home.startsWith(os.tmpdir()));
   assert.equal(await t.ready, false);
   assert.match(String(t.reason), /OpenProcess|준비되지/);
   assert.match(String(t.failed), /준비 실패/);
@@ -854,6 +857,41 @@ test('Job 목록을 읽지 못하면 "끝났다"고 하지 않는다 · 띄운 �
   const sc = await c.stop();
   assert.equal(sc.how, 'failed'); assert.match(sc.reason, /끝낸 뒤/);
   assert.equal(pidAlive(c.pid), false);
+});
+
+test('추적이 깨져 터미널 쪽 kill() 로 끝낸 실행은 언제나 실패다(종료 코드 1) · 멀쩡한 추적에서는 그 길을 타지 않는다', { timeout: 120_000 }, async () => {
+  const base = pipeDriver();
+  let kills = 0;
+  const counting = { ...base, open: (o) => { const term = base.open(o); const kill = term.kill; term.kill = () => { kills += 1; return kill(); }; return term; } };
+  const real = await getJobTracker();
+  await withSoul('e2e-broken', async ({ root, env }) => {
+    // ⓐ 진짜 Job 이지만 띄운 프로세스가 목록에 보이지 않는다(추적이 깨짐): 끝내 달라는 물음은 보내지 않고 터미널의 kill() 로 끝낸다
+    const asked = [];
+    const blind = { kind: 'job', failed: null, list: async () => [process.pid], end: async (pid) => { asked.push(pid); return { status: 'ended', name: null }; } };
+    kills = 0;
+    const a = await probeClaude({ root, exe: 'unused', env, driver: counting, launch: fakeLaunch('claude-clean'), watch: { quietMs: 400, minMs: 600, maxMs: 15000, tickMs: 100, tracker: blind } });
+    assert.equal(kills, 1, '터미널 쪽 kill() 을 탔다');
+    assert.deepEqual(asked, [], 'Job 소속을 확인할 수 없으니 핸들 길로는 아무것도 끝내지 않았다');
+    assert.equal(a.stopped, 'failed');
+    assert.equal(a.childGone, false);
+    assert.match(a.stopInfo.reason, /Job 에 보이지 않음/);
+    assert.deepEqual(failed(a.checks), ['⑩'], '화면은 깨끗해도 그 관측은 실패다');
+    assert.equal(exitCodeOf({ claude: { state: a.checks.some((c) => !c.ok) ? 'failed' : 'ok' } }), EXIT.failed);
+    // ⓑ 목록을 읽지 못한다(추적기가 굳음): 같은 길, 같은 결과 — 코덱스 쪽 판정으로
+    kills = 0;
+    const deaf = { kind: 'job', failed: '답이 오지 않음', list: async () => null, end: async () => null };
+    const b = await probeCodex({ root, cmdFile: 'unused', env, driver: counting, launch: fakeLaunch('codex-clean'), peekWarnings: false, watch: { quietMs: 400, minMs: 600, maxMs: 15000, tickMs: 100, tracker: deaf } });
+    assert.equal(kills, 1);
+    assert.equal(b.stopped, 'failed');
+    assert.deepEqual(failed(b.checks), ['⑥']);
+    assert.equal(exitCodeOf({ codex: { state: 'failed' } }), EXIT.failed);
+    // ⓒ 멀쩡한 진짜 추적: kill() 을 타지 않는다(전부 도우미가 핸들로 끝낸다)
+    kills = 0;
+    const c = await probeClaude({ root, exe: 'unused', env, driver: counting, launch: fakeLaunch('claude-clean'), watch: { ...REAL_TREE, tracker: real } });
+    assert.equal(kills, 0, '추적이 멀쩡하면 터미널 쪽 kill() 을 부르지 않는다');
+    assert.notEqual(c.stopped, 'failed');
+    assert.deepEqual(failed(c.checks), []);
+  });
 });
 
 test('물음이 늦게 끝나도 stop() 은 그 답을 받은 뒤에 돌아온다(반환 뒤에 진행 중인 물음이 남지 않는다)', { timeout: 60_000 }, async () => {

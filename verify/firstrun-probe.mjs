@@ -53,7 +53,8 @@
 //     핸들로 끝낸다 — 번호가 다른 프로세스에 다시 쓰였으면 끝내지 않는다. 이름으로 찾지 않고, taskkill · tasklist 를 부르지 않는다.
 //     Job 을 다루는 파워셸 도우미도 끝난 것을 확인하고 돌아온다. Job 을 쓸 수 없는 PC 에서는 띄우지 않는다(종료 코드 2).
 //     보증하지 못하는 것: 다른 서비스가 대신 만들어 준 프로세스(WMI · 작업 스케줄러 · 서비스)는 Job 밖이다. 이 스크립트가
-//     죽으면 도우미가 Job 의 나머지를 끝내고 나가지만, 스크립트와 도우미가 둘 다 강제로 끝나면 띄운 CLI 가 남을 수 있다.
+//     죽으면 도우미가 Job 의 나머지를 끝내기를 시도하고 나가지만(최대 세 번 · 목록을 못 읽으면 바로 돌아옴) 실패하면 남을 수
+//     있고, 스크립트와 도우미가 둘 다 강제로 끝나면 띄운 CLI 가 남을 수 있다.
 //   · 정리 순서 = 자식 종료 → 폴더 정리. 실행 폴더를 만든 바로 다음부터 try/finally 라 그 뒤 무엇이 던져도 거친다.
 //     끝나지 않은 프로세스가 있으면 폴더를 지우지 않고 실패로 끝낸다.
 //
@@ -444,6 +445,8 @@ function openPty({ pty, Terminal, file, args, cwd, env, cols, rows }) {
     },
     write: (d) => { try { proc.write(d); } catch { /* 이미 끝남 */ } },
     // 이미 끝난 프로세스에 kill() 을 부르면 node-pty 의 도우미가 "AttachConsole failed" 를 찍는다 — 살아 있을 때만.
+    // kill(): 추적이 깨졌을 때만 쓰는 마지막 길(그 실행은 언제나 실패다 — stop() 의 broken). node-pty 는 여기서 이 터미널의
+    // 콘솔에 붙은 프로세스들의 **번호**를 얻어 번호로 끝내고 가상 콘솔을 닫는다 — 핸들 길과 달리 번호가 다시 쓰였는지 가리지 못한다.
     kill: () => { if (!st.exited) { try { proc.kill(); } catch { /* 이미 끝남 */ } } },
     dispose: () => { if (!st.exited) { try { proc.kill(); } catch { /* 이미 끝남 */ } } try { screen.dispose(); } catch { /* */ } },
   };
@@ -466,7 +469,8 @@ export function pipeDriver() {
         state: st,
         lines: async () => stripAnsi(st.raw.slice(Math.max(0, st.raw.lastIndexOf('\x1b[2J')))).replace(/\r/g, '').split('\n'),
         write: (d) => { try { proc.stdin.write(d); } catch { /* 이미 끝남 */ } },
-        kill: () => { try { proc.kill(); } catch { /* 이미 끝남 */ } }, // node 가 쥔 그 프로세스 객체로
+        // kill(): 시험용 대역이거나 추적이 깨졌을 때만 쓴다. node 가 쥔 그 자식의 프로세스 객체(핸들)로 끝낸다 — 그 하나만, 자손은 아니다.
+        kill: () => { try { proc.kill(); } catch { /* 이미 끝남 */ } },
         dispose: () => { try { proc.stdin.end(); } catch { /* */ } },
       };
     },
@@ -476,7 +480,7 @@ export function pipeDriver() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 이 스크립트가 예외로 죽을 때는 0 이 아닌 코드로 끝낸다. 띄운 프로세스의 뒷정리는 Job 도우미가 한다(아래) —
-// 이 프로세스가 죽으면 도우미의 표준 입력이 닫히고, 도우미가 Job 에 남은 구성원을 끝낸 뒤 나간다.
+// 이 프로세스가 죽으면 도우미의 표준 입력이 닫히고, 도우미가 Job 에 남은 구성원을 끝내기를 시도한 뒤 나간다(실패하면 남을 수 있다).
 let exitGuardOn = false;
 function armExitGuard() {
   if (exitGuardOn) return;
@@ -504,7 +508,8 @@ function armExitGuard() {
 //   · Job 은 세기만 한다. 한도는 하나도 걸지 않는다 — "닫힐 때 함께 끝내기"(KILL_ON_JOB_CLOSE)도 걸지 않는다:
 //     이 스크립트 자신이 Job 안이라, 도우미가 예기치 않게 죽는 순간 이 스크립트가 **종료 코드 0** 으로 끝나 버린다
 //     (2026-11-28 실측) — 통과로 읽힐 수 있는 죽음이다. 그 대신 도우미가 표준 입력이 닫힌 것(= 이 스크립트가 죽음)을 보면
-//     Job 에 남은 구성원을(이 스크립트는 빼고) 핸들로 끝낸 뒤 나간다.
+//     Job 에 남은 구성원을(이 스크립트는 빼고) 핸들로 끝내기를 시도한 뒤 나간다(최대 세 번 훑고, 목록을 못 읽으면 바로
+//     돌아온다) — 보증이 아니라 시도다. 끝내지 못한 것은 남을 수 있다.
 //     벗어나기(CREATE_BREAKAWAY_FROM_JOB)는 허용하지 않는다: 허용하면 벗어난 프로세스를 셀 수 없다. 그 대신 CLI 가 벗어나기를
 //     요청하면 그 프로세스 만들기가 거절된다 — 실제 PC 와 다른 조건이다(2.1.311 · 2.1.326 · 0.167.0 · 0.172.0 의 첫 화면에서는
 //     Job 이 없을 때와 차이가 없었다, 검증기록 5-82).
@@ -575,7 +580,8 @@ public static class IrisProbeJob {
       return (WaitForSingleObject(h, waitMs) == 0 ? "ended " : "timeout ") + name;
     } finally { CloseHandle(h); }
   }
-  // 이 스크립트가 죽었을 때: Job 에 남은 구성원을(keep 은 빼고) 끝낸다.
+  // 이 스크립트가 죽었을 때: Job 에 남은 구성원을(keep 은 빼고) 끝내기를 **시도한다** — 최대 세 번 훑고, 목록을 못 읽으면
+  // 바로 돌아온다. 끝내지 못한 것(권한 없음 · 제때 안 끝남 · 그사이 새로 생김)은 남을 수 있다. 결과를 알릴 곳도 없다.
   public static void Sweep(IntPtr job, uint keep) {
     for (int round = 0; round < 3; round++) {
       long[] pids = PidList(job);
@@ -807,8 +813,9 @@ export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUIL
     const first = before ? born(before) : [];
     tracked = before ? first.length : null;
     // 띄운 것부터 끝낸다(자식을 더 낳지 못하게). 그다음 이 관측이 낳은 나머지. 전부 도우미가 핸들로 — Job 소속을 확인한 그 핸들로.
-    // 추적이 깨졌거나(띄운 프로세스가 Job 에 안 보임) 시험용 대역이면 Job 소속을 확인할 수 없으니, 띄운 프로세스 하나만
-    // 터미널이 쥔 프로세스 객체로 끝낸다(그 경우의 결과는 어차피 실패이거나 시험이다).
+    // 추적이 깨졌거나(띄운 프로세스가 Job 에 안 보임 · 목록을 못 읽음) 시험용 대역이면 Job 소속을 확인할 수 없으니, 띄운
+    // 프로세스만 터미널 쪽의 kill() 로 끝낸다(각 터미널의 kill 설명 — 가상 터미널은 번호로 끝낸다). 진짜 추적기로 이 길을 탄
+    // 실행은 **언제나 실패**다: 바로 아래에서 broken 이면 fail 로 돌아가고, 그 관측의 판정(⑩ · ⑥)이 실패해 종료 코드 1 이 된다.
     if (jobs.kind === 'job' && !broken) { for (const pid of [rootPid, ...first.filter((p) => p !== rootPid)]) note(pid, await jobs.end(pid, stopWaitMs)); }
     else term.kill?.();
     const rootGone = await waitExit(stopWaitMs);
