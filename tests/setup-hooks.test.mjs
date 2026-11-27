@@ -159,6 +159,53 @@ test('옛 훅 넷: 옛 판 꼴(껍데기 없음)의 우리 훅은 새 명령 · 
   assert.deepEqual(commands(d2, 'SessionStart'), [theirs]);
 });
 
+// 신선도 훅의 빈틈(2.0.65 에서 고침): 이 훅은 스크립트가 `_ontology`, 파이썬이 `shims` 에 있어 명령에 설치기 소유 폴더가 없다.
+// 그래서 2.0.54 이전 판의 옛 꼴이 업데이트 때 갈리지 않았다. 클로드 설정에서는 "이 설치 폴더의 _ontology\check_fresh.py 를
+// --hook session 으로 부르는 줄"을 우리 줄로 알아본다. 전체 흐름의 재현 시험은 tests/setup-adapters.test.mjs 에 있다.
+test('isOurFreshnessHook: 이 설치 폴더의 _ontology\\check_fresh.py 를 --hook session 으로 부르는 줄만 우리 것', () => {
+  const ours = path.win32.join(ROOT, '_ontology', 'check_fresh.py');
+  const shim = path.win32.join(ROOT, '_agent', 'shared', 'shims', 'python.cmd');
+  const yes = (c) => assert.equal(adapters.isOurFreshnessHook(ROOT, c), true, c);
+  const no = (c) => assert.equal(adapters.isOurFreshnessHook(ROOT, c), false, c);
+  yes(`"${shim}" "${ours}" --hook session`);                                   // 2.0.54 이전 꼴
+  yes(`& "${shim}" "${ours}" --hook session; exit $LASTEXITCODE`);             // 2.0.55 이후 꼴
+  yes(`& "${shim}" "${ours.toUpperCase().split('\\').join('/')}" --hook session`); // 대소문자 · 슬래시
+  yes(`python ${ours} --hook session`);                                        // 따옴표 없이, 다른 파이썬으로 불러도 같은 줄
+  no(`"${shim}" "D:\\OtherSoul\\_ontology\\check_fresh.py" --hook session`);   // 다른 영혼
+  no(`"${shim}" "${path.win32.join(ROOT, 'copy', 'check_fresh.py')}" --hook session`); // 이 폴더 안의 다른 자리
+  no(`"${shim}" "${ours}"`);                                                   // 훅 방식이 아님
+  no(`"${shim}" "${ours}" --hook other`);
+  no(`"${shim}" "${ours}" --verbose --hook session`);                          // 바로 뒤가 아님
+  no(`"${shim}" "${ours}.bak" --hook session`);
+  no('');
+  assert.equal(adapters.isOurFreshnessHook(null, `"${shim}" "${ours}" --hook session`), false);
+});
+
+test('신선도 훅: 추가 판정을 준 쪽(클로드 설정)만 옛 꼴을 갈고, 주지 않은 쪽(코덱스 훅 파일)은 예전과 같다', () => {
+  const shim = path.win32.join(ROOT, '_agent', 'shared', 'shims', 'python.cmd');
+  const old = `"${shim}" "${path.win32.join(ROOT, '_ontology', 'check_fresh.py')}" --hook session`;
+  const make = () => ({ hooks: { SessionStart: [{ matcher: 'startup|resume|clear|compact', hooks: [{ type: 'command', command: old, timeout: 30 }] }] } });
+  const wanted = () => ({ SessionStart: [adapters.claudeHookGroups(ROOT).SessionStart[0]] });
+  const extraOwned = (cmd) => adapters.isOurFreshnessHook(ROOT, cmd);
+
+  const plain = make();
+  const addedPlain = [];
+  adapters.mergeHooks(plain, wanted(), addedPlain, 'hooks.', ROOT);
+  assert.deepEqual(addedPlain, [], '추가 판정이 없으면 건드리지 않는다');
+  assert.equal(plain.hooks.SessionStart[0].hooks[0].command, old);
+
+  const claude = make();
+  const added = [];
+  adapters.mergeHooks(claude, wanted(), added, 'hooks.', ROOT, { extraOwned });
+  assert.deepEqual(added, ['hooks.SessionStart[startup|resume|clear|compact](updated)']);
+  assert.equal(claude.hooks.SessionStart.length, 1);
+  assert.equal(claude.hooks.SessionStart[0].hooks[0].command, wanted().SessionStart[0].hooks[0].command);
+  assert.equal(claude.hooks.SessionStart[0].hooks[0].shell, 'powershell');
+  const again = [];
+  adapters.mergeHooks(claude, wanted(), again, 'hooks.', ROOT, { extraOwned });
+  assert.deepEqual(again, [], '다시 적용하면 변경 0');
+});
+
 test('isSameOwnedScript: 같은 부품의 같은 파일만 같다', () => {
   const same = (a, b, root = ROOT) => adapters.isSameOwnedScript(root, a, b);
   assert.equal(same(OURS, OURS), true);

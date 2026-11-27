@@ -637,17 +637,31 @@ function findHookEntry(list, entry, root = null) {
   return null;
 }
 
+// 신선도 훅(`check_fresh.py --hook session`)은 스크립트가 `_ontology` 에, 파이썬이 `shims` 에 있어 명령 어디에도
+// 설치기 소유 폴더가 나오지 않는다. 그래서 2.0.54 이전 판이 놓은 옛 꼴(`"<심>" "<설치 폴더>\_ontology\check_fresh.py" --hook session`,
+// 껍데기 없음)이 2.0.55 의 파워셸 전환에서 빠져 업데이트해도 그대로 남았다 — Git Bash 없는 PC 에서 세션 시작 때마다 깨지는 꼴이다(2.0.65 에서 고침).
+// 이 훅만 따로 알아본다: 명령이 **이 설치 폴더의** `_ontology\check_fresh.py` 를 바로 뒤에 `--hook session` 을 붙여 부르면 우리가 놓은 줄이다.
+// 다른 폴더의 check_fresh.py(다른 영혼 · 자기 사본)나 다른 쓰임(`--hook session` 이 아닌 인자)은 그 사람 것이다.
+export function isOurFreshnessHook(root, command) {
+  if (!root) return false;
+  const tokens = commandTokens(command);
+  const want = normPath(checkFreshPath(root));
+  const at = tokens.findIndex((t) => normPath(t) === want);
+  return at >= 0 && tokens[at + 1] === '--hook' && tokens[at + 2] === 'session';
+}
+
 // 업데이트 예외: 이미 있는 우리 훅의 명령이 **설치기 소유 폴더**를 가리키면서
 // 새 판의 명령과 다르면 그 한 줄만 갈아 끼운다(판 폴더가 바뀌면 옛 경로는 없다).
 // 그 사람이 다른 곳의 스크립트를 부르도록 바꿔 두었으면 손대지 않는다.
-function updateOwnedHook(root, existing, wanted) {
+// `extraOwned(cmd, w)` = 소유 폴더로는 안 잡히지만 우리 줄인 것을 더 알아보는 판정(클로드 설정의 신선도 훅 — 위).
+function updateOwnedHook(root, existing, wanted, extraOwned = null) {
   let changed = false;
   for (const w of wanted.hooks ?? []) {
     if (!hookScriptPath(w)) continue;
     for (const h of existing.hooks ?? []) {
       const cmd = String(h?.command ?? '');
       if (!hookMatches(root, h, w)) continue;
-      if (!isInstallerOwnedPath(root, cmd)) continue; // 그 사람 사본 — 그대로
+      if (!isInstallerOwnedPath(root, cmd) && !(typeof extraOwned === 'function' && extraOwned(cmd, w) === true)) continue; // 그 사람 사본 — 그대로
       // 2.0.55: 명령과 함께 실행 껍데기(shell)도 우리 값으로 — 옛 판 훅은 shell 이 없어 Git Bash 없는 PC 에서 깨졌다.
       // 2.0.65: 시간 제한(timeout)도 우리 값으로 — 판이 제한을 바꿔도 이미 깔린 PC 에는 옛 값이 남았다.
       const sameShell = w.shell === undefined || h.shell === w.shell;
@@ -665,7 +679,7 @@ function updateOwnedHook(root, existing, wanted) {
 // hooks 블록에 우리 항목을 **더하기만** 한다(기존 항목은 순서까지 그대로).
 // 예외는 하나 — 위 updateOwnedHook 의 "우리 훅 경로 갱신".
 // (시험이 되풀이 적용을 직접 재려고 export 한다 — 설치 흐름은 아래 두 쓰기 함수로만 부른다.)
-export function mergeHooks(data, groups, added, prefix, root = null) {
+export function mergeHooks(data, groups, added, prefix, root = null, { extraOwned = null } = {}) {
   const hooks = objectAt(data, 'hooks');
   for (const [event, entries] of Object.entries(groups)) {
     if (!Array.isArray(hooks[event])) {
@@ -675,7 +689,7 @@ export function mergeHooks(data, groups, added, prefix, root = null) {
     for (const entry of entries) {
       const existing = findHookEntry(hooks[event], entry, root);
       if (existing) {
-        if (root && updateOwnedHook(root, existing, entry)) {
+        if (root && updateOwnedHook(root, existing, entry, extraOwned)) {
           added.push(`${prefix}${event}[${entry.matcher ?? '*'}](updated)`);
         }
         continue;
@@ -1003,8 +1017,12 @@ function writeClaudeSettings(ctx, { fs, root, recorded, note, log }) {
       added.push('cleanupPeriodDays');
     }
 
-    // 훅.
-    mergeHooks(data, groups, added, 'hooks.', root);
+    // 훅. 클로드 설정에서만: 옛 꼴로 남은 신선도 훅도 우리 줄로 알아보고 새 꼴로 간다(isOurFreshnessHook).
+    // 코덱스 hooks.json 에는 걸지 않는다 — 코덱스 쪽 세 훅은 2.0.0 부터 명령 글자가 같아 갈 것이 없고, 그 파일을 바꾸면 훅 신뢰 확인에 닿는다.
+    const freshScript = checkFreshPath(root).toLowerCase();
+    mergeHooks(data, groups, added, 'hooks.', root, {
+      extraOwned: (cmd, w) => String(w?.command ?? '').toLowerCase().includes(freshScript) && isOurFreshnessHook(root, cmd),
+    });
 
     // 로컬 마켓플레이스 알리기. 플러그인 개별 켜기(enabledPlugins)는
     // registerClaudePlugin 이 한다 — 나중에 내려받은 document-skills 도 같은

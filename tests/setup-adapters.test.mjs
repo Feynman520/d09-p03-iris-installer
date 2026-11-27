@@ -603,6 +603,89 @@ test('adapters(업데이트): 우리 훅의 경로는 고치고, 그 사람 사�
   assert.ok(s.hooks.SessionStart[1].hooks[0].command.includes('status.mjs'));
 });
 
+// 재현 시험(영구): 2.0.54 이전 판으로 처음 설치한 PC 의 신선도 훅은 `"<파이썬 심>" "<설치 폴더>\_ontology\check_fresh.py" --hook session`
+// (껍데기 없음) 꼴이었다. 2.0.55 가 훅을 파워셸 꼴로 바꿨지만, 이 훅은 명령이 `shims` 와 `_ontology` 만 가리켜 "설치기 소유"로
+// 보이지 않아 업데이트해도 옛 꼴 그대로 남았다 — Git Bash 가 없는 PC 에서 파워셸이 `"a" "b"` 를 문법 오류로 읽어 세션 시작 때마다 깨진다.
+test('adapters(업데이트 · 2.0.65): 2.0.54 이전 판이 놓은 신선도 훅도 파워셸 꼴로 갈아 끼운다 — 중복 없음 · 그 사람 훅 그대로 · 코덱스 훅 파일 그대로', async () => {
+  const ctx = makeCtx('fresh-hook-old-form', { apps: { office: true, hancom: true } });
+  const root = ctx.root;
+  await adapters.run(ctx);
+  const sPath = agentFile(root, 'claude', 'settings.json');
+  const codexHooksPath = agentFile(root, 'codex', 'hooks.json');
+  const shim = path.join(root, '_agent', 'shared', 'shims', 'python.cmd');
+  const scripts = path.join(root, '_agent', 'claude', 'scripts');
+
+  // 2.0.54 의 adapters.mjs 가 쓰던 글자 그대로(껍데기 칸 없음).
+  const s0 = readJson(sPath);
+  const wantedFresh = { ...s0.hooks.SessionStart.find((e) => JSON.stringify(e).includes('check_fresh.py')).hooks[0] };
+  const mine = { matcher: 'startup', hooks: [{ type: 'command', command: 'echo mine', timeout: 5 }] };
+  s0.hooks = {
+    PreToolUse: [
+      { matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: `powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(scripts, 'block-blanket-kill.ps1')}"`, timeout: 15, statusMessage: '일괄 킬 가드 검사 중' }] },
+      { matcher: 'Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell', hooks: [{ type: 'command', command: `"${shim}" "${path.join(scripts, 'guard-iris-path.py')}"`, timeout: 10, statusMessage: 'IRIS 경로 실존 가드 검사 중' }] },
+    ],
+    SessionStart: [
+      mine,
+      { matcher: 'startup|resume|clear|compact', hooks: [{ type: 'command', command: `"${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --hook session`, timeout: 30, statusMessage: '온톨로지 신선도 점검' }] },
+    ],
+    Stop: [{ hooks: [{ type: 'command', command: `"${shim}" "${path.join(scripts, 'bg-leftover-guard.py')}"`, timeout: 15 }] }],
+  };
+  fs.writeFileSync(sPath, `${JSON.stringify(s0, null, 2)}\n`);
+  const codexBefore = fs.readFileSync(codexHooksPath, 'utf8');
+
+  await adapters.run(ctx);
+
+  const s = readJson(sPath);
+  const fresh = s.hooks.SessionStart.filter((e) => JSON.stringify(e).includes('check_fresh.py'));
+  assert.equal(fresh.length, 1, '신선도 훅은 하나 — 옛 것 옆에 새 것을 더하지 않는다');
+  assert.equal(fresh[0].hooks[0].command, wantedFresh.command, '옛 꼴이 지금의 명령으로 바뀌었다');
+  assert.equal(fresh[0].hooks[0].shell, 'powershell', '파워셸 꼴(Git Bash 가 없어도 돈다)');
+  assert.ok(fresh[0].hooks[0].command.startsWith('& "') && fresh[0].hooks[0].command.endsWith('; exit $LASTEXITCODE'));
+  assert.equal(fresh[0].hooks[0].timeout, 30);
+  assert.equal(fresh[0].hooks[0].statusMessage, '온톨로지 신선도 점검');
+  assert.deepEqual(s.hooks.SessionStart[0], mine, '그 사람 훅은 그대로(자리도)');
+  assert.equal(s.hooks.SessionStart.length, 3, '그 사람 것 1 + 신선도 1 + 로그인 열쇠 알림 1');
+  // 나머지 셋은 지금까지처럼: 설치기 소유 폴더의 스크립트를 부르던 옛 꼴은 새 꼴로, 개수는 그대로.
+  assert.equal(s.hooks.PreToolUse.length, 2);
+  assert.equal(s.hooks.Stop.length, 1);
+  for (const h of [...s.hooks.PreToolUse, ...s.hooks.Stop].map((e) => e.hooks[0])) {
+    assert.equal(h.shell, 'powershell');
+    assert.ok(h.command.endsWith('; exit $LASTEXITCODE'));
+  }
+  assert.equal(fs.readFileSync(codexHooksPath, 'utf8'), codexBefore, '코덱스 훅 파일은 바뀌지 않는다');
+
+  // 한 번 더 얹어도 변경 0.
+  const once = fs.readFileSync(sPath, 'utf8');
+  await adapters.run(ctx);
+  assert.equal(fs.readFileSync(sPath, 'utf8'), once);
+});
+
+test('adapters(업데이트 · 2.0.65): 다른 폴더의 check_fresh.py 를 부르는 훅(다른 영혼 · 자기 사본)과 다른 쓰임의 훅은 건드리지 않는다', async () => {
+  const ctx = makeCtx('fresh-hook-others', { apps: { office: true, hancom: true } });
+  const root = ctx.root;
+  await adapters.run(ctx);
+  const sPath = agentFile(root, 'claude', 'settings.json');
+  const shim = path.join(root, '_agent', 'shared', 'shims', 'python.cmd');
+  const cases = [
+    // 우리 파이썬 심으로 **다른 영혼**의 신선도 점검을 부른다.
+    `"${shim}" "D:\\OtherSoul\\_ontology\\check_fresh.py" --hook session`,
+    // 이 설치 폴더 안이지만 `_ontology` 가 아닌 곳의 같은 이름.
+    `"${shim}" "${path.join(root, 'my-copy', 'check_fresh.py')}" --hook session`,
+    // 이 설치 폴더의 그 파일이지만 훅 방식(--hook session)이 아닌 다른 쓰임.
+    `"${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --verbose`,
+  ];
+  for (const command of cases) {
+    const s0 = readJson(sPath);
+    const theirs = { matcher: 'startup', hooks: [{ type: 'command', command, timeout: 99 }] };
+    s0.hooks.SessionStart = [theirs];
+    fs.writeFileSync(sPath, `${JSON.stringify(s0, null, 2)}\n`);
+    await adapters.run(ctx);
+    const s = readJson(sPath);
+    assert.deepEqual(s.hooks.SessionStart[0], theirs, `그대로여야 한다: ${command}`);
+    assert.equal(s.hooks.SessionStart.filter((e) => JSON.stringify(e).includes('check_fresh.py')).length, 1, '같은 이름의 훅이 이미 있으면 우리 신선도 훅을 더하지 않는다(지금까지와 같다)');
+  }
+});
+
 test('adapters(2.0.65): 옛 판 설정에 세 번 되풀이 적용해도 로그인 열쇠 알림 훅은 한 번만 — 그 사람 훅은 그대로', async () => {
   const ctx = makeCtx('auth-hook-repeat', { apps: { office: true, hancom: true } });
   const root = ctx.root;
