@@ -640,14 +640,23 @@ function findHookEntry(list, entry, root = null) {
 // 신선도 훅(`check_fresh.py --hook session`)은 스크립트가 `_ontology` 에, 파이썬이 `shims` 에 있어 명령 어디에도
 // 설치기 소유 폴더가 나오지 않는다. 그래서 2.0.54 이전 판이 놓은 옛 꼴(`"<심>" "<설치 폴더>\_ontology\check_fresh.py" --hook session`,
 // 껍데기 없음)이 2.0.55 의 파워셸 전환에서 빠져 업데이트해도 그대로 남았다 — Git Bash 없는 PC 에서 세션 시작 때마다 깨지는 꼴이다(2.0.65 에서 고침).
-// 이 훅만 따로 알아본다: 명령이 **이 설치 폴더의** `_ontology\check_fresh.py` 를 바로 뒤에 `--hook session` 을 붙여 부르면 우리가 놓은 줄이다.
-// 다른 폴더의 check_fresh.py(다른 영혼 · 자기 사본)나 다른 쓰임(`--hook session` 이 아닌 인자)은 그 사람 것이다.
+// 이 훅만 따로 알아본다 — 단, **과거 설치기가 실제로 써 넣은 명령 전체와 글자가 같을 때만** 우리 줄이다.
+// 갈아 끼울 때는 명령 한 줄을 통째로 바꾸므로, 그 사람이 뒤에 `; 자기 명령` 을 붙였거나 인자를 바꿨다면 그것까지 지우게 된다.
+// 그래서 스크립트 경로와 `--hook session` 만 보고 판단하지 않는다: 조금이라도 다르면 그 사람이 손댄 줄로 보고 그대로 둔다
+// (그 줄에 신선도 점검이 이미 걸려 있으므로 우리 훅을 하나 더 더하지도 않는다 — 이름 판정이 "이미 있음"으로 본다).
+// 꼴은 저장소 이력의 모든 판(2.0.0 ~ 2.0.64, 꼬리표 73개)에서 확인한 두 가지뿐이다. 1.x 판은 이 훅을 등록하지 않았다.
+export function historicalFreshnessCommands(root) {
+  const shim = pythonShimPath(root);
+  const fresh = checkFreshPath(root);
+  return [
+    `"${shim}" "${fresh}" --hook session`,                        // 2.0.0 ~ 2.0.54 (껍데기 칸 없음)
+    `& "${shim}" "${fresh}" --hook session; exit $LASTEXITCODE`,  // 2.0.55 ~ 2.0.64 (shell: powershell)
+  ];
+}
 export function isOurFreshnessHook(root, command) {
   if (!root) return false;
-  const tokens = commandTokens(command);
-  const want = normPath(checkFreshPath(root));
-  const at = tokens.findIndex((t) => normPath(t) === want);
-  return at >= 0 && tokens[at + 1] === '--hook' && tokens[at + 2] === 'session';
+  const c = String(command ?? '').trim().toLowerCase(); // 윈도우 경로라 대소문자만 무시한다. 그 밖에는 글자 그대로.
+  return c !== '' && historicalFreshnessCommands(root).some((h) => h.toLowerCase() === c);
 }
 
 // 업데이트 예외: 이미 있는 우리 훅의 명령이 **설치기 소유 폴더**를 가리키면서

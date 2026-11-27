@@ -673,6 +673,11 @@ test('adapters(업데이트 · 2.0.65): 다른 폴더의 check_fresh.py 를 부�
     `"${shim}" "${path.join(root, 'my-copy', 'check_fresh.py')}" --hook session`,
     // 이 설치 폴더의 그 파일이지만 훅 방식(--hook session)이 아닌 다른 쓰임.
     `"${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --verbose`,
+    // 옛 판이 놓은 줄 뒤에 그 사람이 자기 명령을 붙였다 — 갈아 끼우면 그 명령이 지워진다. 한 글자도 바꾸지 않는다.
+    `"${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --hook session; "D:\\mine\\after-fresh.cmd"`,
+    `& "${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --hook session; "D:\\mine\\after-fresh.cmd"; exit $LASTEXITCODE`,
+    // 인자를 더했다.
+    `"${shim}" "${path.join(root, '_ontology', 'check_fresh.py')}" --hook session --quiet`,
   ];
   for (const command of cases) {
     const s0 = readJson(sPath);

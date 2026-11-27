@@ -162,23 +162,34 @@ test('옛 훅 넷: 옛 판 꼴(껍데기 없음)의 우리 훅은 새 명령 · 
 // 신선도 훅의 빈틈(2.0.65 에서 고침): 이 훅은 스크립트가 `_ontology`, 파이썬이 `shims` 에 있어 명령에 설치기 소유 폴더가 없다.
 // 그래서 2.0.54 이전 판의 옛 꼴이 업데이트 때 갈리지 않았다. 클로드 설정에서는 "이 설치 폴더의 _ontology\check_fresh.py 를
 // --hook session 으로 부르는 줄"을 우리 줄로 알아본다. 전체 흐름의 재현 시험은 tests/setup-adapters.test.mjs 에 있다.
-test('isOurFreshnessHook: 이 설치 폴더의 _ontology\\check_fresh.py 를 --hook session 으로 부르는 줄만 우리 것', () => {
+// 갈아 끼울 때는 명령 한 줄을 통째로 바꾼다. 그래서 "우리 줄"은 과거 설치기가 실제로 써 넣은 명령 **전체**와 글자가 같을 때뿐이다 —
+// 그 사람이 뒤에 자기 명령을 붙였거나 인자 · 파이썬을 바꿨다면, 그것을 지우지 않도록 그대로 둔다(2026-11-27 코드 검토 "막아야 함").
+test('isOurFreshnessHook: 과거 설치기가 써 넣은 명령 전체와 같을 때만 우리 것 — 조금이라도 다르면 그 사람이 손댄 줄', () => {
   const ours = path.win32.join(ROOT, '_ontology', 'check_fresh.py');
   const shim = path.win32.join(ROOT, '_agent', 'shared', 'shims', 'python.cmd');
   const yes = (c) => assert.equal(adapters.isOurFreshnessHook(ROOT, c), true, c);
   const no = (c) => assert.equal(adapters.isOurFreshnessHook(ROOT, c), false, c);
-  yes(`"${shim}" "${ours}" --hook session`);                                   // 2.0.54 이전 꼴
-  yes(`& "${shim}" "${ours}" --hook session; exit $LASTEXITCODE`);             // 2.0.55 이후 꼴
-  yes(`& "${shim}" "${ours.toUpperCase().split('\\').join('/')}" --hook session`); // 대소문자 · 슬래시
-  yes(`python ${ours} --hook session`);                                        // 따옴표 없이, 다른 파이썬으로 불러도 같은 줄
+  const v54 = `"${shim}" "${ours}" --hook session`;                         // 2.0.0 ~ 2.0.54 가 쓴 글자
+  const v55 = `& "${shim}" "${ours}" --hook session; exit $LASTEXITCODE`;   // 2.0.55 ~ 2.0.64 가 쓴 글자
+  assert.deepEqual(adapters.historicalFreshnessCommands(ROOT), [v54, v55], '이력에서 확인한 두 꼴(다른 꼴은 설치기가 쓴 적이 없다)');
+  yes(v54);
+  yes(v55);
+  yes(v54.toUpperCase().replace('--HOOK SESSION', '--hook session')); // 경로의 대소문자만 다른 것
+  yes(`  ${v54}  `);                                                  // 앞뒤 빈칸
+  // 그 사람이 손댄 줄 — 전부 그대로 둔다.
+  no(`${v54}; echo mine`);                                            // 뒤에 자기 명령을 붙임
+  no(`${v54} && my-tool.exe`);
+  no(`${v55}; echo mine`);
+  no(`echo before; ${v54}`);                                          // 앞에 붙임
+  no(`${v54} --verbose`);                                             // 인자를 더함
+  no(`"${shim}" "${ours}" --hook other`);                             // 인자를 바꿈
+  no(`"${shim}" "${ours}"`);
+  no(`python "${ours}" --hook session`);                              // 다른 파이썬으로
+  no(`"${shim}" "${ours.split('\\').join('/')}" --hook session`);     // 설치기는 이렇게 쓴 적이 없다
   no(`"${shim}" "D:\\OtherSoul\\_ontology\\check_fresh.py" --hook session`);   // 다른 영혼
   no(`"${shim}" "${path.win32.join(ROOT, 'copy', 'check_fresh.py')}" --hook session`); // 이 폴더 안의 다른 자리
-  no(`"${shim}" "${ours}"`);                                                   // 훅 방식이 아님
-  no(`"${shim}" "${ours}" --hook other`);
-  no(`"${shim}" "${ours}" --verbose --hook session`);                          // 바로 뒤가 아님
-  no(`"${shim}" "${ours}.bak" --hook session`);
   no('');
-  assert.equal(adapters.isOurFreshnessHook(null, `"${shim}" "${ours}" --hook session`), false);
+  assert.equal(adapters.isOurFreshnessHook(null, v54), false);
 });
 
 test('신선도 훅: 추가 판정을 준 쪽(클로드 설정)만 옛 꼴을 갈고, 주지 않은 쪽(코덱스 훅 파일)은 예전과 같다', () => {
