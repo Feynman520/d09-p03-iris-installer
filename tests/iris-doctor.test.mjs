@@ -24,6 +24,7 @@ import { loadRules } from '../build/rules.mjs';
 import { isStageError } from '../installer/lib/errors.mjs';
 import { planUpdateReset, RELAY_PARTS, KEEP_DONE } from '../installer/lib/update-plan.mjs';
 import { doctorStartFile, DOCTOR_START_FILE } from '../installer/lib/handoff.mjs';
+import { doctorBundleProblems, doctorTrustProblems, DOCTOR_PART_ZIP, DOCTOR_REQUIRED_FILES } from '../verify/doctor-bundle.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
@@ -533,4 +534,107 @@ test('T6 업데이트 계획: Doctor 가 이미 같은 판으로 놓여 있으�
   const bumped = planUpdateReset({ receipt, lock: LOCK, manifest: MANIFEST_NOW });
   assert.deepEqual(bumped.changed, ['iris-doctor']);
   assert.ok(bumped.reset.includes('relay'));
+});
+
+// ---------------------------------------------------------------------------
+// T8 · T9 · T10 — 검사소의 판정(verify/doctor-bundle.mjs). 정적 검사 ㉒ 여섯째 · ㉓ 과 업그레이드 게이트 ③ⓜ 이 쓰는 순수 함수라,
+// 무거운 검사를 돌리지 않고 여기서 잰다: 저장소의 사본은 통과하고, 하나씩 망가뜨린 사본은 그 까닭과 함께 걸린다.
+// ---------------------------------------------------------------------------
+
+function brokenCopy(label, mutate) {
+  const dir = path.join(tmp, `verify-${label}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.cpSync(COPY, dir, { recursive: true });
+  mutate(dir);
+  return dir;
+}
+// 지문 목록까지 맞춰 다시 쓴다(목록은 맞지만 다른 규칙에 걸리는 묶음을 만들 때)
+function resealManifest(dir) {
+  const files = listAll(dir).filter((f) => f !== 'manifest.json').map((f) => { const b = fs.readFileSync(path.join(dir, ...f.split('/'))); return { path: f, sha256: sha(b), size: b.length }; });
+  const m = readManifest(dir);
+  fs.writeFileSync(path.join(dir, 'manifest.json'), `${JSON.stringify({ ...m, files }, null, 2)}\n`);
+}
+
+test('T9 ㉓ Doctor 묶음 온전: 저장소의 사본은 통과한다 · 바뀐 파일 · 빠진 파일 · 목록 밖 파일 · 깨진 목록은 걸린다', () => {
+  assert.deepEqual(doctorBundleProblems(COPY), []);
+  assert.equal(DOCTOR_PART_ZIP, LOCK.parts['iris-doctor'].file, '검사소가 여는 압축 = 잠금표의 그 부품');
+  assert.deepEqual([...DOCTOR_REQUIRED_FILES].sort(), [...unpack.DOCTOR_REQUIRED].sort(), '검사소와 설치기가 같은 다섯 파일을 꼭 있어야 한다고 본다');
+  const cases = [
+    ['changed', (d) => fs.appendFileSync(path.join(d, 'lib', 'link.mjs'), '\n// x\n'), /지문이 다르다: lib\/link\.mjs/],
+    ['eol', (d) => { const f = path.join(d, 'lib', 'start-check.ps1'); fs.writeFileSync(f, fs.readFileSync(f, 'latin1').replace(/\r\n/g, '\n'), 'latin1'); }, /지문이 다르다: lib\/start-check\.ps1/],
+    ['missing', (d) => fs.rmSync(path.join(d, 'lib', 'plain.mjs')), /목록에는 있는데 파일이 없다: lib\/plain\.mjs/],
+    ['required', (d) => fs.rmSync(path.join(d, 'IRIS Doctor.cmd')), /없음: IRIS Doctor\.cmd/],
+    ['extra', (d) => fs.writeFileSync(path.join(d, 'lib', 'extra.mjs'), '// x\n'), /목록에 없는 파일: lib\/extra\.mjs/],
+    ['no-manifest', (d) => fs.rmSync(path.join(d, 'manifest.json')), /manifest\.json 을 읽지 못했다/],
+    ['bad-manifest', (d) => fs.writeFileSync(path.join(d, 'manifest.json'), '{ broken'), /manifest\.json 을 읽지 못했다/],
+    ['empty-manifest', (d) => fs.writeFileSync(path.join(d, 'manifest.json'), JSON.stringify({ name: 'iris-doctor', version: '0.0.1', files: [] })), /파일 목록이 없다/],
+    ['version', (d) => { const m = readManifest(d); m.version = '9.9.9'; fs.writeFileSync(path.join(d, 'manifest.json'), JSON.stringify(m)); }, /판이 어긋난다/],
+  ];
+  for (const [label, mutate, want] of cases) {
+    const problems = doctorBundleProblems(brokenCopy(label, mutate));
+    assert.ok(problems.some((p) => want.test(p)), `${label}: ${problems.join(' | ') || '(문제 없음으로 나옴)'}`);
+  }
+  assert.ok(doctorBundleProblems(path.join(tmp, 'verify-no-such-folder')).length > 0, '폴더가 없으면 통과하지 않는다');
+});
+
+test('T9 ㉓ Doctor 묶음 온전: 지문 목록이 맞아도 실리면 안 되는 것 · 깨진 시작 파일은 걸린다(지침 · 시험 · 도구 · local.json · iris-keys.json · 0바이트 · ASCII/CRLF)', () => {
+  const cases = [
+    ['agents', (d) => fs.writeFileSync(path.join(d, 'AGENTS.md'), '# x\n'), /실리면 안 되는 것\(지침 문서\): AGENTS\.md/],
+    ['tests', (d) => { fs.mkdirSync(path.join(d, 'tests')); fs.writeFileSync(path.join(d, 'tests', 'a.test.mjs'), '// t\n'); }, /실리면 안 되는 것\(시험 폴더\): tests\/a\.test\.mjs/],
+    ['tools', (d) => { fs.mkdirSync(path.join(d, 'tools')); fs.writeFileSync(path.join(d, 'tools', 'lab.mjs'), '// lab\n'); }, /실리면 안 되는 것\(도구 폴더/],
+    ['local', (d) => fs.writeFileSync(path.join(d, 'local.json'), '{}'), /그 PC 만의 자리 표/],
+    ['keys', (d) => fs.writeFileSync(path.join(d, 'lib', 'iris-keys.json'), '{}'), /열쇠 파일/],
+    ['empty', (d) => fs.writeFileSync(path.join(d, 'lib', 'empty.mjs'), ''), /0바이트 파일: lib\/empty\.mjs/],
+    ['non-ascii', (d) => fs.appendFileSync(path.join(d, 'IRIS Doctor.cmd'), 'rem 한글\r\n'), /IRIS Doctor\.cmd: ASCII 가 아닌 바이트/],
+    ['lf', (d) => { const f = path.join(d, 'IRIS Doctor.cmd'); fs.writeFileSync(f, fs.readFileSync(f, 'latin1').replace(/\r\n/g, '\n'), 'latin1'); }, /IRIS Doctor\.cmd: CRLF 가 아닌 줄끝/],
+  ];
+  for (const [label, mutate, want] of cases) {
+    // 목록을 그 폴더에 맞춰 다시 써서 "지문은 맞는" 묶음으로 만든다 — 그래도 걸려야 한다
+    const dir = brokenCopy(`sealed-${label}`, (d) => { mutate(d); resealManifest(d); });
+    const problems = doctorBundleProblems(dir);
+    assert.ok(problems.some((p) => want.test(p)), `${label}: ${problems.join(' | ') || '(문제 없음으로 나옴)'}`);
+    assert.ok(!problems.some((p) => /지문이 다르다/.test(p)), `${label}: 이 경우는 지문 때문이 아니라 그 규칙 때문에 걸려야 한다`);
+  }
+});
+
+test('T8 ㉒ 여섯째 자리: 저장소의 사본은 윈도우 인증서 처리가 다 있다 · 하나라도 빠지면 그 까닭과 함께 걸린다', () => {
+  assert.deepEqual(doctorTrustProblems(COPY), []);
+  const edit = (rel, from, to) => (d) => { const f = path.join(d, ...rel.split('/')); const t = fs.readFileSync(f, 'latin1'); assert.ok(t.includes(from), `${rel} 에 바꿀 글이 없다`); fs.writeFileSync(f, t.replace(from, to), 'latin1'); };
+  const cases = [
+    ['no-trust', (d) => fs.rmSync(path.join(d, 'lib', 'trust.mjs')), /없음: lib\/trust\.mjs/],
+    ['no-add', edit('lib/trust.mjs', 'tls.setDefaultCACertificates([...current, ...extra]);', 'tls.setDefaultCACertificates(extra);'), /윈도우 목록을 더하지 않는다/],
+    ['entry', edit('iris-doctor.mjs', ".trustSystemRoots(); } catch {}", '; } catch {}'), /iris-doctor\.mjs 가 trustSystemRoots/],
+    ['worker', edit('lib/worker.mjs', ".trustSystemRoots(); } catch {}", '; } catch {}'), /lib\/worker\.mjs 가 trustSystemRoots/],
+    ['cmd-always', edit('IRIS Doctor.cmd', 'if not defined NODE_USE_SYSTEM_CA set "NODE_USE_SYSTEM_CA=1"', 'set "NODE_USE_SYSTEM_CA=1"'), /비어 있을 때만 채우지 않는다/],
+    ['cmd-options', edit('IRIS Doctor.cmd', 'set "NODE_OPTIONS="', 'set "NODE_OPTIONS=--use-system-ca"'), /NODE_OPTIONS 를 비우지 않는다|--use-system-ca 플래그|NODE_OPTIONS 에 값을 넣는다/],
+    ['flag', (d) => fs.appendFileSync(path.join(d, 'lib', 'launch.mjs'), "\nexport const EXTRA = ['--use-system-ca'];\n"), /lib\/launch\.mjs: --use-system-ca 플래그를 쓴다/],
+  ];
+  for (const [label, mutate, want] of cases) {
+    const problems = doctorTrustProblems(brokenCopy(`trust-${label}`, mutate));
+    assert.ok(problems.some((p) => want.test(p)), `${label}: ${problems.join(' | ') || '(문제 없음으로 나옴)'}`);
+  }
+});
+
+test('T8 · T9 · T10 배선: 정적 검사와 업그레이드 게이트가 그 판정을 실제로 부른다(㉒ 의 자리 수는 손으로 적은 숫자가 아니다)', () => {
+  const st = fs.readFileSync(path.join(REPO, 'verify', 'static.mjs'), 'utf8');
+  assert.match(st, /import \{ doctorBundleProblems, doctorTrustProblems, DOCTOR_PART_ZIP \} from '\.\/doctor-bundle\.mjs'/);
+  assert.match(st, /for \(const p of doctorTrustProblems\(doctorDir\)\) problems\.push\(`iris-doctor: \$\{p\}`\)/);
+  assert.match(st, /laterLaunchPoints\.push\('IRIS Doctor'\)/);
+  assert.match(st, /`\$\{5 \+ laterLaunchPoints\.length\} launch point\(s\) wired`/, '자리 수 = 처음 다섯 + 뒤에 더한 목록의 길이');
+  assert.ok(!/'6 launch point\(s\) wired'/.test(st));
+  assert.match(st, /const problems = doctorDir \? doctorBundleProblems\(doctorDir\) : \[`missing payload\/\$\{DOCTOR_PART_ZIP\}`\]/);
+  assert.match(st, /'㉓ IRIS Doctor bundle is whole/);
+  const up = fs.readFileSync(path.join(REPO, 'verify', 'upgrade.mjs'), 'utf8');
+  assert.match(up, /import \{ doctorBundleProblems \} from '\.\/doctor-bundle\.mjs'/);
+  assert.match(up, /check\('③ⓜ IRIS Doctor 부품이 제자리에 있고 지문 목록과 같다'/);
+  assert.match(up, /\['iris-doctor', path\.join\(SOUL_ROOT, '_agent', 'shared', 'tools', 'iris-doctor', 'iris-doctor\.mjs'\)\]/, '③ⓔ 문법 대상');
+  // 게이트가 Doctor 에게 부르는 명령은 통신 0 인 둘뿐이다(실제 호출 · 3456 을 두드리는 검진 · Doctor 의 집을 만드는 명령은 부르지 않는다)
+  const called = [...up.matchAll(/runDoctor\('([^']+)'\)/g)].map((m) => m[1]).sort();
+  assert.deepEqual(called, ['--version', 'selftest']);
+  // 그 두 명령이 정말 그런 것인지 사본의 실행 입구에서 본다: selftest · --version 은 차림표 · 검진 · 연결보다 먼저 끝난다
+  const entry = fs.readFileSync(path.join(COPY, 'iris-doctor.mjs'), 'utf8');
+  const at = (s) => { const i = entry.indexOf(s); assert.ok(i >= 0, `실행 입구에 ${s} 가 없다`); return i; };
+  assert.ok(at("if (has('--version'))") < at("if (cmd === 'selftest')"));
+  assert.ok(at("if (cmd === 'selftest')") < at("if (cmd === 'start')"), '자체 확인은 차림표 · 검진 · 연결 명령보다 앞에서 끝난다');
+  assert.ok(at("if (cmd === 'selftest')") < at("import('./lib/trust.mjs')"), '자체 확인은 인증서 목록에도 손대지 않는다');
 });
