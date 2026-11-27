@@ -283,15 +283,27 @@ export function doctorBundleCheck(fs, dir) {
   const unlisted = DOCTOR_REQUIRED.filter((f) => !want.has(f));
   if (unlisted.length) return { ...out, missing: unlisted, detail: `${DOCTOR_MANIFEST} 에 꼭 있어야 할 파일이 빠짐: ${unlisted.join(', ')}` };
   const version = typeof listed.version === 'string' ? listed.version : null;
-  // 지금 놓인 파일 전부(목록 자신만 빼고). 파일도 폴더도 아닌 것(링크 등)은 낯선 것으로 친다.
+  // 지금 놓인 파일 전부(목록 자신만 빼고). **평범한 파일과 평범한 폴더만** 받는다: 심볼릭 링크 · 연결 폴더(junction)
+  // 같은 재분석 지점은 따라가지 않고 그 자체로 실패다 — 목록의 파일을 바깥 파일을 가리키는 링크로 바꿔 놓으면 내용 지문은
+  // 같게 나오지만 그것은 이 묶음의 파일이 아니다(2026-11-28 코드 검토 지적). `lstat` 로 본다(링크를 따라가지 않는다).
+  // 이름은 **대소문자까지** 목록과 같아야 한다(대소문자만 바뀐 파일은 "없어짐 + 낯선 파일"). 0바이트 파일은 목록의 지문과 같으면 받는다.
   const have = new Set();
+  const linked = [];
+  const plainEntry = (p) => { const st = fs.lstatSync(p); return st.isSymbolicLink() ? 'link' : st.isDirectory() ? 'dir' : st.isFile() ? 'file' : 'other'; };
   const walk = (rel) => {
-    for (const e of fs.readdirSync(rel ? abs(rel) : dir, { withFileTypes: true })) {
-      const r = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) walk(r); else have.add(r);
+    for (const name of fs.readdirSync(rel ? abs(rel) : dir)) {
+      const r = rel ? `${rel}/${name}` : name;
+      const kind = plainEntry(abs(r));
+      if (kind === 'dir') walk(r);
+      else if (kind === 'file') have.add(r);
+      else linked.push(r);
     }
   };
-  try { walk(''); } catch { return { ...out, version, detail: '폴더를 읽지 못함' }; }
+  try {
+    if (plainEntry(dir) !== 'dir') return { ...out, version, detail: '부품 폴더가 평범한 폴더가 아님(링크 · 연결 폴더)' };
+    walk('');
+  } catch { return { ...out, version, detail: '폴더를 읽지 못함' }; }
+  if (linked.length) return { ...out, version, added: linked, detail: `링크 · 연결 폴더가 끼어 있음(평범한 파일만 받는다): ${linked.slice(0, 5).join(', ')}` };
   have.delete(DOCTOR_MANIFEST);
   const missing = []; const changed = []; const added = [];
   for (const [rel, hash] of want) {

@@ -356,6 +356,64 @@ test('T4 부품 검증기: 꼭 있어야 할 파일 · 지문 목록의 모든 �
   assert.equal((await verify()).ok, false, '폴더 밖을 가리키는 목록');
 });
 
+// 2026-11-28 코드 검토(고치면 좋음): 목록의 파일을 바깥 파일을 가리키는 링크로 바꿔 놓아도 내용 지문이 같아 통과했다.
+test('T4 부품 검증기: 평범한 파일만 받는다 — 목록의 파일 · 폴더를 링크나 연결 폴더(junction)로 바꿔 놓으면 내용이 같아도 실패', async (t) => {
+  const root = path.join(tmp, 'links-root');
+  fs.mkdirSync(path.join(root, 'x'), { recursive: true });
+  const placed = path.join(root, 'x', 'iris-doctor');
+  const outside = path.join(tmp, 'links-outside');
+  fs.cpSync(COPY, outside, { recursive: true });           // 내용이 똑같은 바깥 사본
+  const verify = realDoctorVerifier(root, 'x/iris-doctor');
+  const fresh = () => { fs.rmSync(placed, { recursive: true, force: true }); fs.cpSync(COPY, placed, { recursive: true }); };
+  let tried = 0;
+
+  // ① 폴더 하나를 연결 폴더(junction)로 — 권한이 없어도 만들 수 있다
+  fresh();
+  fs.rmSync(path.join(placed, 'guide'), { recursive: true });
+  let junctionOk = true;
+  try { fs.symlinkSync(path.join(outside, 'guide'), path.join(placed, 'guide'), 'junction'); } catch { junctionOk = false; }
+  if (junctionOk) {
+    tried += 1;
+    assert.ok(fs.readFileSync(path.join(placed, 'guide', 'cannot-start.ko.txt')).equals(fs.readFileSync(path.join(COPY, 'guide', 'cannot-start.ko.txt'))), '링크를 따라가면 내용은 같다');
+    const r = await verify();
+    assert.equal(r.ok, false, '연결 폴더를 따라가 통과시키면 안 된다');
+    assert.match(r.detail, /링크 · 연결 폴더|없음/);
+    assert.equal(unpack.doctorBundleCheck(fs, placed).ok, false);
+    fs.rmSync(path.join(placed, 'guide'), { recursive: true, force: true });   // 연결만 끊는다(바깥 사본은 그대로)
+    assert.ok(fs.existsSync(path.join(outside, 'guide', 'cannot-start.ko.txt')), '바깥 사본은 건드리지 않았다');
+  }
+
+  // ② 목록의 파일 하나를 파일 링크로 — 윈도우에서는 권한(개발자 모드 · 관리자)이 있어야 만들 수 있다
+  fresh();
+  fs.rmSync(path.join(placed, 'lib', 'report.mjs'));
+  let fileLinkOk = true;
+  try { fs.symlinkSync(path.join(outside, 'lib', 'report.mjs'), path.join(placed, 'lib', 'report.mjs'), 'file'); } catch { fileLinkOk = false; }
+  if (fileLinkOk) {
+    tried += 1;
+    assert.equal(sha(fs.readFileSync(path.join(placed, 'lib', 'report.mjs'))), readManifest().files.find((f) => f.path === 'lib/report.mjs').sha256, '링크를 따라가면 지문이 맞는다');
+    const r = await verify();
+    assert.equal(r.ok, false, '파일 링크를 따라가 통과시키면 안 된다');
+    assert.ok(r.detail.includes('lib/report.mjs'), r.detail);
+  }
+
+  // ③ 부품 폴더 자체가 연결 폴더
+  fs.rmSync(placed, { recursive: true, force: true });
+  let rootLinkOk = true;
+  try { fs.symlinkSync(outside, placed, 'junction'); } catch { rootLinkOk = false; }
+  if (rootLinkOk) {
+    tried += 1;
+    const r = await verify();
+    assert.equal(r.ok, false, '부품 폴더가 다른 곳을 가리키는 연결이면 실패');
+    fs.rmSync(placed, { recursive: true, force: true });
+    assert.ok(fs.existsSync(path.join(outside, 'iris-doctor.mjs')), '바깥 사본은 건드리지 않았다');
+  }
+  if (tried === 0) return t.skip('이 PC 에서는 링크도 연결 폴더도 만들 수 없다(권한) — 링크 거절을 시험하지 못함');
+  if (!fileLinkOk) t.diagnostic('파일 심볼릭 링크는 권한이 없어 만들지 못했다 — 연결 폴더(junction)로만 확인');
+  // 평범한 사본은 여전히 통과한다
+  fresh();
+  assert.equal((await verify()).ok, true);
+});
+
 test('T4 풀기: 묶음이 제자리에 바이트 그대로 놓이고 검증을 통과한다 · 다시 돌리면 읽기만 한다(파일 · 시각 · 상태 기록 모두 그대로 — "두 번 실행 변경 0")', async () => {
   const built = await zipCopy('place');
   const ctx = makeCtx('place', built);
