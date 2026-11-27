@@ -548,7 +548,12 @@ function Test-DoctorTreating([string]$root) {
   if (-not $j.PSObject.Properties['at'] -or -not [double]::TryParse(([string]$j.at), $num, $inv, [ref]$at)) { return $false }
   $epoch = New-Object DateTime(1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc))
   $nowMs = ([DateTime]::UtcNow - $epoch).TotalMilliseconds
-  return (($nowMs - $at) -lt $script:DoctorTreatAbandonMs)
+  # Live = the heartbeat is within 20 minutes of now, in EITHER direction. A heartbeat from the
+  # future (the clock was set back, or the file is damaged) would otherwise count as live for as
+  # long as some process has that PID -- and refuse the uninstall forever. A small step back of
+  # the clock is still tolerated; beyond the window the lock is stale like any other.
+  $age = $nowMs - $at
+  return (($age -lt $script:DoctorTreatAbandonMs) -and ($age -gt (-1 * $script:DoctorTreatAbandonMs)))
 }
 
 # The Doctor start file named by a shortcut's arguments, when they have exactly the shape the

@@ -862,6 +862,21 @@ test('doctor is treating (a live treat.lock): refused -- nothing is deleted, mov
     fs.writeFileSync(lock, lockBody(doctor.pid, Date.now() - 21 * 60_000));
     r = runUninstall(sc, ['-Root', root, '-DryRun', ...doctorOpts(sc)]);
     assert.equal(r.json.status, 'dry-run', why(r));
+    // a heartbeat from the FUTURE (clock set back, damaged file) must not refuse forever while some
+    // process has that PID (2026-11-28 code review): beyond the same 20 minutes it is stale ...
+    for (const ahead of [21 * 60_000, 365 * 86400_000]) {
+      fs.writeFileSync(lock, lockBody(doctor.pid, Date.now() + ahead));
+      r = runUninstall(sc, ['-Root', root, '-DryRun', ...doctorOpts(sc)]);
+      assert.equal(r.json.status, 'dry-run', `heartbeat ${ahead} ms ahead: ${why(r)}`);
+    }
+    // ... while a clock that stepped back a little still protects a running treatment
+    fs.writeFileSync(lock, lockBody(doctor.pid, Date.now() + 2 * 60_000));
+    r = runUninstall(sc, ['-Root', root, '-DryRun', ...doctorOpts(sc)]);
+    assert.equal(r.json.status, 'refused', why(r));
+    // and a heartbeat that is not a number at all is not live
+    fs.writeFileSync(lock, JSON.stringify({ id: 'x', pid: doctor.pid, at: 'soon' }));
+    r = runUninstall(sc, ['-Root', root, '-DryRun', ...doctorOpts(sc)]);
+    assert.equal(r.json.status, 'dry-run', why(r));
     fs.writeFileSync(lock, '{ half written');
     const old = new Date(Date.now() - 5 * 60_000);
     fs.utimesSync(lock, old, old);
