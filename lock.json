@@ -393,6 +393,15 @@
       "license": "MIT",
       "note": "로그인 열쇠 만료 감시·1년 열쇠 발급 도구(status.mjs·longkey.mjs·lib.mjs + 시험). IRIS 창(Face paths.mjs authDir() = _agent/shared/tools/iris-auth)이 찾으면 설정 → 계정·보안 「로그인 열쇠」 절·만료 3일 전 알림·「1년 열쇠 받기」가 켜진다. 2.0.53 전에는 개발 PC 에만 있어 설치 PC 에서 그 절이 통째로 없었다(2026-11-02 사용자 신고). 원본은 개발 PC 의 _agent/claude/tools/iris-auth 이며, 실측 계정 이름을 뺀 사본을 저장소 안에 두고 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다). 예약 작업용 check-hidden.vbs 는 싣지 않는다 — 알림은 IRIS 창 데몬이 30분마다 부른다."
     },
+    "iris-doctor": {
+      "kind": "dir",
+      "source": "payload-src/tools/iris-doctor",
+      "file": "tools/iris-doctor.zip",
+      "dest": "_agent/shared/tools/iris-doctor",
+      "asciiRequired": true,
+      "license": "MIT",
+      "note": "IRIS Doctor — IRIS 가 먹통일 때 부르는 프로그램(검진 · 계정 연결 · 치료). 시작 파일 「IRIS Doctor.cmd」 → 옆 폴더의 동봉 node(..\\node\\node.exe) → iris-doctor.mjs. IRIS 창(Face daemon\\paths.mjs)과 Doctor 자신(lib\\context.mjs)이 _agent/shared/tools/iris-doctor 를 찾는다. 원본은 개발 PC 의 Doctor 저장소이고, 그 저장소의 묶는 도구(tools/pack.mjs)가 만든 묶음을 바이트 그대로 저장소 안에 두고 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다 · 시험과 지침은 싣지 않는다). 묶음 안의 manifest.json 이 파일마다 sha256 을 들고 있고 Doctor 가 시작할 때마다 자기 파일과 견주므로, 이 부품에는 include · exclude · redact 를 쓰지 않는다(바이트가 달라지면 Doctor 가 그 실행에서 치료를 시작하지 않는다) — 사본을 고칠 때는 원본에서 고쳐 다시 묶어 통째로 바꾼다(payload-src\\tools\\COPY-NOTES.md). asciiRequired = 부품 안 .ps1 둘(시작 도우미 · 프로세스 묶음)."
+    },
     "ontology": {
       "kind": "dir",
       "source": "C:/IRIS/_ontology",

@@ -4,3 +4,6 @@
 # 부품 잠금 대상 파일은 바이트가 곧 정체성이다(lock.json 이 SHA-256 을 들고 있다).
 # git 이 줄끝을 건드리면 지문이 바뀌므로 어떤 변환도 하지 않는다.
 payload-src/manifests/** -text
+# IRIS Doctor 묶음도 같다: 묶음 안 manifest.json 이 파일마다 SHA-256 을 들고 있고, Doctor 가 시작할 때마다
+# 자기 파일과 견준다(다르면 그 실행에서는 치료를 시작하지 않는다). 위의 .cmd · .ps1 줄끝 규칙보다 뒤에 적어야 이긴다.
+payload-src/tools/iris-doctor/** -text

@@ -1,0 +1,171 @@
+{
+  "name": "iris-doctor",
+  "version": "0.2.0",
+  "files": [
+    {
+      "path": "IRIS Doctor.cmd",
+      "sha256": "67f65bb543758efd06bd3c02277adef6e8b623045a310f3da598df34035f3a6f",
+      "size": 6231
+    },
+    {
+      "path": "guide/cannot-start.ko.txt",
+      "sha256": "b31f65892fbf93312a1a505d506056ecc86043470cf44fb1a834a7a8d13845c5",
+      "size": 914
+    },
+    {
+      "path": "guide/stopped.ko.txt",
+      "sha256": "71a7f6d351daa672dac4c61c4eb05c3d78b5f865b099e0cf5349001398f1facb",
+      "size": 450
+    },
+    {
+      "path": "iris-doctor.mjs",
+      "sha256": "679ae88fba11ccc27ea4dab42b4f5ff6ea8660b9300698abaeda07e4583c5080",
+      "size": 11140
+    },
+    {
+      "path": "lib/checks/network.mjs",
+      "sha256": "dfacadd15cb0684ac247b02766b818efafcbc9a4f48ff7a6c6c35807df9179e5",
+      "size": 3813
+    },
+    {
+      "path": "lib/checks/relay.mjs",
+      "sha256": "6847b9c822c82f38e5c6f96f93c87b65416af909aa9326464214e17459ea24bc",
+      "size": 12487
+    },
+    {
+      "path": "lib/checks/system.mjs",
+      "sha256": "53f02844606e265aee4976da508e4af708a940f269c4500ecac8b4c1a5db07df",
+      "size": 30695
+    },
+    {
+      "path": "lib/commands.mjs",
+      "sha256": "add233829131aa13c676a781b84d4807b59122df9a2c18a2a993f3c6df6ec45d",
+      "size": 17490
+    },
+    {
+      "path": "lib/context.mjs",
+      "sha256": "181867fd4c946fc3534723aa0531566a6854ec2704dfa558cb922a89cf98ec01",
+      "size": 13204
+    },
+    {
+      "path": "lib/deadline.mjs",
+      "sha256": "c0098f90cfb7298b042204cb23b1885650d60c7f27aee2ecf5ccc537b96985dd",
+      "size": 4999
+    },
+    {
+      "path": "lib/diagnose.mjs",
+      "sha256": "b70235a25caea7c93c138439addd417ca1177e8fa64c6e17c60bfbfeffbc7ce1",
+      "size": 4153
+    },
+    {
+      "path": "lib/home.mjs",
+      "sha256": "f692f43478a84ce44e14dda7534cb821e10fd1f005e6cb217a35b6d7919c76bd",
+      "size": 13329
+    },
+    {
+      "path": "lib/integrity.mjs",
+      "sha256": "503b57656d6beb2215b2f38e6199e5baaed79f99a59ed3dfe372b78d3477b450",
+      "size": 9226
+    },
+    {
+      "path": "lib/journal.mjs",
+      "sha256": "b615d76b5a803b5fd4bc9d06ad8ff49acc233470085b8b74b44e8df3d754fa86",
+      "size": 4942
+    },
+    {
+      "path": "lib/launch.mjs",
+      "sha256": "9fcb65c46e0140773303a4b1472bf582638d4fb0cf66312ebe50bb528fba5ec7",
+      "size": 24787
+    },
+    {
+      "path": "lib/link.mjs",
+      "sha256": "2c398f3b295a1978d631ce6e35a927bc2335b3cbb66105f315886cb4c142852f",
+      "size": 20374
+    },
+    {
+      "path": "lib/lock.mjs",
+      "sha256": "cb5f70348d920189e9e4e0fd5e864272843070698dab6691ed662fc1db312f2e",
+      "size": 3274
+    },
+    {
+      "path": "lib/open.mjs",
+      "sha256": "0661ab91139461751fc1e1fcc83dac0f9c8947757136ff3a786cb8991482aefb",
+      "size": 4629
+    },
+    {
+      "path": "lib/plain.mjs",
+      "sha256": "de7711ba5cb16b1c219d23e22604d4a0121fcfeb4043c0fec7e132d1502776fe",
+      "size": 18242
+    },
+    {
+      "path": "lib/report.mjs",
+      "sha256": "617b9f910e9077a32af9b58905d222052fcf84884b47da955fbd8ac9a23c2456",
+      "size": 6850
+    },
+    {
+      "path": "lib/session.mjs",
+      "sha256": "640759ca20352818bb5bbd89e67abaf6fe268dc562aa3a92a845f49f53f11804",
+      "size": 17663
+    },
+    {
+      "path": "lib/start-check.ps1",
+      "sha256": "c803118a50e95087478761c7c2d0cef216182848da247ad575a31ef1d93b8aa9",
+      "size": 3654
+    },
+    {
+      "path": "lib/treat/agent.mjs",
+      "sha256": "c30826892db88650725bc40c7b28e279896dc6364ceafd51cd0948521cbb5bd1",
+      "size": 19835
+    },
+    {
+      "path": "lib/treat/bundle.mjs",
+      "sha256": "e7245a9004ea432fdc1a31427f5210d4559157a3dde1afb877b7dc143253457c",
+      "size": 3672
+    },
+    {
+      "path": "lib/treat/flow.mjs",
+      "sha256": "fca7d19c8a520938b16714af11cede9ae1ec82cf85ae3cd4db84a8cae79a644e",
+      "size": 42241
+    },
+    {
+      "path": "lib/treat/guard-hook.mjs",
+      "sha256": "6b752e38943f7c00258c158abd128654ffbd6a2204da65f0defe006e0fb890a1",
+      "size": 16915
+    },
+    {
+      "path": "lib/treat/job-keeper.ps1",
+      "sha256": "80f30b700fd5e1fd4315284a397475f1a088856750f28ab6aa661e795e1bbe8f",
+      "size": 4428
+    },
+    {
+      "path": "lib/treat/prescriptions.mjs",
+      "sha256": "8f4a8a2a02952ba933db8b33853188c5c90f20f4e0c6920d457ff124e400063b",
+      "size": 16780
+    },
+    {
+      "path": "lib/treat/record.mjs",
+      "sha256": "7bffdceb6adca5e337e538fabaa70e00338b7a97af9c50f63cfbf7764764305b",
+      "size": 4996
+    },
+    {
+      "path": "lib/treat/restore.mjs",
+      "sha256": "2c28f5dbc1da8a1288d8fd8cf94d1e811e142797cc0018ca0df0c81aa4301ec2",
+      "size": 11669
+    },
+    {
+      "path": "lib/treat/verdict.mjs",
+      "sha256": "e172a6e0b3537fd2c2a487102c57981b941a250e6f7af7c1f6ee7cac2c634ee7",
+      "size": 4418
+    },
+    {
+      "path": "lib/trust.mjs",
+      "sha256": "d95ffc9f14db6537629ef3fec2b9387983a85f5c1b9de20da3c29f1ece587a42",
+      "size": 3591
+    },
+    {
+      "path": "lib/worker.mjs",
+      "sha256": "6992aac35c205295fd1303cf149598aea0564932f42d92be0587a5dda0c7b456",
+      "size": 1017
+    }
+  ]
+}

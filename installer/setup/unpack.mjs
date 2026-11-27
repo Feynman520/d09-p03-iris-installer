@@ -36,6 +36,7 @@
 //   · 두 번 돌리면 아무것도 쓰지 않는다(`_agent\setup\unpack-state.json` 대조).
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { extractZip, listArchive } from '../../lib/zip.mjs';
 import { StageError } from '../lib/errors.mjs';
@@ -92,6 +93,8 @@ export const UNPACK_ORDER = [
   'node', 'python', 'pyyaml', 'uv', 'age', 'git',
   // 에이전트·중계기·앱
   'codex', 'teamclaude', 'manage', 'dash', 'face', 'messenger', 'updater', 'mcp-relay', 'iris-auth',
+  // IRIS Doctor(2.0.66): 동봉 node 로 돌고(옆 폴더 `..\node`) 창 · 중계기 부품을 검진하므로 그것들 뒤에 놓는다.
+  'iris-doctor',
   // 도구
   'superpowers', 'self-improve', 'playwright-mcp', 'ui-ux-pro-max',
   'hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation',
@@ -121,6 +124,12 @@ export const UNPACK_ORDER = [
 // after:
 //   'hoist-wheel-scripts'  바퀴(.whl) 안 `*.data\scripts\*.exe` 를 dest 바로 밑으로
 //                          한 벌 더 복사한다(uv.exe 경로를 판마다 예측 가능하게).
+//
+// intact (선택, 부품 하나에만 건다):
+//   'manifest'  그 폴더 안의 지문 목록(manifest.json)과 놓인 파일이 **전부 맞을 때만** "이미 놓였다"로 본다
+//               (doctorBundleCheck). 다른 통째 부품은 폴더가 있으면 건너뛰지만, 이 칸을 건 부품은 같은 판이어도
+//               파일 하나가 바뀌었거나 · 없어졌거나 · 낯선 파일이 끼었으면 다시 놓는다(옛 사본은 `<dest>.prev`).
+//               맞으면 **읽기만 한다** — 두 번 돌려도 아무것도 쓰지 않는다.
 export const V2_LAYOUT = {
   node: { kind: 'archive', strip: 1, mode: 'slot' },
   python: { kind: 'archive', strip: 1, mode: 'slot' },
@@ -148,6 +157,11 @@ export const V2_LAYOUT = {
   'mcp-relay': { kind: 'archive', strip: 0, mode: 'slot' },
   // 로그인 열쇠 감시(2.0.53): IRIS 창이 `_agent\shared\tools\iris-auth` 를 찾으면 계정·보안 「로그인 열쇠」 절이 켜진다.
   'iris-auth': { kind: 'archive', strip: 0, mode: 'slot' },
+  // IRIS Doctor(2.0.66): IRIS 가 먹통일 때 부르는 프로그램. IRIS 창(daemon\paths.mjs)과 Doctor 자신(lib\context.mjs)이
+  // `_agent\shared\tools\iris-doctor` 를 찾는다. Doctor 는 시작할 때 자기 파일을 지문 목록과 견줘, 한 바이트라도 다르면 그 실행에서는
+  // 치료를 시작하지 않는다 — 그래서 이 부품만 `intact: 'manifest'` 로 "깨졌으면 같은 판이어도 다시 놓는다"(6-1).
+  // Doctor 의 집(`_agent\doctor` — 열쇠 · 진료 기록)은 이 폴더 밖이라 부품을 바꿔 놓아도 딸려 가지 않는다(설치기는 그 집에 쓰지 않는다).
+  'iris-doctor': { kind: 'archive', strip: 0, mode: 'slot', intact: 'manifest' },
   superpowers: { kind: 'archive', strip: 0, mode: 'slot' },
   'self-improve': { kind: 'archive', strip: 0, mode: 'slot' },
   'playwright-mcp': { kind: 'archive', strip: 0, mode: 'slot' },
@@ -233,6 +247,70 @@ function writeState(fs, root, state) {
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   fs.renameSync(tmp, file);
+}
+
+// ---------------------------------------------------------------------------
+// IRIS Doctor 묶음의 온전함(2.0.66)
+// ---------------------------------------------------------------------------
+
+// 이 가운데 하나라도 없으면 Doctor 가 뜨지 못한다: 실행 입구 · 시작 파일(바로가기가 여는 것) · 차림표 · 시작 파일의 도우미 ·
+// node 를 못 찾았을 때 보이는 고정 안내.
+export const DOCTOR_REQUIRED = Object.freeze([
+  'iris-doctor.mjs', 'IRIS Doctor.cmd', 'lib/session.mjs', 'lib/start-check.ps1', 'guide/cannot-start.ko.txt',
+]);
+const DOCTOR_MANIFEST = 'manifest.json';
+
+/**
+ * Doctor 묶음 폴더가 지문 목록(manifest.json)과 맞는가 — **읽기만 한다**(아무것도 쓰지 않는다).
+ *   ① 꼭 있어야 할 파일이 있다(목록에도 들어 있다) ② 목록의 모든 파일이 있고 sha256 이 같다 ③ 목록에 없는 파일이 없다(목록 자신 제외).
+ * Doctor 가 시작할 때 하는 대조(그쪽 lib\integrity.mjs checkShipped)와 같은 규칙을 설치기 쪽에 따로 둔다 —
+ * 설치기는 부품의 코드를 불러오지 않는다(깨졌을 수 있는 것을 실행해 그것이 깨졌는지 묻지 않는다).
+ * → { ok, detail, missing: […], changed: […], added: […], version }
+ */
+export function doctorBundleCheck(fs, dir) {
+  const out = { ok: false, detail: '', missing: [], changed: [], added: [], version: null };
+  const abs = (rel) => path.join(dir, ...String(rel).split('/'));
+  const gone = DOCTOR_REQUIRED.filter((f) => !fs.existsSync(abs(f)));
+  if (gone.length) return { ...out, missing: gone, detail: `없음: ${gone.join(', ')}` };
+  let listed;
+  try { listed = JSON.parse(fs.readFileSync(path.join(dir, DOCTOR_MANIFEST), 'utf8')); } catch { return { ...out, detail: `${DOCTOR_MANIFEST} 을 읽지 못함` }; }
+  const files = Array.isArray(listed?.files) ? listed.files : null;
+  // 목록의 경로는 폴더 안의 것만: '/' 로 나눈 평범한 이름들(.. · 드라이브 · 맨 앞 '/' · 역슬래시는 받지 않는다)
+  const plain = (p) => typeof p === 'string' && p.length > 0 && p.length < 300 && !/[\\:*?"<>|]/.test(p) && p.split('/').every((s) => s && s !== '.' && s !== '..');
+  if (!files || files.length === 0 || !files.every((f) => f && plain(f.path) && /^[0-9a-f]{64}$/.test(String(f.sha256)))) return { ...out, detail: `${DOCTOR_MANIFEST} 의 모양이 다름` };
+  const want = new Map(files.map((f) => [f.path, String(f.sha256)]));
+  if (want.size !== files.length) return { ...out, detail: `${DOCTOR_MANIFEST} 에 같은 파일이 두 번 적힘` };
+  const unlisted = DOCTOR_REQUIRED.filter((f) => !want.has(f));
+  if (unlisted.length) return { ...out, missing: unlisted, detail: `${DOCTOR_MANIFEST} 에 꼭 있어야 할 파일이 빠짐: ${unlisted.join(', ')}` };
+  const version = typeof listed.version === 'string' ? listed.version : null;
+  // 지금 놓인 파일 전부(목록 자신만 빼고). 파일도 폴더도 아닌 것(링크 등)은 낯선 것으로 친다.
+  const have = new Set();
+  const walk = (rel) => {
+    for (const e of fs.readdirSync(rel ? abs(rel) : dir, { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(r); else have.add(r);
+    }
+  };
+  try { walk(''); } catch { return { ...out, version, detail: '폴더를 읽지 못함' }; }
+  have.delete(DOCTOR_MANIFEST);
+  const missing = []; const changed = []; const added = [];
+  for (const [rel, hash] of want) {
+    if (!have.has(rel)) { missing.push(rel); continue; }
+    try { if (createHash('sha256').update(fs.readFileSync(abs(rel))).digest('hex') !== hash) changed.push(rel); } catch { changed.push(rel); }
+  }
+  for (const rel of have) if (!want.has(rel)) added.push(rel);
+  const ok = missing.length === 0 && changed.length === 0 && added.length === 0;
+  const names = [...changed, ...missing, ...added].slice(0, 5).join(', ');
+  const detail = ok
+    ? `파일 ${want.size}개 지문 일치(Doctor ${version ?? '판 모름'})`
+    : `지문 목록과 다름 — 바뀜 ${changed.length} · 없어짐 ${missing.length} · 낯선 파일 ${added.length}: ${names}`;
+  return { ok, detail, missing, changed, added, version };
+}
+
+// 배치표의 `intact` 칸: 그 부품이 "이미 놓였다"고 봐도 되는가(읽기만 한다). 칸이 없는 부품은 늘 참(예전 그대로).
+function stillIntact(fs, layout, slot) {
+  if (layout?.intact !== 'manifest') return true;
+  try { return doctorBundleCheck(fs, slot).ok; } catch { return false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +481,12 @@ export function v2Verifiers(ctx) {
     const ok = fs.readFileSync(path.join(d, 'status.mjs'), 'utf8').includes('export function gather');
     return { ok, detail: ok ? need.join(',') : 'status.mjs 내용이 열쇠 점검 도구가 아님' };
   };
+  V['iris-doctor'] = async () => {
+    // 압축 안 파일 수만 세는 기본 검증보다 강하게: 꼭 있어야 할 파일 + 지문 목록의 모든 파일 sha256 + 목록에 없는 파일 0.
+    // Doctor 를 실행해 보지는 않는다(설치 검사 · 연습 실행에서 Doctor 의 실제 호출 0).
+    const r = doctorBundleCheck(fs, dest('iris-doctor'));
+    return { ok: r.ok, detail: r.detail };
+  };
   V['document-mcp-wheelhouse'] = async () => {
     const d = dest('document-mcp-wheelhouse');
     let names = [];
@@ -525,7 +609,7 @@ export async function run(ctx) {
     const slot = layout.slot ? path.join(dest, layout.slot) : dest;
     const prior = state.parts[partId];
     const present = ownedFiles(layout, dest) ? ownedFiles(layout, dest).every((f) => fs.existsSync(f)) : fs.existsSync(slot);
-    return !(prior?.verified && sameIdentity(prior.identity, partIdentity(ctx, partId)) && present);
+    return !(prior?.verified && sameIdentity(prior.identity, partIdentity(ctx, partId)) && present && stillIntact(fs, layout, slot));
   });
   const procs = ctx.processes ?? {
     list: (r) => listHolders(r, { run: ctx.run }),
@@ -564,7 +648,9 @@ export async function run(ctx) {
     const presence = layout.kind === 'file'
       ? [path.join(dest, path.basename(String(lockField(ctx, partId, 'file') ?? '')))]
       : (owned ?? [slot]);
-    if (prior?.verified && sameIdentity(prior.identity, identity) && presence.every((p) => fs.existsSync(p))) {
+    // `intact` 를 건 부품(Doctor, 2.0.66)은 폴더가 있는 것으로 모자라다: 지문 목록 대조가 맞아야 건너뛴다(맞으면 읽기만 한다).
+    // 같은 판을 다시 놓는 것이므로 깨진 사본은 여느 통째 부품처럼 `<dest>.prev` 로 옮겨 남긴다.
+    if (prior?.verified && sameIdentity(prior.identity, identity) && presence.every((p) => fs.existsSync(p)) && stillIntact(fs, layout, slot)) {
       recorded.skipped.push(partId);
       recorded.parts[partId] = { ...prior, skipped: true };
       progress({ done: i + 1, total: parts.length, label: partId });
