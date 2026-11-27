@@ -530,24 +530,81 @@ export function codexHookConfig(root) {
   };
 }
 
+// 훅 명령 한 줄을 낱말로 가른다. 따옴표 안은 빈칸이 있어도 한 덩이다.
+// 파워셸 꼴(2.0.55)은 `…script.py"; exit $LASTEXITCODE` 처럼 경로 뒤에 `;` 가 붙는다 — 떼고 본다.
+function commandTokens(command) {
+  const out = [];
+  for (const m of String(command ?? '').matchAll(/"([^"]*)"|(\S+)/g)) {
+    const t = (m[1] ?? m[2] ?? '').replace(/"/g, '').replace(/;+$/, '');
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+const HOOK_SCRIPT_EXT = /\.(ps1|py|cjs|js|mjs)$/i;
+const normPath = (p) => String(p ?? '').split('/').join('\\').toLowerCase();
+
+// 훅 하나가 부르는 스크립트의 경로(명령에 적힌 그대로). 없으면 null.
+function hookScriptPath(hook) {
+  return commandTokens(hook?.command).find((t) => HOOK_SCRIPT_EXT.test(t)) ?? null;
+}
+
 // 훅 항목이 어느 스크립트를 부르는지(파일 이름만).
 function hookScriptNames(entry) {
   return (entry?.hooks ?? [])
-    // 파워셸 꼴(2.0.55)은 `…script.py"; exit $LASTEXITCODE` 처럼 경로 뒤에 `;` 가 붙는다 — 떼고 본다.
-    .map((h) => path.basename(String(h?.command ?? '').replace(/"/g, '').split(/\s+/).map((t) => t.replace(/;+$/, '')).find((t) => /\.(ps1|py|cjs|js)$/i.test(t)) ?? ''))
+    .map((h) => path.basename(String(h?.command ?? '').replace(/"/g, '').split(/\s+/).map((t) => t.replace(/;+$/, '')).find((t) => HOOK_SCRIPT_EXT.test(t)) ?? ''))
     .filter(Boolean);
 }
 
+// 2.0.64 까지 등록해 온 훅 넷(일괄 종료 막기 · 경로 보호 · 신선도 점검 · 남은 배경 작업)은 지금까지처럼
+// **파일 이름**으로 알아본다 — 그 사람이 같은 이름의 자기 사본을 부르도록 돌려 둔 훅도 "이미 있음"으로
+// 존중해 온 동작을 바꾸지 않는다(시험이 묶음). 2.0.65 부터 더하는 훅은 이름이 흔할 수 있어
+// (`status.mjs` 처럼) 이름이 아니라 **IRIS 가 놓은 경로**로만 알아본다 — 아래 isSameOwnedScript.
+export const NAME_MATCHED_HOOKS = Object.freeze([...HOOK_SCRIPTS, 'check_fresh.py']);
+const isNameMatched = (name) => NAME_MATCHED_HOOKS.some((n) => n.toLowerCase() === String(name).toLowerCase());
+
+// `candidate`(이미 있는 훅의 스크립트 경로)가 `wanted`(우리가 놓는 스크립트 경로)와 **같은 IRIS 부품의 같은 파일**인가.
+//   · 경로가 글자 그대로 같으면 같다(대소문자 · 슬래시 방향 무시).
+//   · 둘 다 같은 설치기 소유 폴더 아래이고, 그 폴더 바로 밑 칸(부품 폴더)과 파일 이름이 같으면 같다
+//     — 부품 안에서 판 폴더가 바뀌어도(`<부품>\1.0\x.mjs` → `<부품>\1.1\x.mjs`) 옛 훅을 우리 것으로 알아보려고.
+// 그 사람이 다른 곳에 둔 같은 이름의 스크립트(`D:\내것\status.mjs`)는 같지 않다.
+export function isSameOwnedScript(root, candidate, wanted) {
+  const c = normPath(candidate);
+  const w = normPath(wanted);
+  if (!c || !w) return false;
+  if (c === w) return true;
+  if (!root) return false;
+  if (path.win32.basename(c) !== path.win32.basename(w)) return false;
+  for (const dir of installerOwnedDirs(root)) {
+    const base = `${normPath(dir).replace(/\\+$/, '')}\\`;
+    if (!c.startsWith(base) || !w.startsWith(base)) continue;
+    const head = (p) => p.slice(base.length).split('\\')[0];
+    return head(c) === head(w);
+  }
+  return false;
+}
+
+// 이미 있는 훅 하나(`h`)가 우리가 놓으려는 훅 하나(`w`)와 같은 스크립트를 부르나.
+function hookMatches(root, h, w) {
+  const wantedPath = hookScriptPath(w);
+  if (!wantedPath) return false;
+  const name = path.win32.basename(normPath(wantedPath));
+  const cmd = String(h?.command ?? '');
+  // 옛 훅 넷: 이름이 명령 어디에든 있으면 같은 훅(지금까지의 동작 그대로).
+  if (isNameMatched(name)) return cmd.toLowerCase().includes(name);
+  // 새 훅: 명령 안의 스크립트 낱말 가운데 IRIS 가 놓은 그 파일이 있어야 한다.
+  return commandTokens(cmd).some((t) => HOOK_SCRIPT_EXT.test(t) && isSameOwnedScript(root, t, wantedPath));
+}
+
 // 같은 스크립트를 부르는 훅이 이미 있는지(=우리 훅이 이미 등록됐는지) 본다.
-// 사람이 손으로 고친 경로·인자까지 같을 필요는 없다 — 스크립트 파일 이름이 같으면
-// "이미 있다"로 보고 (경로 갱신 말고는) 건드리지 않는다.
-function findHookEntry(list, entry) {
-  const marks = hookScriptNames(entry);
-  if (marks.length === 0) return null;
+// 옛 훅 넷은 사람이 손으로 고친 경로·인자까지 같을 필요는 없다 — 스크립트 파일 이름이 같으면
+// "이미 있다"로 보고 (경로 갱신 말고는) 건드리지 않는다. 새 훅은 IRIS 가 놓은 경로일 때만 "이미 있다".
+function findHookEntry(list, entry, root = null) {
+  const wanted = (entry?.hooks ?? []).filter((w) => hookScriptPath(w));
+  if (wanted.length === 0) return null;
   for (const existing of list) {
-    for (const h of existing.hooks ?? []) {
-      const cmd = String(h?.command ?? '');
-      if (marks.some((m) => cmd.toLowerCase().includes(m.toLowerCase()))) return existing;
+    for (const h of existing?.hooks ?? []) {
+      if (wanted.some((w) => hookMatches(root, h, w))) return existing;
     }
   }
   return null;
@@ -559,16 +616,19 @@ function findHookEntry(list, entry) {
 function updateOwnedHook(root, existing, wanted) {
   let changed = false;
   for (const w of wanted.hooks ?? []) {
-    const marks = hookScriptNames({ hooks: [w] });
-    if (marks.length === 0) continue;
+    if (!hookScriptPath(w)) continue;
     for (const h of existing.hooks ?? []) {
       const cmd = String(h?.command ?? '');
-      if (!marks.some((m) => cmd.toLowerCase().includes(m.toLowerCase()))) continue;
+      if (!hookMatches(root, h, w)) continue;
       if (!isInstallerOwnedPath(root, cmd)) continue; // 그 사람 사본 — 그대로
       // 2.0.55: 명령과 함께 실행 껍데기(shell)도 우리 값으로 — 옛 판 훅은 shell 이 없어 Git Bash 없는 PC 에서 깨졌다.
-      if (cmd === w.command && (w.shell === undefined || h.shell === w.shell)) continue;
+      // 2.0.65: 시간 제한(timeout)도 우리 값으로 — 판이 제한을 바꿔도 이미 깔린 PC 에는 옛 값이 남았다.
+      const sameShell = w.shell === undefined || h.shell === w.shell;
+      const sameTimeout = w.timeout === undefined || h.timeout === w.timeout;
+      if (cmd === w.command && sameShell && sameTimeout) continue;
       h.command = w.command;
       if (w.shell !== undefined) h.shell = w.shell;
+      if (w.timeout !== undefined) h.timeout = w.timeout;
       changed = true;
     }
   }
@@ -577,7 +637,8 @@ function updateOwnedHook(root, existing, wanted) {
 
 // hooks 블록에 우리 항목을 **더하기만** 한다(기존 항목은 순서까지 그대로).
 // 예외는 하나 — 위 updateOwnedHook 의 "우리 훅 경로 갱신".
-function mergeHooks(data, groups, added, prefix, root = null) {
+// (시험이 되풀이 적용을 직접 재려고 export 한다 — 설치 흐름은 아래 두 쓰기 함수로만 부른다.)
+export function mergeHooks(data, groups, added, prefix, root = null) {
   const hooks = objectAt(data, 'hooks');
   for (const [event, entries] of Object.entries(groups)) {
     if (!Array.isArray(hooks[event])) {
@@ -585,7 +646,7 @@ function mergeHooks(data, groups, added, prefix, root = null) {
       hooks[event] = [];
     }
     for (const entry of entries) {
-      const existing = findHookEntry(hooks[event], entry);
+      const existing = findHookEntry(hooks[event], entry, root);
       if (existing) {
         if (root && updateOwnedHook(root, existing, entry)) {
           added.push(`${prefix}${event}[${entry.matcher ?? '*'}](updated)`);
@@ -888,7 +949,7 @@ function writeClaudeSettings(ctx, { fs, root, recorded, note, log }) {
   const perms = seedClaudePermissions(root);
   const file = claudeSettingsPath(root);
   const groups = claudeHookGroups(root);
-  recorded.claude.hooks = Object.entries(groups).flatMap(([event, entries]) => entries.map((e) => `${event}:${e.matcher ?? '*'}`));
+  recorded.claude.hooks =Object.entries(groups).flatMap(([event, entries]) => entries.map((e) => `${event}:${e.matcher ?? '*'}`));
 
   const superEnv = lockField(ctx, 'superpowers', 'env') ?? { SUPERPOWERS_DISABLE_TELEMETRY: '1' };
 
