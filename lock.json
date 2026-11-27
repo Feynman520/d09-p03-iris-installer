@@ -141,12 +141,12 @@
     "face": {
       "kind": "dir",
       "source": "../P01-아이리스 페이스(IRIS-Face) 〖Local App〗",
-      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "modules", "daemon/__pycache__", ".stack", "out"],
+      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "modules", "daemon/__pycache__", "daemon/agents/AGENTS.md", ".stack", "out"],
       "npmCi": true,
       "file": "face/iris-face.zip",
       "dest": "_agent/shared/tools/face",
       "license": "MIT",
-      "note": "판은 P01 package.json 에서 빌드 때 읽어 manifest 에 넣는다(손으로 적지 않는다)."
+      "note": "판은 P01 package.json 에서 빌드 때 읽어 manifest 에 넣는다(손으로 적지 않는다). exclude 에서 '/' 가 없는 이름은 맨 위 칸만 가린다(AGENTS.md = 뿌리의 것) -- 안쪽 파일은 경로 앞머리로 적는다. 2.0.65: daemon/agents/AGENTS.md(만드는 사람용 내부 지침 글)를 제품 묶음에서 뺀다."
     },
     "dash": {
       "kind": "dir",
