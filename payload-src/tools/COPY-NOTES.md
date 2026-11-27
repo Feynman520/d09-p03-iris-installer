@@ -33,3 +33,5 @@
 ## iris-auth 에서 옮긴 것
 
 옮긴 기능 변경(2.0.65): `lib.mjs` 항목의 `health` 칸 · `status.mjs` 의 `--skip-provider`(공급자 빼기)와 알림 기록 칸 분리(`notify` · `notify_skip_*`) · 상태 파일을 쓸 때 프로세스마다 다른 임시 파일 이름 · 시험 `tests\health.test.mjs` · `tests\skip-provider.test.mjs`.
+
+양쪽에 함께 넣은 기능 변경(2.0.66 — 이번에는 사본에서 만들어 원본에 같은 변경을 옮겼다. 두 `longkey.mjs` 는 이 변경 전에도 뒤에도 글자가 같다): `longkey.mjs --account <이름> --also-iris`(승인 한 번으로 받은 1년 열쇠를 중계기 계정 줄 + IRIS 창 세션용 파일 두 자리에 — 순서와 실패 처리는 그 파일 머리말) · 중계기 설정은 그 계정 한 줄만 바꾸고 바꿔 끼우기 직전에 다시 읽어 그 줄이 달라졌으면 포기(`writeAccountKey` — `--account` 만 준 예전 길도 이 함수를 쓴다) · 원래 파일의 들여쓰기와 끝 줄바꿈 유지 · 다시 읽기 부탁은 설정에 적힌 포트로(없으면 3456) · `IRIS_AUTH_RELOAD=0` 이면 부탁하지 않음 · 시험할 수 있게 `run(argv, deps)` 로 묶음 · 시험 `tests\also-iris.test.mjs`(예시 이름만 위 표대로 다르다).

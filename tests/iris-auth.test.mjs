@@ -86,7 +86,9 @@ test('사본의 자체 시험(판정 · 1년 열쇠 · health · 공급자 빼�
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT; // 시험 안에서 시험 실행기를 한 번 더 띄운다
   const files = fs.readdirSync(path.join(SRC, 'tests')).filter((f) => f.endsWith('.test.mjs')).sort();
-  assert.deepEqual(files, ['health.test.mjs', 'lib.test.mjs', 'longkey.test.mjs', 'skip-provider.test.mjs']);
+  // also-iris.test.mjs(2.0.66) = 두 자리 쓰기: 성공 · 300일 미만 · 한 자리 실패 · 쓰기 직전 대상 줄 바뀜 · 다른 줄 바이트 그대로.
+  // 가짜 열쇠 교환 + 임시 폴더에서만 돈다(실제 로그인 · 네트워크 0).
+  assert.deepEqual(files, ['also-iris.test.mjs', 'health.test.mjs', 'lib.test.mjs', 'longkey.test.mjs', 'skip-provider.test.mjs']);
   const r = spawnSync(process.execPath, ['--test', ...files.map((f) => path.join(SRC, 'tests', f))], { env, encoding: 'utf8', timeout: 120000, windowsHide: true });
   assert.equal(r.status, 0, `사본 시험 실패:\n${(r.stdout ?? '').slice(-2000)}\n${(r.stderr ?? '').slice(-1000)}`);
 });
@@ -205,4 +207,54 @@ test('--hook 은 상태 파일을 쓰지 않는다 — 없으면 만들지 않�
   assert.equal(runStatus(h, ['--json']).code, 0);
   assert.notEqual(fs.readFileSync(h.statusFile, 'utf8'), written);
   assert.deepEqual(readStatus(h).notify, { key: 'new-key', at: 999 }, '창의 점검은 자기 알림 기록을 이어 간다');
+});
+
+// ---------------------------------------------------------------------------
+// 2.0.66 — 1년 열쇠 두 자리 쓰기(`longkey.mjs --account <name> --also-iris`): 설치 화면의 권장 카드가 부르는 꼴 그대로
+// 프로그램으로 띄워 본다. 승인을 끝내지 않으므로(받는 창구를 두드리지 않는다) 열쇠 교환 요청은 한 번도 나가지 않는다.
+// ---------------------------------------------------------------------------
+function runLongKey(h, args) {
+  const r = spawnSync(process.execPath, [path.join(SRC, 'longkey.mjs'), ...args], {
+    env: { ...h.env, IRIS_AUTH_RELOAD: '0' }, encoding: 'utf8', timeout: 30000, windowsHide: true,
+  });
+  const line = (r.stdout ?? '').split('\n').filter((l) => l.startsWith('RESULT ')).pop() ?? null;
+  return { code: r.status, out: r.stdout ?? '', err: r.stderr ?? '', line, result: line ? JSON.parse(line.slice(7)) : null };
+}
+
+test('1년 열쇠 두 자리 쓰기: 승인이 없으면 어느 자리에도 쓰지 않고, RESULT 가 자리별 결과와 까닭을 싣는다(이름 · 열쇠 없음)', () => {
+  const h = makeHome('longkey-timeout');
+  const tc = h.env.TEAMCLAUDE_CONFIG;
+  const before = fs.readFileSync(tc);
+  const r = runLongKey(h, ['--account', 'a@localhost', '--also-iris', '--no-open', '--timeout', '1']);
+  assert.equal(r.code, 1, r.err);
+  assert.deepEqual(r.result, { ok: false, target: 'both', relay: 'skipped', iris: 'skipped', reason: 'timeout', error: '시간 초과(승인 없음)' });
+  assert.ok(fs.readFileSync(tc).equals(before), '중계기 설정은 한 바이트도 바뀌지 않는다');
+  assert.equal(fs.existsSync(h.env.IRIS_LONGKEY_FILE), false, 'IRIS 창 세션용 파일을 만들지 않는다');
+  assert.deepEqual(fs.readdirSync(path.dirname(tc)).sort(), ['teamclaude.auth-health.json', 'teamclaude.json'], '사본 · 임시 파일도 없다');
+
+  // 승인 주소: 받는 자리는 이 PC(localhost), 열쇠는 없다. 계정 이름은 주소의 귀띔 칸에만 있고 다른 줄에는 찍지 않는다.
+  const url = /https:\/\/claude\.ai\/oauth\/authorize\?\S+/.exec(r.out)?.[0];
+  assert.ok(url, '승인 주소를 표준 출력에 찍는다');
+  const u = new URL(url);
+  assert.match(u.searchParams.get('redirect_uri'), /^http:\/\/localhost:\d+\/callback$/);
+  assert.equal(u.searchParams.get('scope'), 'user:inference user:profile');
+  for (const k of ['access_token', 'refresh_token', 'token', 'code_verifier']) assert.equal(u.searchParams.get(k), null, `승인 주소에 ${k} 없음`);
+  assert.ok(!r.out.replace(url, '').includes('a@localhost'), '사람이 읽는 줄 · RESULT 에 계정 이름을 찍지 않는다');
+});
+
+test('1년 열쇠 두 자리 쓰기: --account 없이 --also-iris 만 주면 승인을 띄우기 전에 거절한다', () => {
+  const h = makeHome('longkey-usage');
+  const r = runLongKey(h, ['--also-iris', '--no-open', '--timeout', '1']);
+  assert.equal(r.code, 1);
+  assert.equal(r.result.ok, false);
+  assert.equal(r.result.reason, 'usage');
+  assert.ok(!/oauth\/authorize/.test(r.out), '승인 주소를 만들지 않는다');
+});
+
+test('1년 열쇠 도구의 머리말이 두 자리 쓰기의 순서와 실패 처리를 적어 둔다(되돌리지 않는다 · 반쪽은 미완)', () => {
+  const src = fs.readFileSync(path.join(SRC, 'longkey.mjs'), 'utf8');
+  assert.match(src, /--also-iris/);
+  assert.match(src, /① 중계기 계정 줄 → ② IRIS 창 세션용 파일/);
+  assert.match(src, /전체를 사본으로 되돌리지 않는다/);
+  assert.match(src, /"반쪽"은 고장이 아니라 미완/);
 });
