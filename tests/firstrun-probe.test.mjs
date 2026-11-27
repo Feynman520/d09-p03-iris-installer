@@ -32,6 +32,9 @@ const FAKE = path.join(REPO, 'tests', 'fixtures', 'firstrun-fake-cli.mjs');
 const LOCK = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
 const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 'iris-frp-'));
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// 이 시험 프로세스의 Job 추적기 — 도우미의 임시 · 홈 폴더도 시험 폴더 안에 둔다(처음 부를 때의 자리가 쓰인다).
+const helperDirsBefore = new Set(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('iris-frp-job-')));
+await getJobTracker({ home: path.join(tmp, 'job-helper-home') });
 after(async () => {
   // Job 을 다루던 도우미도 이 시험이 띄운 프로세스다 — 닫고, 끝난 것을 확인한다.
   const jobs = await getJobTracker().catch(() => null);
@@ -40,6 +43,8 @@ after(async () => {
   await closeJobTracker();
   assert.ok(!helper || !pidAlive(helper), 'Job 도우미가 남지 않는다');
   assert.ok(!last || last.ok, `시험이 끝날 때 Job 에 이 프로세스만 남는다: ${JSON.stringify(last?.left)}`);
+  const strayDirs = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('iris-frp-job-') && !helperDirsBefore.has(n));
+  assert.deepEqual(strayDirs, [], '도우미 폴더를 시험 폴더 밖(임시 폴더)에 남기지 않는다');
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 // 화면 판정을 보는 시험은 Job 추적기를 대역으로 바꿔 끼운다 — 그때 "끝났다"는 띄운 PID 가 죽었는가로만 정해진다.
@@ -626,7 +631,7 @@ test('startJobTracker: 이 스크립트가 죽은 것처럼 표준 입력이 그
   let helper = null;
   try {
     let captured = null;
-    const t = startJobTracker({ targetPid: target.pid, spawnFn: (...a) => { captured = spawn(...a); return captured; } });
+    const t = startJobTracker({ targetPid: target.pid, home: path.join(tmp, 'eof-helper-home'), spawnFn: (...a) => { captured = spawn(...a); return captured; } });
     helper = captured;
     assert.equal(await t.ready, true, t.reason);
     target.stdin.write('go\n');
