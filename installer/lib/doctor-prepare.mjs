@@ -21,16 +21,25 @@
 // 이 모듈은 **설치 폴더에 아무것도 쓰지 않는다** — `<설치 폴더>\_agent\doctor`(Doctor 의 집)에 쓰는 것은 Doctor 뿐이다.
 //
 // 실패 · 시간 초과에도 던지지 않는다. 제한 시간이 지나면 우리가 띄운 그 프로세스(와 그 자식)만 번호로 끝낸다.
+//
+// ── 마감은 하나다 ─────────────────────────────────────────────────────────
+// 부른 때부터 **돌려줄 때까지** DOCTOR_PREPARE_TIMEOUT_MS(20초) — 끝내기 시도와 그 확인을 기다리는 시간까지 그 안이다.
+//   0초 ──────── 15초: Doctor 가 일할 시간 ──────── 15초: 끝내기 시작(비동기) ──── 늦어도 20초: 돌려준다
+// 끝내기(taskkill)는 **기다리지 않고** 띄운다 — 동기로 부르면 그동안 설치기 서버가 요청을 하나도 받지 못한다.
+// 20초가 되면 끝났다는 신호가 없어도 "아직 살아 있는지"만 적어 돌려준다. 부른 쪽은 이 호출을 기다린 뒤에 IRIS 창을
+// 열므로(업데이트의 끝) · 응답을 보내므로(온라인 묶음의 끝), **이 호출이 그것을 늦출 수 있는 최대가 20초다.**
+// 보통은 node 하나가 떴다가 파일 몇 개를 보고 끝나는 시간이다.
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { isOffline } from '../../lib/net.mjs';
 import { nodeExeFor, doctorDirFor } from './handoff.mjs';
 
 export const DOCTOR_ENTRY = 'iris-doctor.mjs';
 export const DOCTOR_PREPARE_ARGS = Object.freeze(['link', 'auto']);
-export const DOCTOR_PREPARE_TIMEOUT_MS = 20_000;
+export const DOCTOR_PREPARE_TIMEOUT_MS = 20_000;      // 전체 마감: 부른 때부터 돌려줄 때까지
+export const DOCTOR_PREPARE_KILL_GRACE_MS = 5_000;    // 그 가운데 끝내기와 그 확인에 남겨 두는 몫(일할 시간 = 마감 - 이 값)
 const MAX_OUT = 64 * 1024;
 
 export function doctorEntryFor(root) { return path.join(doctorDirFor(root), DOCTOR_ENTRY); }
@@ -68,22 +77,30 @@ function parseAnswer(text) {
   return null;
 }
 
-// 우리가 띄운 그 번호와 그 자식만 끝낸다(이름으로 끝내지 않는다).
+// 우리가 띄운 그 번호와 그 자식만 끝낸다(이름으로 끝내지 않는다). **기다리지 않는다** — 띄우기만 하고 돌아온다
+// (끝내는 프로그램이 끝났는지는 돌려준 것의 'close' 로 안다). 설치기 서버의 이벤트 루프를 세우지 않기 위해서다.
 function defaultKillTree(pid, env = process.env) {
-  if (!Number.isInteger(pid) || pid <= 4) return;
+  if (!Number.isInteger(pid) || pid <= 4) return null;
   const taskkill = path.join(env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
-  try { spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 10_000, stdio: 'ignore' }); } catch { /* 아래 kill 이 남는다 */ }
+  try {
+    const k = spawn(taskkill, ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    k.on('error', () => { /* 아래 kill 이 남는다 */ });
+    k.unref?.(); // 끝내는 프로그램이 설치기를 붙잡아 두지 않는다
+    return k;
+  } catch { return null; }
 }
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e?.code === 'EPERM'; } };
 
 /**
- * prepareDoctorAccounts({ root, noUserEnv, env, timeoutMs, spawnFn, killTree, fs, onSpawn })
+ * prepareDoctorAccounts({ root, noUserEnv, env, timeoutMs, killGraceMs, spawnFn, killTree, fs, onSpawn })
  *   → { called:false, why: 'no-root' | 'rehearsal' | 'offline' | 'no-doctor' | 'no-node' }
  *   | { called:true, ok, exit, timedOut, alive, ms, claude: { linked, why } | null, codex: { prepared, why } | null }
  * 절대 던지지 않는다. 설치 폴더에 아무것도 쓰지 않는다.
+ * timeoutMs = 전체 마감(돌려줄 때까지). 그 안의 끝 killGraceMs 는 끝내기 몫이다(마감의 절반을 넘지 않는다).
+ * killTree(pid, env) 는 기다리지 않고 돌아와야 한다(끝남을 알리려면 'close' 를 내는 것이나 프로미스를 돌려준다).
  */
 export async function prepareDoctorAccounts({
-  root, noUserEnv = false, env = process.env, timeoutMs = DOCTOR_PREPARE_TIMEOUT_MS,
+  root, noUserEnv = false, env = process.env, timeoutMs = DOCTOR_PREPARE_TIMEOUT_MS, killGraceMs = DOCTOR_PREPARE_KILL_GRACE_MS,
   spawnFn = spawn, killTree = defaultKillTree, fs = nodeFs, onSpawn = null,
 } = {}) {
   try {
@@ -97,22 +114,34 @@ export async function prepareDoctorAccounts({
 
     const started = Date.now();
     const base = { called: true, ok: false, exit: null, timedOut: false, alive: false, ms: 0, claude: null, codex: null };
+    const total = Math.max(2, Number.isFinite(timeoutMs) ? timeoutMs : DOCTOR_PREPARE_TIMEOUT_MS);
+    const grace = Math.max(1, Math.min(Number.isFinite(killGraceMs) ? killGraceMs : DOCTOR_PREPARE_KILL_GRACE_MS, Math.floor(total / 2)));
     return await new Promise((resolve) => {
-      let done = false; let child = null; let size = 0; let timedOut = false; let giveUp = null;
+      let done = false; let child = null; let size = 0; let timedOut = false;
       const chunks = [];
+      const directKill = () => { try { child?.kill(); } catch { /* 이미 끝남 */ } };
       const finish = (extra) => {
         if (done) return; done = true;
-        clearTimeout(timer); clearTimeout(giveUp);
+        clearTimeout(killTimer); clearTimeout(deadline);
         resolve({ ...base, ...extra, ms: Date.now() - started });
       };
-      const timer = setTimeout(() => {
+      // ① 일할 시간이 다 됐다: 끝내기를 **띄우기만** 한다(기다리지 않는다). 끝내는 프로그램이 끝나면(또는 못 뜨면)
+      //    그 번호를 직접 한 번 더 끝낸다 — 가지째 끝내기가 먼저 돌 틈을 준 뒤다.
+      const killTimer = setTimeout(() => {
         timedOut = true;
+        let k = null;
+        try { k = killTree(child?.pid, env ?? process.env); } catch { /* 넘어간다 */ }
+        if (k && typeof k.once === 'function') { k.once('close', directKill); k.once('error', directKill); }
+        else if (k && typeof k.then === 'function') k.then(directKill, directKill);
+        else directKill();
+      }, total - grace);
+      // ② 전체 마감: 끝났다는 신호가 없어도 여기서 돌려준다 — 아직 살아 있는지만 적는다(끝없이 기다리지 않는다).
+      const deadline = setTimeout(() => {
+        timedOut = true;
+        directKill();
         const pid = child?.pid;
-        try { killTree(pid, env ?? process.env); } catch { /* 넘어간다 */ }
-        try { child?.kill(); } catch { /* 이미 끝남 */ }
-        // 끝났다는 신호를 5초까지 기다린다. 그래도 없으면 아직 살아 있는지를 알리고 돌아간다(끝없이 기다리지 않는다).
-        giveUp = setTimeout(() => finish({ timedOut: true, alive: Number.isInteger(pid) ? pidAlive(pid) : false }), 5000);
-      }, Math.max(1, timeoutMs));
+        finish({ timedOut: true, alive: Number.isInteger(pid) ? pidAlive(pid) : false });
+      }, total);
       try {
         child = spawnFn(node, [entry, ...DOCTOR_PREPARE_ARGS], {
           cwd: os.tmpdir(),                       // 설치 폴더 밖 — 설치 폴더를 현재 폴더로 쥐지 않는다

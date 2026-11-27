@@ -12,9 +12,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import {
   prepareDoctorAccounts, doctorPrepareLine, doctorPrepareEnv, doctorEntryFor,
-  DOCTOR_PREPARE_ARGS, DOCTOR_PREPARE_TIMEOUT_MS,
+  DOCTOR_PREPARE_ARGS, DOCTOR_PREPARE_TIMEOUT_MS, DOCTOR_PREPARE_KILL_GRACE_MS,
 } from '../installer/lib/doctor-prepare.mjs';
 import { nodeExeFor } from '../installer/lib/handoff.mjs';
 import { OFFLINE_ENV } from '../lib/net.mjs';
@@ -216,10 +218,12 @@ test('실패해도 던지지 않고 결과만 돌려준다 · 기록 한 줄에 
 test('제한 시간: 끝나지 않는 Doctor 는 그 번호로 끝내고 돌아온다 — 끝낸 뒤에는 더 쓰지 않는다', async () => {
   const s = makeSoul('hang', { mode: 'hang' });
   const t0 = Date.now();
-  const r = await prepareDoctorAccounts({ root: s.root, env: clean(), timeoutMs: 1500, onSpawn: (pid) => spawned.add(pid) });
+  // 전체 마감 6초 · 끝내기 몫 3초 → 3초에 끝내기 시작, 늦어도 6초에 돌아온다
+  const r = await prepareDoctorAccounts({ root: s.root, env: clean(), timeoutMs: 6000, killGraceMs: 3000, onSpawn: (pid) => spawned.add(pid) });
   const took = Date.now() - t0;
   assert.deepEqual({ called: r.called, ok: r.ok, timedOut: r.timedOut }, { called: true, ok: false, timedOut: true });
-  assert.ok(took >= 1400 && took < 15_000, `제한 시간 뒤 곧 돌아온다(${took}ms)`);
+  assert.ok(took >= 2900, `일할 시간(3초)은 준다(${took}ms)`);
+  assert.ok(r.ms <= 6000 + 1000, `돌려줄 때까지가 전체 마감 안이다(${r.ms}ms — 여유 1초는 바쁜 PC 의 타이머 몫)`);
   assert.match(doctorPrepareLine(r), /^timed out/);
   const pid = s.calls()[0].pid;
   assert.equal(alive(pid), false, '우리가 띄운 그 프로세스는 끝났다');
@@ -227,4 +231,45 @@ test('제한 시간: 끝나지 않는 Doctor 는 그 번호로 끝내고 돌아�
   const beat = fs.existsSync(s.beat) ? fs.readFileSync(s.beat, 'utf8') : null;
   await new Promise((res) => setTimeout(res, 700));
   assert.equal(fs.existsSync(s.beat) ? fs.readFileSync(s.beat, 'utf8') : null, beat, '끝낸 뒤에는 표시 파일이 더 바뀌지 않는다');
+});
+
+// 2026-11-28 두 번째 코드 검토(2-2): 전에는 20초 뒤 동기 taskkill(최대 10초) + 5초 대기라 돌아오기까지 35초가 될 수 있었고,
+// 그 taskkill 동안 설치기 서버가 멈췄다. 이제 마감은 하나(부른 때부터 돌려줄 때까지)이고 끝내기는 기다리지 않는다.
+test('전체 마감 하나: 끝내기가 듣지 않고 끝났다는 신호도 없어도, 부른 때부터 마감 안에 돌아온다 — 끝내기는 기다리지 않고 띄운다', async () => {
+  const s = makeSoul('deadline', { mode: 'ok' });
+  const events = [];
+  const t0 = Date.now();
+  // 끝나지 않는 가짜 프로세스: 끝내도 듣지 않고(kill 무시) 'close' 를 내지 않는다. 진짜 프로그램은 뜨지 않는다.
+  const stuck = Object.assign(new EventEmitter(), { pid: undefined, stdout: new EventEmitter(), kill: () => { events.push(['kill', Date.now() - t0]); return false; } });
+  let ticks = 0;
+  const ticker = setInterval(() => { ticks += 1; }, 20);
+  let r;
+  try {
+    r = await prepareDoctorAccounts({
+      root: s.root, env: clean(), timeoutMs: 1200, killGraceMs: 400,
+      spawnFn: () => { events.push(['spawn', Date.now() - t0]); return stuck; },
+      killTree: () => { events.push(['killTree', Date.now() - t0]); return new Promise(() => {}); }, // 끝내는 쪽도 끝나지 않는다
+    });
+  } finally { clearInterval(ticker); }
+  const took = Date.now() - t0;
+  assert.deepEqual({ called: r.called, ok: r.ok, timedOut: r.timedOut, alive: r.alive }, { called: true, ok: false, timedOut: true, alive: false });
+  // 위쪽 여유 1초는 바쁜 PC 에서 타이머가 늦는 몫이다(전에는 마감 뒤에 끝내기 대기 5초가 더 붙었다 — 그것과는 가려진다)
+  assert.ok(r.ms >= 1150 && r.ms <= 1200 + 1000, `전체 마감(1.2초)에 돌아온다 — 끝내기 몫을 그 뒤에 더하지 않는다(${r.ms}ms)`);
+  assert.ok(took < 1200 + 2000, `부른 쪽이 기다린 시간(${took}ms)`);
+  const at = (name) => events.find((e) => e[0] === name)?.[1];
+  assert.ok(at('killTree') >= 750 && at('killTree') <= took, `끝내기는 마감에서 끝내기 몫(0.4초)을 뺀 때 시작한다(${at('killTree')}ms)`);
+  assert.equal(events.filter((e) => e[0] === 'killTree').length, 1);
+  assert.ok(events.some((e) => e[0] === 'kill'), '마감에는 그 번호를 직접 한 번 더 끝낸다');
+  assert.ok(ticks >= 5, `기다리는 동안 이벤트 루프가 돈다(${ticks}번)`);
+  assert.match(doctorPrepareLine(r), /^timed out \(\d+ms\)$/);
+  assert.equal(fs.existsSync(path.join(s.root, '_agent', 'doctor')), false);
+});
+
+test('전체 마감의 값: 20초 = 부른 때부터 돌려줄 때까지 · 그 가운데 끝내기 몫 5초 · 끝내기를 동기로 부르지 않는다(서버를 세우지 않는다)', () => {
+  assert.equal(DOCTOR_PREPARE_TIMEOUT_MS, 20_000);
+  assert.equal(DOCTOR_PREPARE_KILL_GRACE_MS, 5_000);
+  const src = fs.readFileSync(fileURLToPath(new URL('../installer/lib/doctor-prepare.mjs', import.meta.url)), 'utf8');
+  const code = src.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+  assert.doesNotMatch(code, /spawnSync|execSync|execFileSync/, '동기 실행이 없다');
+  assert.doesNotMatch(code, /Atomics\.wait/);
 });
