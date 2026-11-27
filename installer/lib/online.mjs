@@ -1062,20 +1062,52 @@ export function resetRelayJobs() { relayJobs.clear(); }
 // loopback caller. GET /health is NOT a local route — it would be relayed
 // straight to the model vendor upstream, which is both a wrong answer and the
 // one thing this module must never do.
-export function relayHealth(port = RELAY_PORT, { timeoutMs = 3000, httpGet = http.get } = {}) {
+//
+// The whole answer is read (2.0.65). Until then the body was collected with
+// `if (body.length < 8192) body += d`, which stops adding after about 8 KB: the
+// answer is roughly 2.3 KB plus 1 KB per account, so from about five accounts
+// on, an answer that arrived in several pieces lost its tail, no longer parsed,
+// and a healthy relay was reported as "not our relay" (tests/relay-health.test.mjs
+// keeps the reproduction). Two limits stay, so a wrong program on the port
+// cannot hold the installer: RELAY_STATUS_MAX_BYTES for size -- past it the
+// connection is dropped and the answer is "not ours" -- and, for time, the
+// idle limit `timeoutMs` plus an overall limit `totalTimeoutMs` (an answer that
+// keeps dripping inside the idle limit would otherwise never end).
+export const RELAY_STATUS_MAX_BYTES = 1024 * 1024;
+
+export function relayHealth(port = RELAY_PORT, {
+  timeoutMs = 3000, totalTimeoutMs = Math.max(timeoutMs * 5, 15_000), maxBytes = RELAY_STATUS_MAX_BYTES, httpGet = http.get,
+} = {}) {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
+    let req = null;
+    let overall = null;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      if (overall) clearTimeout(overall);
+      resolve(v);
+    };
+    const drop = () => { try { req?.destroy(); } catch { /* already gone */ } };
     try {
-      const req = httpGet({ host: '127.0.0.1', port, path: '/teamclaude/status', timeout: timeoutMs }, (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (d) => { if (body.length < 8192) body += d; });
+      req = httpGet({ host: '127.0.0.1', port, path: '/teamclaude/status', timeout: timeoutMs }, (res) => {
+        const chunks = [];
+        let size = 0;
+        res.on('data', (d) => {
+          if (settled) return;
+          size += d.length;
+          if (size > maxBytes) { chunks.length = 0; drop(); finish({ ok: false, status: res.statusCode }); return; }
+          chunks.push(d);
+        });
+        // An answer cut off before its end ('end' never comes) must still resolve.
+        res.on('error', () => finish({ ok: false, status: res.statusCode }));
+        res.on('close', () => finish({ ok: false, status: res.statusCode }));
         res.on('end', () => {
           // The body is inspected for these two keys and then thrown away — it
           // can name a signed-in account, which never reaches a log or receipt.
           try {
-            const j = JSON.parse(body);
+            // Joined as bytes first, so a character split across two pieces is whole again.
+            const j = JSON.parse(Buffer.concat(chunks).toString('utf8'));
             // 2026-09-18 TC-02: 실행 중계기가 실제로 실은 계정 수도 돌려준다(파일 계정 수와 대조하기 위해). 이름·토큰은 안 남긴다.
             const liveAccounts = j && Array.isArray(j.accounts) ? j.accounts.length : null;
             finish({ ok: res.statusCode === 200 && j && typeof j === 'object' && ('activity' in j || 'accounts' in j), status: res.statusCode, liveAccounts });
@@ -1086,6 +1118,8 @@ export function relayHealth(port = RELAY_PORT, { timeoutMs = 3000, httpGet = htt
       });
       req.on('error', () => finish({ ok: false, status: null }));
       req.on('timeout', () => { req.destroy(); finish({ ok: false, status: null }); });
+      overall = setTimeout(() => { drop(); finish({ ok: false, status: null }); }, totalTimeoutMs);
+      overall.unref?.();
     } catch {
       finish({ ok: false, status: null });
     }
