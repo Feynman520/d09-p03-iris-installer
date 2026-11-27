@@ -47,6 +47,13 @@ import { tlsTrustCode } from './systemca.mjs';
 import { readReceipt, writeReceipt, setInstalled } from './receipt.mjs';
 import { writeShims } from './shims.mjs';
 
+// 2.0.66 — 「1년 열쇠 받기(권장)」 카드(로그인이 끝난 뒤 · 누를 때만). 구현은 lib/longkey.mjs 한 곳이고,
+// 서버는 다른 온라인 일과 같은 어댑터(lib/adapters/online-runner.mjs)로 부른다. 로그인 흐름(startLogin ·
+// loginStatus · startRelay)과 완료 판정은 이 카드를 모른다.
+export {
+  startLongKey, longKeyStatus, stopLongKey, longKeyAvailability,
+} from './longkey.mjs';
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export const RELAY_PORT = 3456;
