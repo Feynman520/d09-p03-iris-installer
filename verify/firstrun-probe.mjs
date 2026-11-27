@@ -46,11 +46,14 @@
 //     CLI 가 **스스로** 띄우는 셸(클로드가 훅의 `python.cmd` 를 돌릴 때 등)에는 이 스크립트가 손댈 수 없다.
 //   · 로그인하지 않는다. 열쇠는 형식만 갖춘 가짜다. 요청문 · Enter 를 보내지 않는다. 보내는 키는 코덱스의 경고 보기(F2 ·
 //     화살표)뿐이고, 그것도 화면이 기대한 그 화면(가라앉은 대기 화면 / 경고 보기 창)일 때만 보낸다(probeCodex).
-//   · 프로세스는 이 스크립트가 띄운 PID 와 **그 자손**만, PID 로 끝낸다(이름으로 찾지 않는다). 자손은 윈도 Job Object 로
-//     센다: 이 스크립트 자신을 Job 에 넣어 두면 그 뒤에 띄운 것과 그 자손이 — 중간 부모가 먼저 죽어도 — 전부 Job 의 목록에
-//     남는다. 끝낸 뒤 "띄우기 전에는 없던 구성원"이 하나도 살아 있지 않을 때만 "끝났다"로 본다. 남은 것이 있으면 그 PID 들만
-//     한 번 더 끝내 보고, 그래도 남으면 실패다(「프로세스 추적」 절). Job 을 다루는 파워셸 도우미도 PID 를 쥐고 있다가
-//     끝난 것을 확인하고 돌아온다. Job 을 쓸 수 없는 PC 에서는 띄우지 않는다(종료 코드 2).
+//   · 띄운 프로세스와 **그 자손**은 윈도 Job Object 로 빠짐없이 세고, **핸들로** 끝낸다(「프로세스 추적」 절):
+//     이 스크립트 자신을 Job 에 넣어 두면 그 뒤에 띄운 것과 그 자손이 — 중간 부모가 먼저 죽어도 — 전부 Job 의 목록에 남는다.
+//     관측이 끝날 때마다 "띄우기 전에는 없던 구성원"을 전부 끝내고, 실행이 끝날 때는 Job 전체를 다시 봐서 이 스크립트 자신만
+//     남았을 때에만 통과다(준비 단계가 남긴 것도 여기서 잡힌다). 끝낼 때는 그 PID 의 핸들을 열어 Job 소속을 확인한 뒤 같은
+//     핸들로 끝낸다 — 번호가 다른 프로세스에 다시 쓰였으면 끝내지 않는다. 이름으로 찾지 않고, taskkill · tasklist 를 부르지 않는다.
+//     Job 을 다루는 파워셸 도우미도 끝난 것을 확인하고 돌아온다. Job 을 쓸 수 없는 PC 에서는 띄우지 않는다(종료 코드 2).
+//     보증하지 못하는 것: 다른 서비스가 대신 만들어 준 프로세스(WMI · 작업 스케줄러 · 서비스)는 Job 밖이다. 이 스크립트가
+//     죽으면 도우미가 Job 의 나머지를 끝내고 나가지만, 스크립트와 도우미가 둘 다 강제로 끝나면 띄운 CLI 가 남을 수 있다.
 //   · 정리 순서 = 자식 종료 → 폴더 정리. 실행 폴더를 만든 바로 다음부터 try/finally 라 그 뒤 무엇이 던져도 거친다.
 //     끝나지 않은 프로세스가 있으면 폴더를 지우지 않고 실패로 끝낸다.
 //
@@ -70,6 +73,7 @@
 //   --compare = 잠금표와 다른 판을 견줘 본다(판 일치를 요구하지 않음). --control(씨앗을 뺀 대조군) · --codex-auth chatgpt 는
 //   언제나 견주기다.
 import fs from 'node:fs';
+import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -172,11 +176,11 @@ export function findDialogs(text, agent) {
 function stopDetail(obs) {
   const s = obs.stopInfo ?? {};
   return `pid=${obs.pid ?? '-'} stop=${obs.stopped ?? '-'} 이 관측이 낳은 프로세스=${s.tracked ?? '-'}개(Job)`
-    + `${(s.retried ?? []).length ? ` 따로 끝낸 pid=${s.retried.join(',')}` : ''}${(s.left ?? []).length ? ` 남은 pid=${s.left.join(',')}` : ''}`
+    + `${(s.retried ?? []).length ? ` 다시 끝낸 pid=${s.retried.join(',')}` : ''}${(s.left ?? []).length ? ` 남은 pid=${s.left.join(',')}` : ''}`
     + `${Object.keys(s.names ?? {}).length ? ` [${Object.entries(s.names).map(([pid, n]) => `${pid}=${n ?? '?'}`).join(' ')}]` : ''}${s.reason ? ` (${s.reason})` : ''}`;
 }
 
-const HOOK_ERROR_RE =/hook error|ParserError|Git Bash was not found|requires bash|hook (timed out|failed)/i;
+const HOOK_ERROR_RE = /hook error|ParserError|Git Bash was not found|requires bash|hook (timed out|failed)/i;
 
 export function judgeClaude(obs) {
   const out = [];
@@ -440,7 +444,8 @@ function openPty({ pty, Terminal, file, args, cwd, env, cols, rows }) {
     },
     write: (d) => { try { proc.write(d); } catch { /* 이미 끝남 */ } },
     // 이미 끝난 프로세스에 kill() 을 부르면 node-pty 의 도우미가 "AttachConsole failed" 를 찍는다 — 살아 있을 때만.
-    dispose: () => { if (!st.exited && pidAlive(st.pid)) { try { proc.kill(); } catch { /* 이미 끝남 */ } } try { screen.dispose(); } catch { /* */ } },
+    kill: () => { if (!st.exited) { try { proc.kill(); } catch { /* 이미 끝남 */ } } },
+    dispose: () => { if (!st.exited) { try { proc.kill(); } catch { /* 이미 끝남 */ } } try { screen.dispose(); } catch { /* */ } },
   };
 }
 
@@ -461,6 +466,7 @@ export function pipeDriver() {
         state: st,
         lines: async () => stripAnsi(st.raw.slice(Math.max(0, st.raw.lastIndexOf('\x1b[2J')))).replace(/\r/g, '').split('\n'),
         write: (d) => { try { proc.stdin.write(d); } catch { /* 이미 끝남 */ } },
+        kill: () => { try { proc.kill(); } catch { /* 이미 끝남 */ } }, // node 가 쥔 그 프로세스 객체로
         dispose: () => { try { proc.stdin.end(); } catch { /* */ } },
       };
     },
@@ -468,44 +474,19 @@ export function pipeDriver() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-// 이 스크립트가 어떤 까닭으로든 죽을 때 띄운 CLI(자기 PID)를 남기지 않는다.
-const ownPids = new Set();
+// 이 스크립트가 예외로 죽을 때는 0 이 아닌 코드로 끝낸다. 띄운 프로세스의 뒷정리는 Job 도우미가 한다(아래) —
+// 이 프로세스가 죽으면 도우미의 표준 입력이 닫히고, 도우미가 Job 에 남은 구성원을 끝낸 뒤 나간다.
 let exitGuardOn = false;
 function armExitGuard() {
   if (exitGuardOn) return;
   exitGuardOn = true;
-  process.on('exit', () => {
-    for (const pid of ownPids) { try { endOwnPid(pid); } catch { /* */ } }
-  });
   process.on('uncaughtException', (e) => { console.error(`firstrun-probe ERROR ${e?.stack || e}`); process.exit(EXIT.failed); });
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(sig, () => process.exit(EXIT.failed));
 }
 
-/** 이 스크립트가 띄운 PID 하나와 그 자식 나무를 끝낸다(taskkill /T). 이름으로 찾지 않는다. */
-export function endOwnPid(pid) {
-  if (!pid || !pidAlive(pid)) return 'already-gone';
-  try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); return 'ended'; } catch { return pidAlive(pid) ? 'failed' : 'already-gone'; }
-}
-
-/** 그 PID 의 실행 파일 이름(기록에 적어 사람이 읽게 하려는 것 — 프로세스를 찾거나 고르는 데는 쓰지 않는다). 모르면 null. */
-export function imageNameOf(pid) {
-  try {
-    const out = execFileSync('tasklist', ['/FI', `PID eq ${Number(pid)}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
-    const m = /^"([^"]+)"/.exec(out.trim());
-    return m ? m[1] : null;
-  } catch { return null; }
-}
-
-/** PID 하나만 끝낸다(나무를 따라가지 않는다) — 남은 자손을 그 PID 로 다시 끝내 볼 때 쓴다. */
-export function endOnePid(pid) {
-  if (!pid || !pidAlive(pid)) return 'already-gone';
-  try { execFileSync('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore' }); return 'ended'; } catch { return pidAlive(pid) ? 'failed' : 'already-gone'; }
-}
-
 // ---------------------------------------------------------------------------
-// 프로세스 추적 — 윈도 Job Object 로 자손을 빠짐없이
+// 프로세스 추적 — 윈도 Job Object 로 자손을 빠짐없이 세고, 핸들로 끝낸다
 // ---------------------------------------------------------------------------
 // `taskkill /T` 는 그 순간 살아 있는 부모-자식 줄을 따라간다. 부모가 먼저 죽으면 줄이 끊겨 자손이 남을 수 있고
 // (코덱스 = cmd → node → codex.exe → MCP 서버들), 프로세스 표를 주기적으로 떠서 자손을 모으는 방식은 "표를 뜨는 사이에
@@ -513,22 +494,40 @@ export function endOnePid(pid) {
 //
 //   · 이 스크립트의 node 프로세스 자신을 이름 없는 Job 에 넣는다. Job 의 구성원이 만드는 프로세스는 만들어지는 순간
 //     같은 Job 에 들어가므로, 그 뒤 node-pty 로 띄우는 CLI 와 그 자손은 — 부모가 언제 죽든 — 전부 Job 의 목록에 남는다.
-//   · 관측 하나 = "띄우기 직전의 목록"과 "끝낸 뒤의 목록"의 차. 새로 생긴 구성원이 하나도 살아 있지 않을 때만 끝났다고 본다.
-//   · Job 은 세기만 한다. 한도(끝날 때 함께 죽이기 등)는 하나도 걸지 않는다 — 자기 자신이 들어 있으므로.
+//     준비 단계(`--version` 확인 등)가 띄운 것도 마찬가지다.
+//   · 관측 하나가 끝날 때 = "띄우기 직전의 목록에는 없던 구성원"을 전부 끝내고, 하나도 살아 있지 않을 때만 끝났다고 본다.
+//     실행 전체가 끝날 때 = 도우미를 닫기 직전에 **Job 전체**를 다시 본다(finalJobSweep): 이 스크립트 자신을 뺀 구성원이
+//     0 이어야 한다. 관측별 차만 보면 관측 전에 생긴 것(준비 단계의 자손)과, 앞 목록의 PID 를 다시 받은 새 자손이 빠진다.
+//   · 끝내기는 **숫자 PID 가 아니라 핸들로** 한다(4차 검토): 도우미가 그 PID 의 핸들을 열고 → 그 핸들이 우리 Job 의
+//     구성원인지 확인하고(IsProcessInJob) → 같은 핸들로 TerminateProcess · WaitForSingleObject. 목록을 읽은 뒤 그 번호가
+//     다른 프로세스에 다시 쓰였다면 Job 구성원이 아니므로 끝내지 않는다. 이 스크립트는 taskkill · tasklist 를 부르지 않는다.
+//   · Job 은 세기만 한다. 한도는 하나도 걸지 않는다 — "닫힐 때 함께 끝내기"(KILL_ON_JOB_CLOSE)도 걸지 않는다:
+//     이 스크립트 자신이 Job 안이라, 도우미가 예기치 않게 죽는 순간 이 스크립트가 **종료 코드 0** 으로 끝나 버린다
+//     (2026-11-28 실측) — 통과로 읽힐 수 있는 죽음이다. 그 대신 도우미가 표준 입력이 닫힌 것(= 이 스크립트가 죽음)을 보면
+//     Job 에 남은 구성원을(이 스크립트는 빼고) 핸들로 끝낸 뒤 나간다.
 //     벗어나기(CREATE_BREAKAWAY_FROM_JOB)는 허용하지 않는다: 허용하면 벗어난 프로세스를 셀 수 없다. 그 대신 CLI 가 벗어나기를
 //     요청하면 그 프로세스 만들기가 거절된다 — 실제 PC 와 다른 조건이다(2.1.311 · 2.1.326 · 0.167.0 · 0.172.0 의 첫 화면에서는
 //     Job 이 없을 때와 차이가 없었다, 검증기록 5-82).
-//   · Job 을 만들고 목록을 읽는 일은 파워셸 도우미 하나가 한다(node 에는 그 API 가 없다): `Add-Type` 으로 kernel32 의
-//     CreateJobObject · AssignProcessToJobObject · QueryInformationJobObject 를 부르고, 표준 입력으로 `list` 를 받으면
-//     Job 의 PID 목록을 한 줄로 답한다. 도우미는 이 스크립트가 PID 를 쥐고 있다가 끝날 때 닫고(닫히지 않으면 그 PID 를 끝낸다),
-//     이 스크립트가 죽으면 표준 입력이 닫혀 스스로 끝난다. 도우미 자신은 Job 밖이다(node 를 넣기 전에 떴다).
+//   · Job 을 만들고 목록을 읽고 끝내는 일은 파워셸 도우미 하나가 한다(node 에는 그 API 가 없다): `Add-Type` 으로 kernel32 를
+//     부르고, 표준 입력으로 `list <번호>` · `end <번호> <pid> <ms>` 를 받아 같은 번호를 붙여 답한다. 도우미는 이 스크립트가
+//     프로세스 객체를 쥐고 있다가 끝날 때 닫고(닫히지 않으면 그 객체로 끝낸다), 도우미 자신은 Job 밖이다(node 를 넣기 전에 떴다).
+//   · 답이 제때 오지 않으면(시간 초과) 그 추적기는 그때부터 **실패로 굳는다** — 늦게 온 답을 다음 물음의 답으로 읽는 일이
+//     없도록 번호도 맞춰 보지만, 한 번이라도 시간 초과가 나면 그 실행은 통과가 될 수 없다.
 //   · Job 을 쓸 수 없는 PC(Add-Type 이 막힌 경우 등)에서는 띄우지 않는다 — 약한 방식으로 조용히 물러나지 않는다(종료 코드 2).
+//
+// 이 방식이 보증하지 못하는 것:
+//   · 다른 서비스가 **대신 만들어 준** 프로세스(WMI `Win32_Process.Create` · 작업 스케줄러 · 서비스 · COM 서버 띄우기)는
+//     부모가 그 서비스라 Job 밖이다 — 세지도 끝내지도 못한다.
+//   · 도우미가 먼저 죽으면(누가 강제로 끝냄) 그 뒤로는 목록을 읽을 수 없어 그 실행은 실패로 끝나고, 남은 프로세스는
+//     끝내지 못한다. 이 스크립트와 도우미가 **둘 다** 강제로 끝나면 띄운 CLI 가 남을 수 있다(자동 정리 없음).
 
 const JOB_HELPER_PS = `
 $ErrorActionPreference = 'Stop'
+$target = [uint32]__TARGET_PID__
 try {
 Add-Type -TypeDefinition @'
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 public static class IrisProbeJob {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr CreateJobObjectW(IntPtr attrs, string name);
@@ -536,24 +535,61 @@ public static class IrisProbeJob {
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr h);
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool QueryInformationJobObject(IntPtr job, int cls, IntPtr info, uint len, out uint ret);
-  public static string Pids(IntPtr job) {
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool TerminateProcess(IntPtr process, uint exitCode);
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder name, ref uint size);
+  public static long[] PidList(IntPtr job) {
     int cap = 8192;
     int size = 8 + IntPtr.Size * cap;
     IntPtr buf = Marshal.AllocHGlobal(size);
     try {
       uint ret;
-      if (!QueryInformationJobObject(job, 3, buf, (uint)size, out ret)) return "ERR " + Marshal.GetLastWin32Error();
+      if (!QueryInformationJobObject(job, 3, buf, (uint)size, out ret)) return null;
       int n = Marshal.ReadInt32(buf, 4);
-      System.Text.StringBuilder sb = new System.Text.StringBuilder("PIDS");
-      for (int i = 0; i < n; i++) { sb.Append(' '); sb.Append(Marshal.ReadIntPtr(buf, 8 + i * IntPtr.Size).ToInt64()); }
-      return sb.ToString();
+      long[] pids = new long[n];
+      for (int i = 0; i < n; i++) pids[i] = Marshal.ReadIntPtr(buf, 8 + i * IntPtr.Size).ToInt64();
+      return pids;
     } finally { Marshal.FreeHGlobal(buf); }
+  }
+  public static string Pids(IntPtr job) {
+    long[] pids = PidList(job);
+    if (pids == null) return "ERR " + Marshal.GetLastWin32Error();
+    StringBuilder sb = new StringBuilder();
+    foreach (long p in pids) { sb.Append(' '); sb.Append(p); }
+    return "OK" + sb.ToString();
+  }
+  // 핸들을 열고 -> 그 핸들이 이 Job 의 구성원인지 확인하고 -> 같은 핸들로 끝내고 기다린다. 번호로 다시 찾지 않는다.
+  public static string End(IntPtr job, uint pid, uint waitMs, uint keep) {
+    if (pid == keep) return "refused -";
+    IntPtr h = OpenProcess(0x00101001, false, pid); // TERMINATE | SYNCHRONIZE | QUERY_LIMITED_INFORMATION
+    if (h == IntPtr.Zero) { int e = Marshal.GetLastWin32Error(); return (e == 87 ? "gone" : "denied:" + e) + " -"; }
+    try {
+      StringBuilder sb = new StringBuilder(1024); uint len = 1024;
+      string name = QueryFullProcessImageNameW(h, 0, sb, ref len) ? System.IO.Path.GetFileName(sb.ToString()).Replace(' ', '_') : "?";
+      bool inJob;
+      if (!IsProcessInJob(h, job, out inJob)) return "denied:" + Marshal.GetLastWin32Error() + " " + name;
+      if (!inJob) return "not-in-job " + name;
+      if (WaitForSingleObject(h, 0) == 0) return "ended " + name;
+      if (!TerminateProcess(h, 1)) { int e = Marshal.GetLastWin32Error(); if (WaitForSingleObject(h, 0) == 0) return "ended " + name; return "denied:" + e + " " + name; }
+      return (WaitForSingleObject(h, waitMs) == 0 ? "ended " : "timeout ") + name;
+    } finally { CloseHandle(h); }
+  }
+  // 이 스크립트가 죽었을 때: Job 에 남은 구성원을(keep 은 빼고) 끝낸다.
+  public static void Sweep(IntPtr job, uint keep) {
+    for (int round = 0; round < 3; round++) {
+      long[] pids = PidList(job);
+      if (pids == null) return;
+      int n = 0;
+      foreach (long p in pids) { if ((uint)p != keep) { End(job, (uint)p, 2000, keep); n++; } }
+      if (n == 0) return;
+    }
   }
 }
 '@
 $job = [IrisProbeJob]::CreateJobObjectW([IntPtr]::Zero, $null)
 if ($job -eq [IntPtr]::Zero) { throw ('CreateJobObject ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
-$h = [IrisProbeJob]::OpenProcess(0x0101, $false, [uint32]__TARGET_PID__)
+$h = [IrisProbeJob]::OpenProcess(0x0101, $false, $target)
 if ($h -eq [IntPtr]::Zero) { throw ('OpenProcess ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
 if (-not [IrisProbeJob]::AssignProcessToJobObject($job, $h)) { throw ('AssignProcessToJobObject ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
 [void][IrisProbeJob]::CloseHandle($h)
@@ -561,84 +597,122 @@ if (-not [IrisProbeJob]::AssignProcessToJobObject($job, $h)) { throw ('AssignPro
 } catch { [Console]::Out.WriteLine('FAILED ' + ($_.Exception.Message -replace '\\s+', ' ')); [Console]::Out.Flush(); exit 3 }
 while ($true) {
   $line = [Console]::In.ReadLine()
-  if ($null -eq $line -or $line -eq 'exit') { break }
-  if ($line -eq 'list') { [Console]::Out.WriteLine([IrisProbeJob]::Pids($job)); [Console]::Out.Flush() }
+  if ($null -eq $line) { [IrisProbeJob]::Sweep($job, $target); break }
+  $w = $line.Trim() -split '\\s+'
+  if ($w[0] -eq 'exit') { break }
+  elseif ($w[0] -eq 'list' -and $w.Length -ge 2) { [Console]::Out.WriteLine('R ' + $w[1] + ' ' + [IrisProbeJob]::Pids($job)) }
+  elseif ($w[0] -eq 'end' -and $w.Length -ge 4) { [Console]::Out.WriteLine('R ' + $w[1] + ' ' + [IrisProbeJob]::End($job, [uint32]$w[2], [uint32]$w[3], $target)) }
+  [Console]::Out.Flush()
 }
 `;
 
-// 도우미에게 넘기는 환경 — 윈도가 파워셸을 돌리는 데 필요한 것만. 프로필 · 모듈 경로 · 열쇠는 넘기지 않는다(-NoProfile).
-// TEMP 는 꼭 있어야 한다: Add-Type 이 C# 을 번역하면서 임시 파일을 그 자리에 쓴다(이 PC 의 임시 폴더 — 설정 · 프로필이 아니다).
-function jobHelperEnv() {
+// 도우미에게 넘기는 환경 — 윈도가 파워셸을 돌리는 데 필요한 것만. 이 PC 의 프로필 · 모듈 경로 · 열쇠는 넘기지 않는다(-NoProfile).
+// 임시 · 홈 · 앱 자료 폴더는 전부 home(도우미 전용 폴더 — 실행 폴더 아래)으로 준다: Add-Type 이 C# 을 번역하며 쓰는 임시 파일과
+// 파워셸이 스스로 쓰는 시작 기록(StartupProfileData)이 그 안에 생긴다.
+function jobHelperEnv(home) {
   const sys = process.env.SystemRoot || 'C:\\Windows';
   const env = { SystemRoot: sys, windir: sys, SystemDrive: process.env.SystemDrive || path.parse(sys).root.replace(/\\$/, ''),
     PATH: [path.join(sys, 'System32'), sys, path.join(sys, 'System32', 'WindowsPowerShell', 'v1.0')].join(path.delimiter) };
-  for (const k of ['ComSpec', 'PATHEXT', 'TEMP', 'TMP', 'ProgramData', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE']) if (process.env[k] !== undefined) env[k] = process.env[k];
+  for (const k of ['ComSpec', 'PATHEXT', 'ProgramData', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE']) if (process.env[k] !== undefined) env[k] = process.env[k];
+  const dirs = { TEMP: path.join(home, 'tmp'), TMP: path.join(home, 'tmp'), USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local') };
+  for (const [k, v] of Object.entries(dirs)) { fs.mkdirSync(v, { recursive: true }); env[k] = v; }
   return env;
 }
 
 let jobTrackerPromise = null;
 
 /**
- * startJobTracker -- 도우미를 띄워 이 프로세스를 Job 에 넣는다.
- *   -> { kind: 'job', ok, reason, pid, list(): Promise<number[]|null>, close(): Promise<'closed'|'ended'|'failed'|'already-gone'> }
- * list() 는 지금 Job 에 살아 있는 PID 전부(이 프로세스 포함). 답을 못 받으면 null — 그때는 "끝났다"고 말하지 않는다.
- * 요청은 한 번에 하나씩 차례로 보낸다. close() 는 도우미가 끝난 것을 확인한 뒤에 돌아온다.
+ * startJobTracker -- 도우미를 띄워 targetPid(기본 = 이 프로세스)를 Job 에 넣는다.
+ *   -> { kind: 'job', ok, reason, failed, pid, home,
+ *        list(): Promise<number[]|null>,                              지금 Job 에 살아 있는 PID 전부(대상 포함). 못 읽으면 null
+ *        end(pid, waitMs): Promise<{ status, name }|null>,            핸들로 끝내기. status = ended | gone | not-in-job | refused | timeout | denied:<n>
+ *        close(): Promise<'closed'|'ended'|'failed'|'already-gone'> } 도우미가 끝난 것을 확인한 뒤에 돌아온다
+ * 물음은 한 번에 하나씩 차례로 보내고, 번호를 붙여 답을 맞춘다. 답이 제때 오지 않으면 failed 에 까닭이 적히고 그 뒤의
+ * 물음은 전부 null 이다(다시 살아나지 않는다). home = 도우미 전용 폴더(없으면 임시 폴더에 만들고 닫을 때 지운다).
  */
-export function startJobTracker({ targetPid = process.pid, readyMs = 30000, listMs = 5000, spawnFn = spawn } = {}) {
+export function startJobTracker({ targetPid = process.pid, home = null, readyMs = 30000, listMs = 5000, spawnFn = spawn } = {}) {
+  const ownsHome = !home;
+  const helperHome = home ?? fs.mkdtempSync(path.join(os.tmpdir(), 'iris-frp-job-'));
   const script = JOB_HELPER_PS.replace('__TARGET_PID__', String(Number(targetPid)));
   const ps = spawnFn('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-    { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: jobHelperEnv() });
-  const tracker = { kind: 'job', ok: false, reason: null, pid: ps.pid ?? null, exited: false };
-  let buf = ''; const waiters = [];
-  const feed = (line) => { const w = waiters.shift(); if (w) w(line); };
-  ps.stdout.on('data', (d) => { buf += d; for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (line) feed(line); } });
+    { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: jobHelperEnv(helperHome) });
+  const tracker = { kind: 'job', ok: false, reason: null, failed: null, pid: ps.pid ?? null, home: helperHome, exited: false, targetPid: Number(targetPid) };
+  let buf = ''; let readyWaiter = null; let seq = 0;
+  const pending = new Map(); // 번호 -> 답을 받을 함수
+  const dropAll = () => { for (const f of pending.values()) f(null); pending.clear(); if (readyWaiter) { readyWaiter(null); readyWaiter = null; } };
+  const onLine = (line) => {
+    if (readyWaiter && (line === 'READY' || line.startsWith('FAILED'))) { const f = readyWaiter; readyWaiter = null; f(line); return; }
+    const m = /^R (\d+) (.*)$/.exec(line);
+    if (!m) return;
+    const f = pending.get(Number(m[1]));
+    if (f) { pending.delete(Number(m[1])); f(m[2]); } // 번호가 맞지 않는 답(늦게 온 답)은 버린다
+  };
+  ps.stdout.on('data', (d) => { buf += d; for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (line) onLine(line); } });
   ps.stderr.on('data', () => {});
   const exitedP = new Promise((resolve) => {
-    ps.on('exit', () => { tracker.exited = true; while (waiters.length) waiters.shift()(null); resolve(); });
-    ps.on('error', (e) => { tracker.exited = true; tracker.reason = tracker.reason ?? String(e?.message || e); while (waiters.length) waiters.shift()(null); resolve(); });
+    ps.on('exit', () => { tracker.exited = true; dropAll(); resolve(); });
+    ps.on('error', (e) => { tracker.exited = true; tracker.reason = tracker.reason ?? String(e?.message || e); dropAll(); resolve(); });
   });
-  const nextLine = (ms) => new Promise((resolve) => {
-    if (tracker.exited) { resolve(null); return; }
+  const withTimeout = (register, ms) => new Promise((resolve) => {
     let done = false;
-    const w = (line) => { if (!done) { done = true; clearTimeout(t); resolve(line); } };
-    const t = setTimeout(() => { if (!done) { done = true; const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); resolve(null); } }, ms);
-    waiters.push(w);
+    const finish = (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } };
+    const t = setTimeout(() => finish(undefined), ms); // undefined = 시간 초과(null = 도우미가 끝남)
+    register(finish);
   });
-  tracker.ready = nextLine(readyMs).then((line) => {
+  tracker.ready = withTimeout((f) => { readyWaiter = f; }, readyMs).then((line) => {
     tracker.ok = line === 'READY';
-    if (!tracker.ok) tracker.reason = line ? line.replace(/^FAILED\s*/, '') : (tracker.reason ?? '도우미가 준비되지 않음');
+    if (!tracker.ok) { tracker.reason = line ? String(line).replace(/^FAILED\s*/, '') : (tracker.reason ?? '도우미가 준비되지 않음'); tracker.failed = `준비 실패: ${tracker.reason}`; }
     return tracker.ok;
   });
   let chain = tracker.ready.then(() => {}, () => {});
-  tracker.list = () => {
+  const ask = (text, ms) => {
     const p = chain.then(async () => {
-      if (!tracker.ok || tracker.exited) return null;
-      try { ps.stdin.write('list\n'); } catch { return null; }
-      const line = await nextLine(listMs);
-      if (!line || !line.startsWith('PIDS')) return null;
-      return line.slice(4).trim().split(/\s+/).filter(Boolean).map(Number);
+      if (!tracker.ok || tracker.exited || tracker.failed) return null;
+      const id = ++seq;
+      const answer = withTimeout((f) => { pending.set(id, f); }, ms);
+      try { ps.stdin.write(`${text.replace('#', String(id))}\n`); } catch { pending.delete(id); tracker.failed = '도우미에 물음을 보내지 못함'; return null; }
+      const got = await answer;
+      if (got === undefined) { pending.delete(id); tracker.failed = `도우미의 답이 ${ms}ms 안에 오지 않음(${text.split(' ')[0]})`; return null; }
+      if (got === null) { tracker.failed = tracker.failed ?? '도우미가 끝남'; return null; }
+      return got;
     });
     chain = p.then(() => {}, () => {});
     return p;
   };
+  tracker.list = async () => {
+    const got = await ask('list #', listMs);
+    if (got === null) return null;
+    if (!got.startsWith('OK')) { tracker.failed = `Job 목록 읽기 실패(${got})`; return null; }
+    return got.slice(2).trim().split(/\s+/).filter(Boolean).map(Number);
+  };
+  tracker.end = async (pid, waitMs = 5000) => {
+    if (!Number.isInteger(pid) || pid <= 0) return { status: 'refused', name: null };
+    if (pid === tracker.targetPid) return { status: 'refused', name: null }; // 자기 자신은 끝내지 않는다(도우미도 거절한다)
+    const got = await ask(`end # ${pid} ${Math.max(0, Math.floor(waitMs))}`, waitMs + listMs);
+    if (got === null) return null;
+    const [status, name] = got.split(' ');
+    return { status, name: name && name !== '-' ? name : null };
+  };
   tracker.close = async () => {
-    if (tracker.exited) return 'already-gone';
-    await chain; // 진행 중인 조회가 끝난 뒤에 닫는다
+    const cleanup = () => { if (ownsHome) { try { fs.rmSync(helperHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* 임시 폴더 — 남아도 해가 없다 */ } } };
+    if (tracker.exited) { cleanup(); return 'already-gone'; }
+    await chain; // 진행 중인 물음이 끝난 뒤에 닫는다
     try { ps.stdin.write('exit\n'); ps.stdin.end(); } catch { /* 이미 닫힘 */ }
     await Promise.race([exitedP, sleep(3000)]);
-    if (tracker.exited) return 'closed';
-    endOnePid(ps.pid); // 이 스크립트가 띄운 그 PID 하나
+    if (tracker.exited) { cleanup(); return 'closed'; }
+    try { ps.kill(); } catch { /* */ } // 이 스크립트가 쥔 그 프로세스 객체로 끝낸다(번호로 찾지 않는다)
     await Promise.race([exitedP, sleep(3000)]);
-    return tracker.exited || !pidAlive(ps.pid) ? 'ended' : 'failed';
+    if (tracker.exited) { cleanup(); return 'ended'; }
+    return 'failed';
   };
   // 닫는 것을 잊어도 node 가 이 도우미 때문에 살아 있지 않게(이 프로세스가 끝나면 표준 입력이 닫혀 도우미도 끝난다).
   try { ps.unref(); ps.stdin.unref?.(); ps.stdout.unref?.(); ps.stderr.unref?.(); } catch { /* */ }
   return tracker;
 }
 
-/** 이 프로세스의 Job 추적기(하나만 만든다). 준비가 끝난 것을 돌려준다 — ok 가 false 면 reason 에 까닭. */
-export async function getJobTracker() {
-  if (!jobTrackerPromise) jobTrackerPromise = (async () => { const t = startJobTracker(); await t.ready; return t; })();
+/** 이 프로세스의 Job 추적기(하나만 만든다 — 처음 부를 때의 home 이 쓰인다). 준비가 끝난 것을 돌려준다. ok 가 false 면 reason 에 까닭. */
+export async function getJobTracker({ home = null } = {}) {
+  if (!jobTrackerPromise) jobTrackerPromise = (async () => { const t = startJobTracker({ home }); await t.ready; return t; })();
   return jobTrackerPromise;
 }
 
@@ -651,19 +725,51 @@ export async function closeJobTracker() {
 }
 
 /**
+ * finalJobSweep -- 도우미를 닫기 직전에 Job **전체**를 본다. 이 스크립트 자신(keepPid)을 뺀 구성원이 0 이어야 한다.
+ * 관측별 "앞 목록과 뒤 목록의 차"로는 잡히지 않는 것(준비 단계 · `--version` 이 남긴 자손, 앞 목록의 PID 를 다시 받은 새 자손)이
+ * 여기서 잡힌다. 남은 것이 있으면 핸들로 끝내 보고, 그래도 남으면 ok=false.
+ *   -> { ok, found: [{pid, status, name}], left: [{pid, name}], reason }
+ */
+export async function finalJobSweep(jobs, { keepPid = process.pid, settleMs = 1500, waitMs = 5000 } = {}) {
+  const rest = (cur) => cur.filter((pid) => pid !== keepPid);
+  let cur = await jobs.list();
+  if (!cur) return { ok: false, found: [], left: [], reason: `Job 목록을 읽지 못함${jobs.failed ? ` — ${jobs.failed}` : ''}` };
+  for (let waited = 0; rest(cur).length && waited < settleMs; waited += 250) { // 막 끝나는 중인 것은 잠깐 기다려 준다
+    await sleep(250);
+    cur = await jobs.list();
+    if (!cur) return { ok: false, found: [], left: [], reason: `Job 목록을 읽지 못함${jobs.failed ? ` — ${jobs.failed}` : ''}` };
+  }
+  const found = [];
+  for (const pid of rest(cur)) { const r = await jobs.end(pid, waitMs); found.push({ pid, status: r?.status ?? 'no-answer', name: r?.name ?? null }); }
+  if (!found.length) return { ok: true, found, left: [], reason: null };
+  for (let waited = 0; ; waited += 250) {
+    cur = await jobs.list();
+    if (!cur) return { ok: false, found, left: found.map(({ pid, name }) => ({ pid, name })), reason: 'Job 목록을 읽지 못함(끝낸 뒤)' };
+    if (!rest(cur).length || waited >= waitMs) break;
+    await sleep(250);
+  }
+  const still = new Set(rest(cur));
+  const nameOf = new Map(found.map((f) => [f.pid, f.name]));
+  const left = [...still].map((pid) => ({ pid, name: nameOf.get(pid) ?? null }));
+  return { ok: left.length === 0, found, left, reason: left.length ? `Job 에 끝나지 않은 프로세스가 남음 pid=${left.map((l) => l.pid).join(',')}` : null };
+}
+
+/**
  * watchFirstScreen -- CLI 를 띄워 첫 화면이 가라앉을 때까지 본다(아무것도 입력하지 않는다).
  * 가라앉음 = 출력이 quietMs 동안 멈췄고 화면 판정이 busy 가 아님(최소 minMs, 최대 maxMs). 한도에 닿으면 settled=false —
  * 그 관측은 통과가 될 수 없다(판정 ⓪). 끝내지는 않는다 — 부른 쪽이 stop() 을 부른다(probe* 가 finally 로 보장).
  * 보는 도중에 무엇이 던지면 띄운 프로세스를 끝낸 뒤 다시 던진다.
- * stop() -> { how, left, retried, tracked, reason }:
- *   how = 'ended' | 'already-gone' | 'ended-after-retry' | 'failed'. 'failed' 가 아닐 때만 "이 관측이 낳은 프로세스가 전부 끝났다".
- *   끝낸 뒤 Job 의 목록에서 "띄우기 직전에는 없던 구성원"이 사라지기를 기다린다. 남은 것이 있으면 **그 PID 들만** 한 번 더
- *   끝내 보고(killOne), 그래도 남으면 failed. 목록을 읽지 못하면 끝났다고 말할 수 없으므로 failed.
- * tracker = Job 추적기(기본 = 이 프로세스의 것). kill · killOne · tracker 는 시험이 바꿔 끼우는 자리다.
- *   tracker.kind 가 'job' 이 아니면(시험용 대역) 띄운 PID 가 Job 에 보이는지는 확인하지 않는다.
+ * stop() -> { how, left, retried, names, tracked, reason }:
+ *   how = 'ended' | 'ended-after-retry' | 'failed'. 'failed' 가 아닐 때만 "이 관측이 낳은 프로세스가 전부 끝났다".
+ *   Job 의 목록에서 "띄우기 직전에는 없던 구성원"(띄운 프로세스 · 가상 터미널의 콘솔 도우미 · 자손)을 전부, 도우미가 핸들로
+ *   끝낸다(띄운 것부터). 그러고도 남은 것이 있으면 그것만 한 번 더 끝내 보고, 그래도 남으면 failed.
+ *   목록을 읽지 못하거나 추적기가 실패로 굳었으면 끝났다고 말할 수 없으므로 failed.
+ * tracker = Job 추적기(기본 = 이 프로세스의 것). 시험이 바꿔 끼우는 자리다.
+ *   tracker.kind 가 'job' 이 아니면(시험용 대역) 띄운 프로세스가 Job 에 보이는지는 확인하지 않고, 띄운 프로세스는
+ *   터미널 대역이 쥔 프로세스 객체로 끝낸다.
  */
 export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUILTIN_SCREEN_RE, cols = 120, rows = 36, quietMs = 6000, minMs = 10000, maxMs = 90000, tickMs = 400,
-  kill = endOwnPid, killOne = endOnePid, tracker = undefined, stopWaitMs = 5000, firstDrainMs = 1500 }) {
+  tracker = undefined, stopWaitMs = 5000, firstDrainMs = 1500 }) {
   const jobs = tracker ?? await getJobTracker();
   // 띄우기 직전의 구성원 — 이 뒤에 새로 보이는 것은 전부 이번 관측이 낳은 것이다.
   const baselineList = await jobs.list();
@@ -673,13 +779,12 @@ export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUIL
   armExitGuard();
   const term = driver.open({ file, args, cwd, env, cols, rows });
   const rootPid = term.state.pid;
-  if (rootPid) ownPids.add(rootPid);
-  // 띄운 PID 가 Job 에 보여야 "빠짐없이 센다"가 성립한다. 살아 있는데 안 보이면 추적이 깨진 것이다.
-  let broken = baselineList ? null : 'Job 목록을 읽지 못함(띄우기 전)';
+  // 띄운 프로세스가 Job 에 보여야 "빠짐없이 센다"가 성립한다. 살아 있는데 안 보이면 추적이 깨진 것이다.
+  let broken = baselineList ? null : `Job 목록을 읽지 못함(띄우기 전)${jobs.failed ? ` — ${jobs.failed}` : ''}`;
   if (!broken && jobs.kind === 'job') {
     const first = await jobs.list();
-    if (!first) broken = 'Job 목록을 읽지 못함(띄운 직후)';
-    else if (pidAlive(rootPid) && !first.includes(rootPid)) broken = `띄운 프로세스(pid=${rootPid})가 Job 에 보이지 않음`;
+    if (!first) broken = `Job 목록을 읽지 못함(띄운 직후)${jobs.failed ? ` — ${jobs.failed}` : ''}`;
+    else if (!term.state.exited && !first.includes(rootPid)) broken = `띄운 프로세스(pid=${rootPid})가 Job 에 보이지 않음`;
   }
   // 남은 구성원이 없어질 때까지(최대 ms) 기다렸다가 그때의 남은 PID 를 돌려준다. 목록을 못 읽으면 null.
   const drain = async (ms) => {
@@ -691,31 +796,36 @@ export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUIL
       await sleep(250);
     }
   };
+  const waitExit = async (ms) => { for (let waited = 0; waited < ms && !term.state.exited; waited += 100) await sleep(100); return term.state.exited; };
   const stop = async () => {
-    const before = await jobs.list();
-    const tracked = before ? born(before).length : null;
-    let how = kill(rootPid);
-    for (let waited = 0; waited < stopWaitMs && pidAlive(rootPid); waited += 200) await sleep(200);
+    const names = {};
+    let tracked = null;
+    const note = (pid, r) => { if (r?.name) names[pid] = r.name; return r; };
+    const fail = (reason, left = [], retried = []) => ({ how: 'failed', left, retried, names, tracked, reason });
+    const unknown = (when) => `Job 목록을 읽지 못해 자손이 끝났는지 알 수 없음(${when})${jobs.failed ? ` — ${jobs.failed}` : ''}`;
+    const before = broken ? null : await jobs.list();
+    const first = before ? born(before) : [];
+    tracked = before ? first.length : null;
+    // 띄운 것부터 끝낸다(자식을 더 낳지 못하게). 그다음 이 관측이 낳은 나머지. 전부 도우미가 핸들로 — Job 소속을 확인한 그 핸들로.
+    // 추적이 깨졌거나(띄운 프로세스가 Job 에 안 보임) 시험용 대역이면 Job 소속을 확인할 수 없으니, 띄운 프로세스 하나만
+    // 터미널이 쥔 프로세스 객체로 끝낸다(그 경우의 결과는 어차피 실패이거나 시험이다).
+    if (jobs.kind === 'job' && !broken) { for (const pid of [rootPid, ...first.filter((p) => p !== rootPid)]) note(pid, await jobs.end(pid, stopWaitMs)); }
+    else term.kill?.();
+    const rootGone = await waitExit(stopWaitMs);
     term.dispose();
-    let names = {};
-    const fail = (reason, left = [], retried = []) => { for (const pid of left) ownPids.add(pid); return { how: 'failed', left, retried, names, tracked, reason }; };
-    if (broken) return fail(broken);
-    // 나무를 끝낸 뒤에도 Job 에 남는 것: ⓐ 부모를 잃어 taskkill 이 따라가지 못한 자손 ⓑ 가상 터미널의 콘솔 도우미
-    // (conhost.exe — node-pty 가 이 스크립트의 자식으로 띄우며, CLI 가 끝나도 터미널을 닫기 전까지 남는다. 그래서 가상
-    // 터미널로 띄운 관측은 늘 이 길을 한 번 거친다). 어느 쪽이든 이 관측이 낳은 프로세스이므로 그 PID 로 끝낸다.
+    if (broken) return fail(broken, rootGone ? [] : [rootPid]);
+    if (!before) return fail(unknown('끝내기 전'), rootGone ? [] : [rootPid]);
     let left = await drain(firstDrainMs);
-    if (left === null) return fail('Job 목록을 읽지 못해 자손이 끝났는지 알 수 없음');
+    if (left === null) return fail(unknown('끝낸 뒤'));
     const retried = [...left];
-    names = Object.fromEntries(left.map((pid) => [pid, imageNameOf(pid)])); // 무엇이 남았는지 사람이 읽게(찾는 데는 쓰지 않는다)
     if (left.length) {
-      for (const pid of left) killOne(pid); // Job 에 남아 있는 그 PID 들만
+      for (const pid of left) note(pid, await jobs.end(pid, stopWaitMs)); // Job 에 남아 있는 그것들만, 다시 핸들로
       left = await drain(stopWaitMs);
-      if (left === null) return fail('Job 목록을 읽지 못해 자손이 끝났는지 알 수 없음', retried, retried);
+      if (left === null) return fail(unknown('다시 끝낸 뒤'), retried, retried);
     }
-    if (left.length || pidAlive(rootPid)) return fail(`끝나지 않은 프로세스 pid=${(left.length ? left : [rootPid]).join(',')}`, left.length ? left : [rootPid], retried);
-    ownPids.delete(rootPid);
-    if (retried.length) how = 'ended-after-retry';
-    return { how, left: [], retried, names, tracked, reason: null };
+    if (left.length || !rootGone) return fail(`끝나지 않은 프로세스 pid=${(left.length ? left : [rootPid]).join(',')}`, left.length ? left : [rootPid], retried);
+    if (jobs.failed) return fail(`프로세스 추적기가 실패함 — ${jobs.failed}`);
+    return { how: retried.length ? 'ended-after-retry' : 'ended', left: [], retried, names, tracked, reason: null };
   };
   const timeline = [];
   let last = null; let final = classifyScreen([], re); let settled = false;
@@ -739,7 +849,7 @@ export async function watchFirstScreen({ driver, file, args, cwd, env, re = BUIL
   const rawAtSettle = term.state.raw;
   return {
     rawAtSettle,
-    pid: term.state.pid, alive: !term.state.exited && pidAlive(term.state.pid), exited: term.state.exited, exitCode: term.state.exitCode,
+    pid: term.state.pid, alive: !term.state.exited, exited: term.state.exited, exitCode: term.state.exitCode,
     settled, ms: Date.now() - t0, final, timeline, timelineText: timeline.map((s) => s.text).join('\n\n'), allLines, raw: () => term.state.raw,
     // 판정이 끝난 뒤에만 쓴다: 보기 키를 한 번 누르고 그 화면을 읽는다(요청문이 아니다 — 모델 호출 없음).
     peek: async (keys, waitMs = 1500) => {
@@ -1026,7 +1136,7 @@ async function main(argv) {
   const root = path.join(work, 'soul');
   const home = path.join(work, 'home');
   let dead = null;
-  let trackerPid = null;
+  let jobsRef = null;
   let keepWork = opt.keep;
   let cleanup = { state: 'pending' };
   const out = { at: new Date().toISOString(), label, mode: opt.compare ? 'compare' : 'lock', lock: lockVer, control: opt.control, agents: {} };
@@ -1061,8 +1171,9 @@ async function main(argv) {
     };
 
     // 자손을 빠짐없이 세는 Job 추적기 — 띄우기 전에 준비돼 있어야 한다. 쓸 수 없으면 아무것도 띄우지 않는다.
-    const jobs = driver.ok ? await getJobTracker() : null;
-    trackerPid = jobs?.pid ?? null;
+    // 도우미의 임시 · 홈 폴더도 이번 실행 폴더 안에 둔다.
+    const jobs = driver.ok ? await getJobTracker({ home: path.join(work, 'job-helper') }) : null;
+    jobsRef = jobs;
     if (!driver.ok) { for (const a of want) skip(a, driver.reason); }
     else if (!jobs.ok) { for (const a of want) skip(a, `프로세스 추적(Job Object)을 쓸 수 없음 — ${jobs.reason ?? '까닭 모름'}. 띄운 프로세스의 자손이 끝났는지 확인할 수 없어 띄우지 않는다`); }
     else {
@@ -1111,16 +1222,27 @@ async function main(argv) {
     results.error = { state: 'failed', reason: String(e?.message || e) };
     console.log(`FAIL firstrun-probe 예외 -- ${e?.stack || e}`);
   } finally {
-    // 정리 순서: ① 자식 종료(probe* 의 finally — 여기서는 남은 것이 있는지 확인) → ② 폴더 정리. 남은 것이 있으면 폴더를 지우지 않는다.
+    // 정리 순서: ① 관측별 종료(probe* 의 finally) → ② Job 전체 확인(이 스크립트 자신만 남았는가 — 준비 단계 · --version 이
+    //            남긴 자손도 여기서 잡힌다) → ③ 도우미 닫기 → ④ 폴더 정리. 남은 것이 있으면 폴더를 지우지 않는다.
     if (dead) await dead.close().catch(() => {});
+    if (jobsRef?.ok) {
+      const sweep = await finalJobSweep(jobsRef).catch((e) => ({ ok: false, found: [], left: [], reason: String(e?.message || e) }));
+      out.jobSweep = sweep;
+      if (sweep.found.length) console.log(`NOTE 마지막 Job 확인: 관측 밖에서 남아 있던 프로세스 ${sweep.found.length}개를 끝냄 -- ${sweep.found.map((f) => `${f.pid}=${f.name ?? '?'}(${f.status})`).join(' ')}`);
+      if (!sweep.ok) {
+        keepWork = true;
+        results.children = { state: 'failed', reason: sweep.reason };
+        console.log(`FAIL firstrun-probe 마지막 Job 확인 -- ${sweep.reason}${sweep.left.length ? ` [${sweep.left.map((l) => `${l.pid}=${l.name ?? '?'}`).join(' ')}]` : ''} (작업 폴더를 남긴다)`);
+      }
+      // 물음에 답이 제때 오지 않은 적이 있으면 "지금의 목록"을 믿을 수 없다 — 그 실행은 통과가 될 수 없다.
+      if (jobsRef.failed) { results.tracker = { state: 'failed', reason: jobsRef.failed }; console.log(`FAIL firstrun-probe 프로세스 추적기 -- ${jobsRef.failed}`); }
+    }
     // Job 을 다루던 파워셸 도우미도 이 스크립트가 띄운 프로세스다 — 끝난 것을 확인하고 넘어간다.
     const closed = await closeJobTracker().catch(() => 'failed');
-    if (trackerPid && (closed === 'failed' || pidAlive(trackerPid))) ownPids.add(trackerPid);
-    const left = [...ownPids].filter((pid) => pidAlive(pid));
-    if (left.length) {
+    if (closed === 'failed') {
       keepWork = true;
-      results.children = { state: 'failed', reason: `띄운 프로세스가 끝나지 않음 pid=${left.join(',')}` };
-      console.log(`FAIL firstrun-probe 띄운 프로세스(또는 그 자손)가 끝나지 않음 -- pid=${left.join(',')} (작업 폴더를 남긴다)`);
+      results.helper = { state: 'failed', reason: 'Job 도우미가 끝나지 않음' };
+      console.log(`FAIL firstrun-probe Job 도우미가 끝나지 않음 -- pid=${jobsRef?.pid ?? '-'} (작업 폴더를 남긴다)`);
     }
     if (keepWork) cleanup = { state: 'kept', path: work };
     else {
