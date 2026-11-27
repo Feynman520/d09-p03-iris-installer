@@ -94,10 +94,32 @@ export function shimBootstrapNoBrowser(text) {
   return { text: out, changed: true };
 }
 
+/**
+ * 적용기 길에서 %LOCALAPPDATA% 를 대신할 상태 폴더를 고른다.
+ * 직접 길은 설치기 서버를 이 스크립트의 node 로 바로 띄우므로 상태 폴더가 어디든 상관없다. 적용기 길은 **진짜 시작 파일**을
+ * 거친다 — bootstrap.ps1 이 `%LOCALAPPDATA%\IRIS-Installer\node` 에 윈도우의 tar.exe 로 node 를 푸는데, tar.exe 는 이 PC 의
+ * ANSI 코드 페이지로 적을 수 없는 글자가 든 경로로 들어가지 못한다("could not chdir" → "Could not unpack Node", 종료 12).
+ * 이 저장소 폴더의 이름에 그런 글자(반전각 괄호)가 있어, 상태 폴더를 저장소의 `_build\upgrade\state` 에 두면 게이트가 설치기
+ * 서버를 한 번도 보지 못한다(2.0.67 내기 전 검사에서 첫 실행 전에 작은 실험으로 확인 — verify/firstrun-probe.mjs 의
+ * defaultWorkBase 와 같은 종류의 검사 코드 결함이다). 그래서 그 경로가 ASCII 가 아니면 시스템 임시 폴더 아래로 옮긴다.
+ * 실제 PC 의 %LOCALAPPDATA% 는 사용자 폴더 아래라 보통 그 PC 의 코드 페이지로 적힌다 — 이 함수는 게이트의 자리만 고른다.
+ *   scratchDir   게이트의 작업 폴더(_build\upgrade)
+ *   tmpDir       시스템 임시 폴더
+ * 돌려주는 값 = { dir, moved }.
+ */
+export const APPLIER_STATE_NAME = 'iris-upgrade-gate-state';
+export function applierStateDir(scratchDir, tmpDir) {
+  const inRepo = path.join(scratchDir, 'state');
+  let ascii = true;
+  for (let i = 0; i < inRepo.length; i += 1) if (inRepo.charCodeAt(i) > 127) { ascii = false; break; }
+  if (ascii) return { dir: inRepo, moved: false };
+  return { dir: path.join(tmpDir, APPLIER_STATE_NAME), moved: true };
+}
+
 // ---------------------------------------------------------------------------
 // 판정 — 전부 { name, ok, detail } 의 목록을 돌려준다(게이트가 그대로 찍는다)
 // ---------------------------------------------------------------------------
-const row = (name, ok, detail = '') => ({ name, ok: !!ok, detail });
+const row =(name, ok, detail = '') => ({ name, ok: !!ok, detail });
 
 /** 적용기가 표준 출력에 낸 마지막 JSON 줄(없으면 null). */
 export function lastJsonLine(stdout) {

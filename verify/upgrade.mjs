@@ -53,6 +53,8 @@
 //   띄우지 않게). 시작 파일은 브라우저를 열므로, **받아 둔 사본**의 bootstrap.ps1 에서 그 한 줄만 끈다(zip · 원본 무변경).
 //   적용기가 띄운 프로세스들은 이 스크립트의 직계 자식이 아니다 — 끝낼 때는 스스로 끝나기를 기다리고, 남았으면
 //   "연습용 상태 폴더의 node 로 뜬 그 번호"임을 실행 파일 경로로 확인한 것만 번호로 끝낸다(이름 기반 종료 없음).
+//   상태 폴더(%LOCALAPPDATA% 대역): 이 길에서는 저장소 경로가 ASCII 가 아니면 <시스템 임시 폴더>\iris-upgrade-gate-state 를 쓴다 —
+//   진짜 시작 파일이 거기에 tar.exe 로 node 를 푸는데 tar.exe 는 ANSI 코드 페이지 밖 글자가 든 경로에 들어가지 못한다. 직접 길은 그대로다.
 
 import fs from 'node:fs';
 import net from 'node:net';
@@ -66,7 +68,7 @@ import { extractZip } from '../lib/zip.mjs';
 import { driveInstall, getJson } from './offline.mjs';
 import { doctorBundleProblems, doctorPartRequired, DOCTOR_PART_ID, DOCTOR_FIRST_PACKAGE_VERSION } from './doctor-bundle.mjs';
 import {
-  PACKAGE_DIR, NO_BROWSER_ENV, stagingDir, buildPlan, writePlan, applierCommand, shimBootstrapNoBrowser, startedCmdPid,
+  PACKAGE_DIR, NO_BROWSER_ENV, stagingDir, buildPlan, writePlan, applierCommand, shimBootstrapNoBrowser, startedCmdPid, applierStateDir,
   judgeHandoff, describeHandoffMoment, judgeApplierLog, judgeAfterInstaller, judgeKeepFilesLocked,
 } from './upgrade-applier.mjs';
 
@@ -75,7 +77,6 @@ const LAST_BUILD_JSON = path.join(ROOT_DIR, '_build', 'out', 'last-build.json');
 const SCRATCH_DIR = path.join(ROOT_DIR, '_build', 'upgrade');
 const ZIP_PREV = path.join(SCRATCH_DIR, 'zip-prev');
 const ZIP_NEXT = path.join(SCRATCH_DIR, 'zip-next');
-const STATE_DIR = path.join(SCRATCH_DIR, 'state'); // stands in for %LOCALAPPDATA%
 const RESULT_FILE = path.join(SCRATCH_DIR, 'result.json');
 const PORT = 3460;
 const SOUL_NAME = 'IRIS-upg';
@@ -88,6 +89,10 @@ const opt = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : nu
 const KEEP = flag('--keep');
 const EXPECT_FAIL = flag('--expect-fail');
 const VIA_APPLIER = flag('--via-applier');
+// %LOCALAPPDATA% 를 대신하는 상태 폴더. 직접 길 = 지금까지처럼 _build\upgrade\state. 적용기 길 = 그 경로가 ASCII 가 아니면
+// 시스템 임시 폴더 아래(진짜 시작 파일의 tar.exe 가 그런 경로에 node 를 풀지 못한다 — upgrade-applier.mjs applierStateDir).
+const STATE_PICK = VIA_APPLIER ? applierStateDir(SCRATCH_DIR, os.tmpdir()) : { dir: path.join(SCRATCH_DIR, 'state'), moved: false };
+const STATE_DIR = STATE_PICK.dir; // stands in for %LOCALAPPDATA%
 
 const results = [];
 function check(name, cond, detail = '') {
@@ -554,6 +559,7 @@ async function main() {
   log(`prev ${prevVersion}  ${prevZip}`);
   log(`next ${nextVersion}  ${nextZip}`);
   if (cmpVer(prevVersion, nextVersion) >= 0) throw new Error('--from must be an older version than the new zip');
+  if (STATE_PICK.moved) log(`state folder (stands in for %LOCALAPPDATA%): ${STATE_DIR} -- moved out of the repository because its path is not ASCII (applierStateDir)`);
 
   if (fs.existsSync(SOUL_ROOT)) { log(`removing leftover ${SOUL_ROOT}`); if (!await removeDirHard(SOUL_ROOT)) throw new Error(`cannot remove ${SOUL_ROOT}`); }
   fs.rmSync(SCRATCH_DIR, { recursive: true, force: true });
@@ -877,7 +883,7 @@ async function main() {
       if (fs.existsSync(SOUL_ROOT) && !await removeDirHard(SOUL_ROOT)) console.error(`warning: could not remove ${SOUL_ROOT}`);
       for (const d of [ZIP_PREV, ZIP_NEXT, STATE_DIR]) fs.rmSync(d, { recursive: true, force: true });
     } else {
-      log(`--keep: ${SOUL_ROOT} and ${SCRATCH_DIR} left in place`);
+      log(`--keep: ${SOUL_ROOT} and ${SCRATCH_DIR} left in place${STATE_PICK.moved ? ` (state folder: ${STATE_DIR})` : ''}`);
     }
   }
 }

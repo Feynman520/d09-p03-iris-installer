@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   PLAN_SCHEMA, PLAN_FILE, PACKAGE_DIR, NO_BROWSER_ENV, windowStamp, stagingDir, buildPlan, writePlan, applierCommand,
-  shimBootstrapNoBrowser, lastJsonLine, startedCmdPid,
+  shimBootstrapNoBrowser, lastJsonLine, startedCmdPid, applierStateDir, APPLIER_STATE_NAME,
   judgeHandoff, describeHandoffMoment, judgeApplierLog, judgeAfterInstaller, judgeKeepFilesLocked,
 } from '../verify/upgrade-applier.mjs';
 import { applyPlan, PLAN_SCHEMA as APPLIER_PLAN_SCHEMA, insideDownloads, updateResultPath, updateLogPath } from '../updater/apply.mjs';
@@ -317,6 +317,26 @@ test('shimBootstrapNoBrowser: 진짜 bootstrap.ps1 에서 그 한 줄만 바꾼�
     `$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile('${shimmed.replace(/'/g, "''")}',[ref]$t,[ref]$e)|Out-Null; if($e.Count){$e|%{$_.Message};exit 1}else{exit 0}`],
   { encoding: 'utf8', windowsHide: true, timeout: 60000 });
   assert.equal(r.status, 0, r.stdout || r.stderr);
+});
+
+// ---------------------------------------------------------------------------
+// 상태 폴더 — 진짜 시작 파일의 tar.exe 가 들어갈 수 있는 자리
+// ---------------------------------------------------------------------------
+// 2.0.67 내기 전 검사: 적용기 길은 진짜 bootstrap.ps1 을 거치고, 그 스크립트는 %LOCALAPPDATA%\IRIS-Installer\node 에 윈도우의
+// tar.exe 로 node 를 푼다. tar.exe 는 ANSI 코드 페이지로 적을 수 없는 글자가 든 경로에 들어가지 못한다("could not chdir").
+// 이 저장소 폴더의 이름에 그런 글자가 있어, 상태 폴더를 저장소 안에 두면 게이트는 서버를 보지 못하고 10분을 기다린 뒤 실패한다.
+test('applierStateDir: 작업 폴더 경로가 ASCII 면 그 안, 아니면 시스템 임시 폴더 아래 — 게이트의 적용기 길만 이 자리를 쓴다', () => {
+  const tmpDir = 'T:\\scratch\\tmp';
+  assert.deepEqual(applierStateDir('C:\\work\\p02\\_build\\upgrade', tmpDir), { dir: path.join('C:\\work\\p02\\_build\\upgrade', 'state'), moved: false });
+  for (const scratch of ['C:\\work\\P02-설치 패키지(Installer)\\_build\\upgrade', 'C:\\work\\P02 〖Local App〗\\_build\\upgrade', 'C:\\work\\café\\_build\\upgrade']) {
+    assert.deepEqual(applierStateDir(scratch, tmpDir), { dir: path.join(tmpDir, APPLIER_STATE_NAME), moved: true }, scratch);
+  }
+  assert.match(APPLIER_STATE_NAME, /^[a-z-]+$/, '고정된 ASCII 이름 하나(게이트가 끝날 때 이 폴더만 지운다)');
+  // 게이트 스크립트: 적용기 길에서만 이 함수로 고르고, 직접 길의 자리는 지금까지와 같다.
+  const src = fs.readFileSync(path.join(REPO, 'verify', 'upgrade.mjs'), 'utf8');
+  assert.ok(src.includes("const STATE_PICK = VIA_APPLIER ? applierStateDir(SCRATCH_DIR, os.tmpdir()) : { dir: path.join(SCRATCH_DIR, 'state'), moved: false };"));
+  assert.ok(src.includes('const STATE_DIR = STATE_PICK.dir;'));
+  assert.ok(src.indexOf("const VIA_APPLIER = flag('--via-applier');") < src.indexOf('const STATE_PICK ='), '길을 읽은 뒤에 자리를 고른다');
 });
 
 // ---------------------------------------------------------------------------
