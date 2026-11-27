@@ -1,10 +1,12 @@
 // 2.0.53 — 로그인 열쇠 감시 도구(iris-auth)를 설치 PC 에 싣는다(2026-11-02 사용자 신고:
 // 설치 PC 의 IRIS 창 계정·보안에 「로그인 열쇠」 절이 통째로 없었다 — 도구가 개발 PC 에만 있었음).
 // IRIS 창은 `_agent\shared\tools\iris-auth\status.mjs` 가 있어야 그 절을 켠다(Face daemon/paths.mjs authDir()).
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { UNPACK_ORDER, V2_LAYOUT } from '../installer/setup/unpack.mjs';
 
@@ -33,3 +35,142 @@ test('사본에 IRIS 창이 부르는 세 파일과 진입점이 있다', () => 
   assert.match(fs.readFileSync(path.join(SRC, 'longkey.mjs'), 'utf8'), /RESULT /);
 });
 // 개인 문자열 0건은 tests/repo-clean.test.mjs(추적 파일 전체 정화 검사)가 이 사본까지 함께 본다.
+
+// ---------------------------------------------------------------------------
+// 2.0.65 — 사본의 동작을 잰다(그 전에는 파일이 있는지만 봤다): 중계기 판정 칸(health) ·
+// 공급자 빼기(--skip-provider) · 알림 기록 보존 · 겹쳐 돌아도 안전한 상태 파일 쓰기.
+// 사본을 **임시 홈**에서만 돌린다 — 이 PC 의 진짜 상태 파일 · 로그인 파일 · 중계기 설정을 읽거나 쓰지 않는다.
+// ---------------------------------------------------------------------------
+
+const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 'iris-auth-copy-'));
+after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+const DAY = 86400000;
+
+// 임시 홈 하나: 중계기 설정(클로드 1 · 코덱스 1 · 구글 1) + 중계기 판정(구글 = 재로그인 필요).
+function makeHome(label, { googleNeedsLogin = true } = {}) {
+  const home = path.join(tmp, label);
+  const tc = path.join(home, 'tc', 'teamclaude.json');
+  fs.mkdirSync(path.join(home, '.config'), { recursive: true });
+  fs.mkdirSync(path.dirname(tc), { recursive: true });
+  fs.mkdirSync(path.join(home, 'claude', 'secrets'), { recursive: true });
+  const now = Date.now();
+  fs.writeFileSync(tc, JSON.stringify({ accounts: [
+    { name: 'a@localhost', type: 'oauth', provider: 'anthropic', refreshToken: 'R', refreshTokenExpiresAt: now + 20 * DAY, expiresAt: now + 3600e3 },
+    { name: 'codex-1', type: 'oauth', provider: 'codex', refreshToken: 'R', expiresAt: now + 3600e3 },
+    { name: 'google-1', type: 'oauth', provider: 'google', refreshToken: 'R', expiresAt: now + 3600e3 },
+  ] }));
+  fs.writeFileSync(path.join(path.dirname(tc), 'teamclaude.auth-health.json'), JSON.stringify({ accounts: [
+    { name: 'a@localhost', provider: 'anthropic', state: 'checking', since: new Date(now - 60e3).toISOString() },
+    ...(googleNeedsLogin ? [{ name: 'google-1', provider: 'google', state: 'needs-login', since: new Date(now - 60e3).toISOString() }] : []),
+  ] }));
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  Object.assign(env, {
+    USERPROFILE: home, HOME: home,
+    CLAUDE_CONFIG_DIR: path.join(home, 'claude'),
+    TEAMCLAUDE_CONFIG: tc,
+    IRIS_LONGKEY_FILE: path.join(home, 'claude', 'secrets', 'iris-cli-token.json'),
+    IRIS_AUTH_NOTIFY: '0', // 알림 풍선을 띄우지 않는다
+  });
+  return { home, env, statusFile: path.join(home, '.config', 'iris-auth-status.json') };
+}
+
+function runStatus(h, args) {
+  const r = spawnSync(process.execPath, [path.join(SRC, 'status.mjs'), ...args], { env: h.env, encoding: 'utf8', timeout: 30000, windowsHide: true });
+  return { code: r.status, out: r.stdout ?? '', err: r.stderr ?? '' };
+}
+const readStatus = (h) => JSON.parse(fs.readFileSync(h.statusFile, 'utf8'));
+
+test('사본의 자체 시험(판정 · 1년 열쇠 · health · 공급자 빼기)이 통과한다', () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT; // 시험 안에서 시험 실행기를 한 번 더 띄운다
+  const files = fs.readdirSync(path.join(SRC, 'tests')).filter((f) => f.endsWith('.test.mjs')).sort();
+  assert.deepEqual(files, ['health.test.mjs', 'lib.test.mjs', 'longkey.test.mjs', 'skip-provider.test.mjs']);
+  const r = spawnSync(process.execPath, ['--test', ...files.map((f) => path.join(SRC, 'tests', f))], { env, encoding: 'utf8', timeout: 120000, windowsHide: true });
+  assert.equal(r.status, 0, `사본 시험 실패:\n${(r.stdout ?? '').slice(-2000)}\n${(r.stderr ?? '').slice(-1000)}`);
+});
+
+test('health: 항목이 중계기 판정을 그대로 싣는다(checking 은 급한 것으로 세지 않는다 · 판정이 없으면 null)', () => {
+  const h = makeHome('health');
+  const r = runStatus(h, ['--json']);
+  assert.equal(r.code, 0, r.err);
+  const out = JSON.parse(r.out);
+  const item = (id) => out.items.find((i) => i.id === id);
+  assert.equal(item('tc:anthropic:a@localhost').health, 'checking');
+  assert.equal(item('tc:anthropic:a@localhost').level, 'ok');
+  assert.equal(item('tc:google:google-1').health, 'needs-login');
+  assert.equal(item('tc:google:google-1').level, 'expired');
+  assert.equal(item('tc:codex:codex-1').health, null);
+  assert.ok(!out.due.includes('tc:anthropic:a@localhost'));
+  assert.ok(out.due.includes('tc:google:google-1'));
+  assert.deepEqual(readStatus(h).items, out.items, '상태 파일에도 같은 항목이 들어간다');
+  assert.ok(!/"R"|refreshToken/.test(fs.readFileSync(h.statusFile, 'utf8')), '열쇠 값은 상태 파일에 쓰지 않는다');
+});
+
+test('공급자 빼기: --skip-provider=google 이면 출력 · 상태 파일 · 급한 항목 어디에도 그 공급자가 없다', () => {
+  const h = makeHome('skip');
+  const all = JSON.parse(runStatus(h, ['--json']).out);
+  const cut = JSON.parse(runStatus(h, ['--json', '--skip-provider=google']).out);
+  assert.ok(all.items.some((i) => i.provider === 'google'));
+  assert.ok(!cut.items.some((i) => i.provider === 'google'));
+  assert.ok(!cut.due.some((id) => id.includes(':google:')));
+  const rest = (o) => JSON.stringify(o.items.filter((i) => i.provider !== 'google'));
+  assert.equal(rest(cut), rest(all), '다른 공급자의 항목은 빼기 전과 글자 하나 다르지 않다');
+  assert.ok(!JSON.stringify(readStatus(h).items).includes('google'), '상태 파일에도 없다');
+});
+
+test('알림 기록 보존: 뺀 조합마다 칸이 따로다 — 한쪽 호출이 다른 쪽의 기록을 지우지 않는다', () => {
+  const h = makeHome('memo');
+  const memoAll = { key: 'k-all', at: 111 };
+  const memoCut = { key: 'k-cut', at: 222 };
+  fs.writeFileSync(h.statusFile, JSON.stringify({ items: [], notify: memoAll, notify_skip_google: memoCut }));
+
+  // ① 알림 없이 보기만 하는 호출(빼든 안 빼든)은 두 칸을 그대로 둔다.
+  runStatus(h, ['--json', '--skip-provider=google']);
+  assert.deepEqual(readStatus(h).notify, memoAll);
+  assert.deepEqual(readStatus(h).notify_skip_google, memoCut);
+  runStatus(h, ['--json']);
+  assert.deepEqual(readStatus(h).notify, memoAll);
+  assert.deepEqual(readStatus(h).notify_skip_google, memoCut);
+
+  // ② 구글을 빼고 본 호출이 "알릴 것 없음"이면 **자기 칸만** 지운다(예전에는 하나뿐인 칸을 지워, 빼지 않는 호출이 같은 알림을 다시 띄웠다).
+  runStatus(h, ['--json', '--notify', '--skip-provider=google']);
+  assert.equal(readStatus(h).notify_skip_google, null, '뺀 쪽 칸: 알릴 것이 없어 비워짐');
+  assert.deepEqual(readStatus(h).notify, memoAll, '빼지 않는 쪽 칸은 그대로');
+
+  // ③ 옛 상태 파일(칸 하나)도 그대로 읽힌다.
+  fs.writeFileSync(h.statusFile, JSON.stringify({ items: [], notify: memoAll }));
+  runStatus(h, ['--json']);
+  assert.deepEqual(readStatus(h).notify, memoAll);
+});
+
+test('상태 파일 쓰기: 여럿이 겹쳐 돌아도(세션 시작 훅 + 창의 주기 점검) 파일이 깨지지 않고 임시 파일이 남지 않는다', async () => {
+  const h = makeHome('overlap');
+  const one = () => new Promise((resolve) => {
+    const c = spawn(process.execPath, [path.join(SRC, 'status.mjs'), '--hook'], { env: h.env, stdio: 'ignore', windowsHide: true });
+    c.on('exit', (code) => resolve(code));
+    c.on('error', () => resolve(-1));
+  });
+  const codes = await Promise.all(Array.from({ length: 8 }, one));
+  assert.deepEqual(codes, Array(8).fill(0));
+  assert.ok(Array.isArray(readStatus(h).items), '상태 파일이 JSON 으로 읽힌다');
+  const left = fs.readdirSync(path.dirname(h.statusFile)).filter((f) => f.endsWith('.tmp'));
+  assert.deepEqual(left, [], '임시 파일이 남지 않는다');
+  assert.match(fs.readFileSync(path.join(SRC, 'status.mjs'), 'utf8'), /\$\{STATUS_FILE\}\.\$\{process\.pid\}\.tmp/, '임시 파일 이름에 프로세스 번호가 들어간다');
+});
+
+test('--hook: IRIS 열쇠에 알릴 것이 없으면 아무것도 내지 않는다 · 있으면 한 줄 — 중계기 계정 일은 여기서 알리지 않는다', () => {
+  const quiet = makeHome('hook-quiet'); // 구글이 재로그인 필요여도 IRIS 열쇠 일이 아니다
+  const q = runStatus(quiet, ['--hook']);
+  assert.equal(q.code, 0, q.err);
+  assert.equal(q.out, '');
+
+  const due = makeHome('hook-due');
+  fs.writeFileSync(due.env.IRIS_LONGKEY_FILE, JSON.stringify({ token: 'T', expiresAt: Date.now() + DAY, email: null }));
+  const d = runStatus(due, ['--hook']);
+  assert.equal(d.code, 0, d.err);
+  assert.match(d.out, /^\[IRIS 인증\] .+\n$/);
+  assert.equal(d.out.trim().split('\n').length, 1, '한 줄만');
+  assert.ok(!d.out.includes('T"') && !/token/i.test(d.out), '열쇠 값은 내지 않는다');
+});

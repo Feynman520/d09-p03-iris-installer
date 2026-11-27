@@ -72,6 +72,9 @@ export function collect({ tcAccounts = [], health = null, cli = null, longKey = 
     items.push({
       id: `tc:${provider}:${a.name}`, group: 'teamclaude', provider, name: a.name, label: short(a.name),
       longKey: provider === 'anthropic' && Boolean(a.longKey || !a.hasRefresh), expiresAt, daysLeft: daysLeft(expiresAt, now), level, renew, optional: false,
+      // 중계기 판정 그대로(2026-11-25): ok · checking(갱신이 한 번 실패해 다시 확인하는 중) · needs-login · expiring. 낡은 판정(staleHealth)과 판정이 없을 때는 null.
+      // checking 은 level 을 바꾸지 않는다 — 급한 것으로 세지 않는다(스스로 돌아올 수 있다). 화면은 이 칸으로 대시보드와 같은 낱말을 쓴다.
+      health: hs || null,
     });
   }
 
