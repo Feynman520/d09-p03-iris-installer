@@ -136,13 +136,19 @@ export function judgeHandoff({ exit, stdout, result, version }) {
 }
 
 /**
- * ⓝ-2 「지금 동작」 넘긴 직후의 사실 — 적용기가 끝난 그때 설치는 아직 끝나지 않았다.
- *   receiptVersionAtExit   적용기가 끝난 직후 읽은 영수증의 판
- *   prevVersion · nextVersion
+ * ⓝ-2 넘긴 직후에 본 영수증 — **판정이 아니라 기록 한 줄**이다(통과 · 실패를 가르지 않는다).
+ * 결과 파일의 ok:true 는 "설치기에 넘겼다"는 뜻이고 설치가 끝났다는 뜻이 아니다. 그래서 적용기가 끝난 그때 영수증은 보통 아직
+ * 옛 판이다. 그러나 그것을 **필수로 요구하지 않는다**: 게이트가 적용기의 끝을 알아차리는 것이 늦거나 설치기가 빠르면 그 사이에
+ * 이미 새 판일 수 있다(시점 경쟁 — 2026-11-28 코드 검토). 넘김 = 완료가 아니라는 사실은 결과 파일의 모양(judgeHandoff)과
+ * 그 파일이 설치기가 끝난 뒤에도 그대로라는 것(judgeAfterInstaller)으로 굳히고, 통과 · 실패는 최종 상태(새 판 영수증 · 부품 제자리 ·
+ * 기존 판정)로 가른다.
+ *   receiptVersionAtExit   적용기가 끝난 것을 본 직후 읽은 영수증의 판
  */
-export function judgeHandoffIsNotCompletion({ receiptVersionAtExit, prevVersion, nextVersion }) {
-  return [row('ⓝ 「지금 동작」 적용기가 "ok" 를 적은 때 영수증은 아직 옛 판이다(ok = 넘김 성공이지 설치 완료가 아니다)',
-    receiptVersionAtExit === prevVersion && receiptVersionAtExit !== nextVersion, `영수증 ${receiptVersionAtExit ?? '(없음)'} · 옛 ${prevVersion} · 새 ${nextVersion}`)];
+export function describeHandoffMoment({ receiptVersionAtExit, prevVersion, nextVersion }) {
+  const seen = receiptVersionAtExit ?? '(읽지 못함)';
+  if (receiptVersionAtExit === prevVersion) return `적용기가 끝난 것을 본 때 영수증은 아직 옛 판(${seen})이었다 — 결과 파일의 ok 는 "넘겼다"이지 "끝났다"가 아니다`;
+  if (receiptVersionAtExit === nextVersion) return `적용기가 끝난 것을 본 때 영수증은 이미 새 판(${seen})이었다 — 설치기가 그 사이에 끝났다(정상일 수 있다: 관측이 늦었다)`;
+  return `적용기가 끝난 것을 본 때 영수증의 판은 ${seen} 이었다(옛 ${prevVersion} · 새 ${nextVersion})`;
 }
 
 /**

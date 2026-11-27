@@ -67,7 +67,7 @@ import { driveInstall, getJson } from './offline.mjs';
 import { doctorBundleProblems, doctorPartRequired, DOCTOR_PART_ID, DOCTOR_FIRST_PACKAGE_VERSION } from './doctor-bundle.mjs';
 import {
   PACKAGE_DIR, NO_BROWSER_ENV, stagingDir, buildPlan, writePlan, applierCommand, shimBootstrapNoBrowser, startedCmdPid,
-  judgeHandoff, judgeHandoffIsNotCompletion, judgeApplierLog, judgeAfterInstaller, judgeKeepFilesLocked,
+  judgeHandoff, describeHandoffMoment, judgeApplierLog, judgeAfterInstaller, judgeKeepFilesLocked,
 } from './upgrade-applier.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -494,7 +494,8 @@ async function updateViaApplier({ nextZip, nextVersion, prevVersion, staged }) {
   const applierLog = (readText(updateLog) ?? '').slice(logOffset);
   staged.cmdPid = startedCmdPid(applierLog);
   for (const r of judgeHandoff({ exit, stdout: out.join(''), result: resultObj, version: nextVersion })) check(r.name, r.ok, r.detail);
-  for (const r of judgeHandoffIsNotCompletion({ receiptVersionAtExit, prevVersion, nextVersion })) check(r.name, r.ok, r.detail);
+  // 기록만(판정 아님): 넘긴 직후의 영수증 판은 시점에 따라 옛 판일 수도 새 판일 수도 있다 — 통과 · 실패는 최종 상태로 가른다.
+  log(describeHandoffMoment({ receiptVersionAtExit, prevVersion, nextVersion }));
   for (const r of judgeApplierLog({ logText: applierLog, version: nextVersion, soulName: SOUL_NAME })) check(r.name, r.ok, r.detail);
   if (err.join('').trim()) log(`applier stderr: ${err.join('').trim().slice(0, 400)}`);
 

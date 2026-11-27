@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import {
   PLAN_SCHEMA, PLAN_FILE, PACKAGE_DIR, NO_BROWSER_ENV, windowStamp, stagingDir, buildPlan, writePlan, applierCommand,
   shimBootstrapNoBrowser, lastJsonLine, startedCmdPid,
-  judgeHandoff, judgeHandoffIsNotCompletion, judgeApplierLog, judgeAfterInstaller, judgeKeepFilesLocked,
+  judgeHandoff, describeHandoffMoment, judgeApplierLog, judgeAfterInstaller, judgeKeepFilesLocked,
 } from '../verify/upgrade-applier.mjs';
 import { applyPlan, PLAN_SCHEMA as APPLIER_PLAN_SCHEMA, insideDownloads, updateResultPath, updateLogPath } from '../updater/apply.mjs';
 
@@ -155,7 +155,7 @@ test('지금 적용기를 창처럼 띄운다: 계획을 받아 시작 파일을
   // ⓝ-2 그때 영수증은 옛 판 그대로다(적용기는 영수증을 고치지 않는다 — ok 는 "넘겼다"일 뿐).
   const receipt = JSON.parse(fs.readFileSync(path.join(s.root, '_agent', 'setup', 'package-receipt.json'), 'utf8'));
   assert.deepEqual(receipt, { schema: 2, package: { version: '2.0.66' } });
-  assert.deepEqual(failed(judgeHandoffIsNotCompletion({ receiptVersionAtExit: receipt.package.version, prevVersion: '2.0.66', nextVersion: s.version })), []);
+  assert.match(describeHandoffMoment({ receiptVersionAtExit: receipt.package.version, prevVersion: '2.0.66', nextVersion: s.version }), /아직 옛 판\(2\.0\.66\)/);
 
   // ⓝ-4 "설치기가 끝난 뒤"(여기서는 가짜라 아무도 결과를 다시 쓰지 않는다 = 지금 설치기와 같다)
   const afterRows = judgeAfterInstaller({
@@ -221,10 +221,23 @@ test('judgeHandoff: 판이 다르거나 · 부품이 둘이거나 · 출력과 �
   assert.equal(lastJsonLine(null), null);
 });
 
-test('judgeHandoffIsNotCompletion: 적용기가 끝난 때 영수증이 이미 새 판이면(또는 없으면) 실패', () => {
-  assert.equal(allOk(judgeHandoffIsNotCompletion({ receiptVersionAtExit: '2.0.66', prevVersion: '2.0.66', nextVersion: '2.0.67' })), true);
-  assert.equal(allOk(judgeHandoffIsNotCompletion({ receiptVersionAtExit: '2.0.67', prevVersion: '2.0.66', nextVersion: '2.0.67' })), false);
-  assert.equal(allOk(judgeHandoffIsNotCompletion({ receiptVersionAtExit: null, prevVersion: '2.0.66', nextVersion: '2.0.67' })), false);
+test('넘긴 직후의 영수증 판은 판정이 아니라 기록이다 — 설치기가 빨라 이미 새 판이어도 실패가 아니다(시점 경쟁)', () => {
+  const args = { prevVersion: '2.0.66', nextVersion: '2.0.67' };
+  assert.equal(typeof describeHandoffMoment({ ...args, receiptVersionAtExit: '2.0.66' }), 'string', '돌려주는 것은 글 한 줄이다(판정 줄이 아니다)');
+  assert.match(describeHandoffMoment({ ...args, receiptVersionAtExit: '2.0.66' }), /아직 옛 판\(2\.0\.66\).*넘겼다/);
+  assert.match(describeHandoffMoment({ ...args, receiptVersionAtExit: '2.0.67' }), /이미 새 판\(2\.0\.67\).*정상일 수 있다/);
+  assert.match(describeHandoffMoment({ ...args, receiptVersionAtExit: null }), /읽지 못함/);
+  // 게이트는 이 글을 기록에만 남긴다 — check() 로 판정하지 않는다.
+  const src = fs.readFileSync(path.join(REPO, 'verify', 'upgrade.mjs'), 'utf8');
+  assert.ok(src.includes('log(describeHandoffMoment({ receiptVersionAtExit, prevVersion, nextVersion }));'));
+  assert.doesNotMatch(src, /check\([^)]*describeHandoffMoment|judgeHandoffIsNotCompletion/);
+  // 필수 판정의 이름 어디에도 "적용기가 끝난 그때 영수증이 옛 판"이 없다.
+  const good = { ok: true, items: [{ kind: 'package', version: '2.0.67', ok: true }], at: '2026-11-27T14:00:00.000Z', handedOffToInstaller: true, relaunched: false };
+  const names = [
+    ...judgeHandoff({ exit: { code: 0, signal: null }, stdout: JSON.stringify(good), result: good, version: '2.0.67' }),
+    ...judgeAfterInstaller({ resultAtExit: JSON.stringify(good), resultAtEnd: JSON.stringify(good), installerDoneMs: Date.parse('2026-11-27T14:05:00.000Z'), planAtStart: '{}', planAtEnd: '{}', packageDirExists: true }),
+  ].map((r) => r.name).join('\n');
+  assert.doesNotMatch(names, /영수증/);
 });
 
 test('judgeApplierLog: 줄이 빠지거나 · 다른 이름을 넘겼거나 · 차례가 뒤집히면 실패', () => {
