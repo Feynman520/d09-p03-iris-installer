@@ -106,6 +106,11 @@ export const UNPACK_ORDER = [
 //   dir-files  payload 의 폴더 하나를 통째로(파일만) dest 에 복사한다(바퀴집)
 //   module     Face 자신의 모듈 설치기에 zip 을 건넨다(서명·경로 검사 포함)
 //
+// files (선택, 'merge' 압축 부품):
+//   섞여 사는 폴더 안에서 이 부품"인" 파일 이름들. 적어 두면 ① 그 파일이 **전부** 있어야 "이미 놓였다"로 보고
+//   (폴더만 있고 파일 하나가 빠진 것을 건너뛰지 않는다) ② 새 판으로 바뀌는 옛 파일은 `<파일>.prev` 로 옆에 남긴다
+//   (낱개 파일 부품이 해 온 약속 그대로 — 지우지 않는다).
+//
 // mode:
 //   'slot'   그 폴더 전체가 이 부품이다 → 바꿔 놓기 전에 `<dest>.prev` 로 옮긴다
 //   'merge'  그 사람 것과 **섞여 사는** 폴더다(`_ontology`·`_document-templates`·
@@ -154,7 +159,10 @@ export const V2_LAYOUT = {
   'document-mcp-wheelhouse': { kind: 'dir-files', mode: 'slot' },
   'frontend-design': { kind: 'archive', strip: 0, mode: 'slot' },
   'insane-search': { kind: 'archive', strip: 0, mode: 'slot' },
-  'gen-image': { kind: 'file', mode: 'merge' },
+  // 2.0.65: 낱개 파일(gen-image.py) → 두 파일 묶음(gen-image.py + 판정 도우미 codex-ready.py). dest(`_agent\claude\tools`)는
+  // 그 사람 도구와 섞여 사는 폴더라 merge 그대로다 — 폴더를 통째로 바꾸지 않고 이 두 파일만 그 위에 놓는다.
+  // `files` = 이 부품"인" 파일들: 전부 있어야 "이미 놓였다"로 보고(하나라도 빠지면 다시 놓는다), 바뀌는 옛 사본은 옆에 남긴다.
+  'gen-image': { kind: 'archive', strip: 0, mode: 'merge', files: ['gen-image.py', 'codex-ready.py'] },
   hooks: { kind: 'archive', strip: 0, mode: 'merge' },
   'hwpx-templates': { kind: 'archive', strip: 0, mode: 'merge' },
   ontology: { kind: 'archive', strip: 0, mode: 'merge' },
@@ -405,10 +413,20 @@ export function v2Verifiers(ctx) {
     return { ok, detail: `바퀴 ${names.length}개 / 기대 ${wanted ?? '미상'}개` };
   };
   V['gen-image'] = async () => {
-    const f = path.join(dest('gen-image'), 'gen-image.py');
-    let size = 0;
-    try { size = fs.statSync(f).size; } catch { /* 없음 */ }
-    return { ok: size > 0, detail: `${f} (${size} bytes)` };
+    // 두 파일이 한 부품이다(2.0.65): 그림 도구와, 그것이 "코덱스를 쓸 수 있나"를 묻는 판정 도우미.
+    // 도우미가 빠지면 그림 도구는 길을 정하지 못하고 멈춘다 — 그래서 둘 다 있고 내용이 맞는지까지 본다.
+    const d = dest('gen-image');
+    const need = { 'gen-image.py': 'def main(', 'codex-ready.py': 'def readiness(' };
+    const bad = [];
+    const sizes = [];
+    for (const [name, mark] of Object.entries(need)) {
+      let text = null;
+      try { text = fs.readFileSync(path.join(d, name), 'utf8'); } catch { /* 없음 */ }
+      if (text === null || text.length === 0) bad.push(`${name} 없음`);
+      else if (!text.includes(mark)) bad.push(`${name} 내용이 다름`);
+      else sizes.push(`${name} ${Buffer.byteLength(text)} bytes`);
+    }
+    return { ok: bad.length === 0, detail: bad.length ? bad.join(', ') : `${d} (${sizes.join(', ')})` };
   };
   V.hooks = async () => {
     const d = dest('hooks');
@@ -505,7 +523,8 @@ export async function run(ctx) {
     const dest = underRoot(root, destRel);
     const slot = layout.slot ? path.join(dest, layout.slot) : dest;
     const prior = state.parts[partId];
-    return !(prior?.verified && sameIdentity(prior.identity, partIdentity(ctx, partId)) && fs.existsSync(slot));
+    const present = ownedFiles(layout, dest) ? ownedFiles(layout, dest).every((f) => fs.existsSync(f)) : fs.existsSync(slot);
+    return !(prior?.verified && sameIdentity(prior.identity, partIdentity(ctx, partId)) && present);
   });
   const procs = ctx.processes ?? {
     list: (r) => listHolders(r, { run: ctx.run }),
@@ -538,10 +557,13 @@ export async function run(ctx) {
     // 낱개 파일 부품(manage 등)은 폴더가 아니라 **그 파일**이 있어야 건너뛴다(2.0.30). 같은 폴더를 쓰는 다른 부품(teamclaude)이
     // 이번 업데이트에서 폴더째 새로 놓이면 파일은 사라졌는데 폴더만 보고 건너뛰어, 중계기 시작 스크립트 없이 남았다
     // (2026-09-20 데스크탑: 2.0.29 = 중계기 부품이 바뀐 첫 업데이트 → 그 뒤 대시보드 "프록시에 연결할 수 없음").
+    // 섞여 사는 폴더에 파일 몇 개로 사는 부품(gen-image, 2.0.65)도 같다: 폴더가 아니라 **그 파일 전부**가 있어야 건너뛴다.
+    // 폴더는 그 사람 것과 함께 쓰므로 늘 있다 — 폴더만 보면 파일 하나가 빠져도(지워졌거나, 옛 한 파일 설치본) 영영 다시 놓지 않는다.
+    const owned = ownedFiles(layout, dest);
     const presence = layout.kind === 'file'
-      ? path.join(dest, path.basename(String(lockField(ctx, partId, 'file') ?? '')))
-      : slot;
-    if (prior?.verified && sameIdentity(prior.identity, identity) && fs.existsSync(presence)) {
+      ? [path.join(dest, path.basename(String(lockField(ctx, partId, 'file') ?? '')))]
+      : (owned ?? [slot]);
+    if (prior?.verified && sameIdentity(prior.identity, identity) && presence.every((p) => fs.existsSync(p))) {
       recorded.skipped.push(partId);
       recorded.parts[partId] = { ...prior, skipped: true };
       progress({ done: i + 1, total: parts.length, label: partId });
@@ -606,13 +628,23 @@ export async function run(ctx) {
       const target = path.join(dest, path.basename(source));
       if (fs.existsSync(target) && !sameBytes(fs, source, target)) moved = await setAside(target);
     }
+    // 섞여 사는 폴더의 파일 묶음: 압축을 풀면 같은 이름의 옛 파일이 덮인다. 풀기 전 내용을 쥐고 있다가,
+    // 풀린 것과 다르면 `<파일>.prev` 로 옆에 남긴다(같으면 아무것도 만들지 않는다 — "두 번 실행 변경 0").
+    const ownedBefore = new Map();
+    for (const f of owned ?? []) {
+      try { ownedBefore.set(f, fs.readFileSync(f)); } catch { /* 아직 없다 */ }
+    }
+    let keptFiles = [];
 
     try {
       await placePart(ctx, { partId, layout, source, dest, fs, log });
+      keptFiles = keepReplacedFiles(fs, ownedBefore);
 
       // MotW(다른 컴퓨터에서 받아 온 표식) 제거. 남아 있으면 첫 실행에서
       // SmartScreen 이 node.exe·electron.exe 를 막는다.
-      recorded.motw += stripMotw(layout.kind === 'file' ? path.join(dest, path.basename(source)) : slot);
+      // 파일 묶음은 **그 파일들만** 본다 — 섞여 사는 폴더의 그 사람 파일은 건드리지 않는다.
+      if (owned) for (const f of owned) recorded.motw += stripMotw(f);
+      else recorded.motw += stripMotw(layout.kind === 'file' ? path.join(dest, path.basename(source)) : slot);
 
       const verify = verifiers[partId] ?? fallbackVerifier(ctx, partId, { archive: source, dest, strip: layout.strip ?? 0 });
       const result = await verify();
@@ -634,12 +666,14 @@ export async function run(ctx) {
         verified: !!result.ok,
         detail: result.detail ?? null,
         ...(moved ? { previous: rel(moved) } : {}),
+        ...(keptFiles.length ? { previousFiles: keptFiles.map(rel) } : {}),
         ...(layout.carryOver ? { carried, carryFailed: carryFailed.length ? carryFailed : null } : {}),
       };
       state.parts[partId] = { ...info, at: new Date().toISOString() };
       writeState(fs, root, state);
       recorded.parts[partId] = info;
       if (moved) recorded.moved.push({ part: partId, previous: rel(moved) });
+      for (const kept of keptFiles) recorded.moved.push({ part: partId, previous: rel(kept) });
 
       if (!result.ok) {
         // 새 사본이 **있지만 잘못됐다**. 옛 사본은 일부러 `.prev` 에 그대로 둔다
@@ -679,6 +713,28 @@ export async function run(ctx) {
 
   log(`[unpack] 부품 ${recorded.placed.length}개 놓음, ${recorded.skipped.length}개 그대로(같은 판), MotW ${recorded.motw}개 제거`);
   return { recorded, pending };
+}
+
+// 섞여 사는 폴더에서 이 부품"인" 파일들의 경로. 배치표에 `files` 가 없으면 null(= 폴더로 판단하는 예전 방식).
+function ownedFiles(layout, dest) {
+  if (layout?.kind !== 'archive' || layout?.mode !== 'merge' || !Array.isArray(layout.files) || layout.files.length === 0) return null;
+  return layout.files.map((f) => path.join(dest, f));
+}
+
+// 풀기 전에 쥐어 둔 옛 내용(`before`: 경로 → Buffer) 가운데, 풀고 난 지금 내용이 달라진 것만 `<파일>.prev`
+// (이미 있으면 `.prev-2`, `.prev-3` …)로 남긴다. 남긴 경로 목록을 돌려준다.
+function keepReplacedFiles(fs, before) {
+  const kept = [];
+  for (const [file, old] of before) {
+    let now = null;
+    try { now = fs.readFileSync(file); } catch { /* 풀린 것이 없다 — 옛 파일이 그대로 있다는 뜻이라 남길 것도 없다 */ }
+    if (now === null || (now.length === old.length && now.equals(old))) continue;
+    let candidate = `${file}.prev`;
+    for (let n = 2; fs.existsSync(candidate); n += 1) candidate = `${file}.prev-${n}`;
+    fs.writeFileSync(candidate, old);
+    kept.push(candidate);
+  }
+  return kept;
 }
 
 function sameBytes(fs, a, b) {

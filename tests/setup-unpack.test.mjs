@@ -2,8 +2,8 @@
 //
 // 가짜 payload: 진짜와 **모양만** 같고 무게는 몇 KB 다(진짜 payload 는 369MB).
 // 부품 종류마다 한 개씩 — 겉껍질 있는 압축(node) · 판 폴더 압축(uv) ·
-// 낱개 파일(manage·gen-image) · payload 폴더 통째(바퀴집) · 섞여 사는 폴더
-// (ontology·hooks) · Face 모듈(messenger).
+// 낱개 파일(manage) · payload 폴더 통째(바퀴집) · 섞여 사는 폴더
+// (ontology·hooks) · 섞여 사는 폴더의 파일 묶음(gen-image, 2.0.65) · Face 모듈(messenger).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -42,7 +42,7 @@ function put(file, body) {
 }
 
 // nodeBody 를 바꾸면 "판이 올라갔다" 는 상황을 흉내 낼 수 있다.
-async function makePayload(label, { nodeVersion = '24.21.0', withMessenger = false } = {}) {
+async function makePayload(label, { nodeVersion = '24.21.0', withMessenger = false, genImageBody = 'v1' } = {}) {
   const base = path.join(tmp, label);
   const payload = path.join(base, 'payload');
   const src = path.join(base, '_src');
@@ -75,9 +75,15 @@ async function makePayload(label, { nodeVersion = '24.21.0', withMessenger = fal
   put(path.join(hookSrc, 'guard-iris-path.py'), '# py\n');
   await zipFrom(hookSrc, path.join(payload, 'tools', 'hooks.zip'));
 
-  // 낱개 파일 둘
+  // 낱개 파일 하나
   put(path.join(payload, 'relay', 'teamclaude-manage.ps1'), '# manage\n');
-  put(path.join(payload, 'tools', 'gen-image.py'), '# gen-image\n');
+
+  // gen-image: 섞여 사는 폴더(_agent\claude\tools)에 두 파일만 놓는 묶음(2.0.65 — 그 전에는 낱개 파일 하나였다)
+  const genSrc = path.join(base, '_gen');
+  fs.rmSync(genSrc, { recursive: true, force: true });
+  put(path.join(genSrc, 'gen-image.py'), `# gen-image ${genImageBody}\ndef main():\n    pass\n`);
+  put(path.join(genSrc, 'codex-ready.py'), '# codex-ready\ndef readiness(status=None, cli_check=True):\n    return {}\n');
+  await zipFrom(genSrc, path.join(payload, 'tools', 'gen-image.zip'));
 
   // 바퀴집(폴더 통째)
   for (const w of ['aaa-1.0-py3-none-any.whl', 'bbb-2.0-py3-none-any.whl']) {
@@ -99,7 +105,7 @@ async function makePayload(label, { nodeVersion = '24.21.0', withMessenger = fal
       node: { kind: 'url', version: nodeVersion, file: `runtime/node-v${nodeVersion}.zip`, dest: '_agent/shared/tools/node' },
       uv: { kind: 'url', version: '0.12.14', file: 'runtime/uv-0.12.14.whl', dest: '_agent/shared/tools/uv/0.12.14' },
       manage: { kind: 'file', file: 'relay/teamclaude-manage.ps1', dest: '_agent/shared/tools/teamclaude' },
-      'gen-image': { kind: 'file', file: 'tools/gen-image.py', dest: '_agent/claude/tools' },
+      'gen-image': { kind: 'dir', file: 'tools/gen-image.zip', dest: '_agent/claude/tools' },
       'document-mcp-wheelhouse': { kind: 'wheelhouse', file: 'tools/wheelhouse/', dest: '_agent/shared/tools/python-wheelhouse/document-mcp', expectedCount: 2 },
       hooks: { kind: 'dir', file: 'tools/hooks.zip', dest: '_agent/claude/scripts' },
       ontology: { kind: 'dir', file: 'setup/ontology.zip', dest: '_ontology' },
@@ -190,7 +196,8 @@ test('unpack: 부품 종류마다 잠금표 dest 로 간다(겉껍질·판폴더
 
   // ③ 낱개 파일은 dest **폴더** 안에 원래 이름으로
   assert.ok(fs.existsSync(at('_agent', 'shared', 'tools', 'teamclaude', 'teamclaude-manage.ps1')));
-  assert.ok(fs.existsSync(at('_agent', 'claude', 'tools', 'gen-image.py')));
+  // ③-2 그림 도구 묶음: 두 파일이 섞여 사는 폴더 바로 밑에(하위 폴더를 만들지 않는다)
+  assert.deepEqual(fs.readdirSync(at('_agent', 'claude', 'tools')).sort(), ['codex-ready.py', 'gen-image.py']);
 
   // ④ payload 폴더 통째(바퀴집)
   const wheels = fs.readdirSync(at('_agent', 'shared', 'tools', 'python-wheelhouse', 'document-mcp'));
@@ -692,4 +699,105 @@ test('unpack (2.0.30): a file part living inside another part\'s folder (manage 
   assert.ok(!recorded.skipped.includes('manage'), 'manage must not be skipped when its file is missing (folder only)');
   assert.ok(recorded.placed.includes('manage'));
   assert.ok(fs.existsSync(managePs1), 'the relay start script is back');
+});
+
+// ---------------------------------------------------------------------------
+// 2.0.65 — 그림 도구 부품: 낱개 파일 하나 → 두 파일 묶음(gen-image.py + codex-ready.py)
+// ---------------------------------------------------------------------------
+
+const genTools = (root) => path.join(root, '_agent', 'claude', 'tools');
+// 진짜 검증기로 gen-image 를 본다(나머지 부품은 가짜 통과). 검증기 표는 잠금표의 모든 부품 자리를 읽으므로
+// 진짜 잠금표로 만든다 — 그림 도구의 자리(dest)는 가짜 잠금표와 같다.
+const REAL_LOCK = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
+const realGenVerifier = (ctx) => unpack.v2Verifiers({ ...ctx, lock: REAL_LOCK, manifest: null })['gen-image'];
+const withRealGenVerifier = (ctx, lock) => ({ ...passAll(lock), 'gen-image': realGenVerifier(ctx) });
+
+test('unpack (2.0.65): 옛 한 파일 설치본 위에 새 묶음을 얹으면 두 파일이 모두 놓이고, 그 사람 파일은 그대로다', async () => {
+  const built = await makePayload('gen-upgrade', { genImageBody: 'v2' });
+  const ctx = makeCtx('gen-upgrade', { built });
+  const tools = genTools(ctx.root);
+
+  // 옛 판(2.0.64 까지)이 남긴 모양을 손으로 만든다: 그림 도구 한 파일 + 그 사람 파일들 + "이미 놓았다"는 기록.
+  put(path.join(tools, 'gen-image.py'), '# gen-image OLD single file\n');
+  put(path.join(tools, 'my-own-tool.py'), '# 내가 만든 도구\n');
+  put(path.join(tools, 'gen-image.state.json'), '{"last_api_model":"x"}\n');
+  put(path.join(tools, 'sub', 'note.txt'), '내 메모\n');
+  put(unpack.statePath(ctx.root), `${JSON.stringify({ schema: 1, parts: {
+    'gen-image': { identity: { version: null, sha256: 'sha-old-single-file', tail: 'tools' }, dest: '_agent\\claude\\tools', verified: true, detail: 'old' },
+  } }, null, 2)}\n`);
+  const mine = ['my-own-tool.py', 'gen-image.state.json', path.join('sub', 'note.txt')];
+  const before = Object.fromEntries(mine.map((f) => [f, snapshot(tools)[f]]));
+
+  ctx.verifiers = withRealGenVerifier(ctx, built.lock);
+  const { recorded } = await unpack.run(ctx);
+
+  assert.ok(recorded.placed.includes('gen-image'), '옛 기록(다른 지문)이 있어도 새 묶음을 놓는다');
+  assert.match(fs.readFileSync(path.join(tools, 'gen-image.py'), 'utf8'), /gen-image v2/, '그림 도구가 새 것으로 바뀌었다');
+  assert.match(fs.readFileSync(path.join(tools, 'codex-ready.py'), 'utf8'), /def readiness\(/, '판정 도우미가 함께 놓였다');
+  const after = snapshot(tools);
+  for (const f of mine) assert.equal(after[f], before[f], `그 사람 파일이 바뀌면 안 된다: ${f}`);
+  assert.equal(fs.readFileSync(path.join(tools, 'gen-image.py.prev'), 'utf8'), '# gen-image OLD single file\n', '바뀐 옛 그림 도구는 지우지 않고 옆에 남긴다');
+  assert.ok(!fs.existsSync(`${tools}.prev`), '섞여 사는 폴더를 통째로 옮기지 않는다');
+  assert.ok(!fs.existsSync(path.join(tools, 'codex-ready.py.prev')), '새로 생긴 파일에는 옛 사본이 없다');
+  assert.ok(recorded.moved.some((m) => m.part === 'gen-image' && m.previous.endsWith('gen-image.py.prev')));
+
+  // 한 번 더 돌리면 아무것도 바꾸지 않는다(옛 사본을 또 만들지도 않는다).
+  const again = snapshot(ctx.root);
+  const ctx2 = makeCtx('gen-upgrade', { built, root: ctx.root });
+  ctx2.verifiers = withRealGenVerifier(ctx2, built.lock);
+  const second = await unpack.run(ctx2);
+  assert.ok(second.recorded.skipped.includes('gen-image'));
+  assert.deepEqual(snapshot(ctx.root), again);
+});
+
+test('unpack (2.0.65): 두 파일 가운데 하나가 빠져 있으면 "폴더가 있으니 건너뜀"으로 넘어가지 않고 다시 놓는다', async () => {
+  const built = await makePayload('gen-refill');
+  const ctx = makeCtx('gen-refill', { built });
+  ctx.verifiers = withRealGenVerifier(ctx, built.lock);
+  await unpack.run(ctx);
+  const tools = genTools(ctx.root);
+  put(path.join(tools, 'my-own-tool.py'), '# 내 것\n');
+
+  for (const gone of ['codex-ready.py', 'gen-image.py']) {
+    fs.rmSync(path.join(tools, gone));
+    const again = makeCtx('gen-refill', { built, root: ctx.root });
+    again.verifiers = withRealGenVerifier(again, built.lock);
+    const { recorded } = await unpack.run(again);
+    assert.ok(!recorded.skipped.includes('gen-image'), `${gone} 이(가) 없는데 건너뛰면 안 된다`);
+    assert.ok(recorded.placed.includes('gen-image'));
+    assert.ok(fs.existsSync(path.join(tools, gone)), `${gone} 이(가) 다시 놓였다`);
+    assert.equal(recorded.skipped.length, 6, '다른 부품은 그대로 건너뛴다');
+  }
+  assert.deepEqual(fs.readdirSync(tools).sort(), ['codex-ready.py', 'gen-image.py', 'my-own-tool.py'], '같은 내용을 다시 놓을 때는 옛 사본(.prev)을 만들지 않는다');
+});
+
+test('unpack (2.0.65): 그림 도구 검증기는 두 파일을 모두 본다(하나가 없거나 내용이 다르면 실패)', async () => {
+  const built = await makePayload('gen-verify');
+  const ctx = makeCtx('gen-verify', { built });
+  const verify = realGenVerifier(ctx);
+  const tools = genTools(ctx.root);
+  assert.equal((await verify()).ok, false, '아무것도 없으면 실패');
+  put(path.join(tools, 'gen-image.py'), 'def main():\n    pass\n');
+  const half = await verify();
+  assert.equal(half.ok, false, '그림 도구만 있고 판정 도우미가 없으면 실패');
+  assert.match(half.detail, /codex-ready\.py 없음/);
+  put(path.join(tools, 'codex-ready.py'), '# 이름만 같은 다른 파일\n');
+  assert.match((await verify()).detail, /codex-ready\.py 내용이 다름/);
+  put(path.join(tools, 'codex-ready.py'), 'def readiness():\n    return {}\n');
+  assert.equal((await verify()).ok, true);
+});
+
+test('unpack (2.0.65): 진짜 lock.json 의 그림 도구 부품은 두 파일만 집고, 배치표는 섞여 사는 폴더의 파일 묶음이다', () => {
+  const lock = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
+  const p = lock.parts['gen-image'];
+  assert.equal(p.kind, 'dir');
+  assert.equal(p.source, 'payload-src/tools');
+  assert.deepEqual(p.include, ['gen-image.py', 'codex-ready.py'], 'payload-src/tools 를 통째로 묶지 않는다(iris-auth 폴더 등은 다른 부품)');
+  assert.equal(p.file, 'tools/gen-image.zip');
+  assert.equal(p.dest, '_agent/claude/tools');
+  for (const f of p.include) assert.ok(fs.existsSync(path.join(REPO, p.source, f)), `${f} 없음`);
+  const layout = unpack.V2_LAYOUT['gen-image'];
+  assert.equal(layout.kind, 'archive');
+  assert.equal(layout.mode, 'merge', '공용 도구 폴더를 통째로 바꾸지 않는다');
+  assert.deepEqual([...layout.files].sort(), [...p.include].sort(), '배치표의 파일 목록 = 잠금표가 집는 파일');
 });

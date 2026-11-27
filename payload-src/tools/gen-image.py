@@ -8,9 +8,13 @@ gen-image.py — IRIS 공용 이미지 생성기 (코덱스 우선 → OpenAI AP
 
 우선순위(전역 AGENTS.md 「이미지 생성」 절이 정본):
   ① TeamClaude(127.0.0.1:3456)에 활성 코덱스 계정이 있으면 `codex exec` + 내장 image_gen 도구(구독, 추가 과금 없음)
+     ①-2 요금제가 다 찼어도 중계기 크레딧 대체가 켜져 있고 잔액이 있으면 같은 코덱스 경로(충전 크레딧 — 마지막 줄 billing=credit).
+         판정 정본 = 같은 폴더의 codex-ready.py. 크레딧 대체가 꺼져 있거나 못 쓰면 ②.
   ② 없거나 코덱스 경로가 실패하면 OpenAI Images API(종량 과금). 모델은 호출 직전 모델 목록에서
      가장 높은 버전의 gpt-image-* 를 고른다(-mini·날짜 스냅샷 제외). 같은 버전에 변종이 있으면
      기본 sunburst(가장 유능), --fast 면 flare(가장 빠름).
+  ※ 판정 도우미(codex-ready.py)가 없거나 고장 나면 "코덱스 계정 없음"으로 치지 않는다 — 이유를 알리고 멈춘다(종료코드 4).
+     돈이 드는 ②로 저절로 넘어가지 않는다. 그래도 만들려면 --provider codex(구독으로 시도) 나 --provider api(종량 과금)를 명시한다.
 
 크기:
   - 코덱스 내장 도구는 픽셀이 아니라 **비율**만 맞춘다(실측 2026-09-11: 가로형 요청 1536x1024 → 1448x1086,
@@ -25,7 +29,7 @@ gen-image.py — IRIS 공용 이미지 생성기 (코덱스 우선 → OpenAI AP
   - 마지막 줄에 항상 한 줄 요약: saved <경로> (<바이트>) provider=… model=… size=… quality=… [fallback: …]
   - --check 는 생성 없이 판정 결과만 출력한다(과금 없음).
 """
-import sys, os, re, io, json, time, uuid, base64, shutil, pathlib, argparse, subprocess, urllib.request, urllib.error
+import sys, os, re, io, json, time, uuid, base64, shutil, pathlib, argparse, subprocess, urllib.request, urllib.error, importlib.util
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
@@ -87,27 +91,71 @@ def png_size(path):
 
 
 # ---------- ① TeamClaude 코덱스 계정 판정 ----------
-def codex_accounts():
-    """(사용 가능 여부, 활성 계정 이름 목록, 사유)"""
+CODEX_READY = TOOLS_DIR / "codex-ready.py"   # 판정 도우미 — 이 파일과 한 부품으로 같은 폴더에 놓인다
+EXIT_HELPER_BROKEN = 4
+
+
+class HelperError(Exception):
+    """판정 도우미가 없거나 고장 났다. "쓸 수 있는 코덱스 계정이 없다"와는 다른 일이다."""
+
+
+def load_codex_ready():
+    if not CODEX_READY.is_file():
+        raise HelperError(f"{CODEX_READY.name} is missing next to gen-image.py")
     try:
-        with urllib.request.urlopen(TEAMCLAUDE_STATUS, timeout=5) as r:
-            d = json.loads(r.read().decode("utf-8"))
+        spec = importlib.util.spec_from_file_location("codex_ready", CODEX_READY)
+        cr = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cr)
     except Exception as e:
-        return False, [], f"teamclaude status unreachable ({type(e).__name__})"
-    active = []
-    for a in d.get("accounts", []):
-        if a.get("provider") != "codex":
-            continue
-        if a.get("disabled"):
-            continue
-        if a.get("unavailable"):
-            continue
-        if a.get("status") not in (None, "active"):
-            continue
-        active.append(a.get("name"))
-    if not active:
-        return False, [], "no active codex account in teamclaude"
-    return True, active, "ok"
+        raise HelperError(f"{CODEX_READY.name} failed to load ({type(e).__name__})")
+    if not callable(getattr(cr, "readiness", None)):
+        raise HelperError(f"{CODEX_READY.name} has no readiness()")
+    return cr
+
+
+def codex_accounts():
+    """(사용 가능 여부, 계정 이름 목록, 사유, 과금 'plan'|'credit'|None, 도우미 고장 글|None) — 판정 정본은 같은 폴더 codex-ready.py.
+    요금제가 다 찼어도 중계기 크레딧 대체가 켜져 있고 쓸 수 있는 잔액이 있으면 '사용 가능(credit)' — 이때 API(종량)로 넘어가지 않는다
+    (순서 = 코덱스 요금제 → 코덱스 크레딧 → API). 크레딧 대체가 꺼져 있으면 예전처럼 API 폴백.
+    도우미가 없거나 불러오다 · 판정하다 실패하면 마지막 칸에 그 까닭을 싣는다 — main 이 이것을 "계정 없음"과 갈라서 다룬다
+    (중계기에 닿지 못한 것은 도우미 고장이 아니다: 도우미가 '쓸 수 없음'으로 답한다)."""
+    try:
+        r = load_codex_ready().readiness(cli_check=False)
+        ok, kind, accounts, reason = bool(r["ok"]), r["kind"], list(r["accounts"]), str(r["reason"])
+        credit = r.get("credit") or {}
+    except HelperError as e:
+        return False, [], str(e), None, str(e)
+    except Exception as e:
+        why = f"{CODEX_READY.name} failed while judging ({type(e).__name__})"
+        return False, [], why, None, why
+    if not ok:
+        return False, [], reason, None, None
+    if kind == "credit":
+        return True, accounts, f"plan spent; paid credits ({credit.get('account')} balance {credit.get('balance')})", "credit", None
+    return True, accounts, "ok", "plan", None
+
+
+def local_codex_plan():
+    """CODEX_HOME\\auth.json 로그인의 요금제 이름 하나만 돌려준다: 'free'·'plus'·'pro'… / 'none'(로그인 파일 없음) / 'unknown'(읽지 못함).
+    중계기가 요청을 유료 계정으로 바꿔 보내더라도 codex CLI 는 이 로컬 로그인이 free 면 image_gen 도구를 목록에서 빼 버린다(openai/codex#53870).
+    로그인 파일의 값(토큰·계정 이름·이메일)은 돌려주지도 출력하지도 않는다 — 요금제 이름도 짧은 영숫자일 때만 내보낸다."""
+    f = CODEX_HOME / "auth.json"
+    if not f.is_file():
+        return "none"
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+        p = d["tokens"]["id_token"].split(".")[1]
+        c = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+        plan = c.get("https://api.openai.com/auth", {}).get("chatgpt_plan_type")
+    except Exception:
+        return "unknown"
+    return plan if isinstance(plan, str) and re.fullmatch(r"[a-z0-9_-]{1,24}", plan) else "unknown"
+
+
+def plan_hint(plan):
+    if plan == "free":
+        return " !! 무료 요금제 로그인이면 코덱스가 그림 도구(image_gen)를 빼서 API 로 넘어갈 수 있습니다 -> 유료 요금제 계정으로 코덱스에 다시 로그인"
+    return ""
 
 
 # ---------- ② API 최신 모델 판별 ----------
@@ -195,6 +243,10 @@ def gen_codex(prompt, size, quality, refs, out, transparent, simulate_fail=False
            "-C", str(work), "-c", 'model_reasoning_effort="low"']
     for r in refs:
         cmd += ["-i", str(r)]
+    # codex CLI 의 `-i <FILE>...` 은 가변 인자라 뒤따르는 프롬프트를 이미지 경로로 삼켜 "No prompt provided via stdin" 으로
+    # 죽고 API 과금 폴백으로 빠진다(--ref 를 준 호출이 전부 폴백되던 고장). `--` 로 옵션을 끝낸 뒤 프롬프트를 둔다.
+    if refs:
+        cmd.append("--")
     cmd.append(build_codex_prompt(prompt, size, quality, refs, transparent))
     t0 = time.time()
     try:
@@ -311,7 +363,7 @@ def main():
             log(f"ref not found: {r}"); sys.exit(2)
 
     key = load_openai_key()
-    ok, names, reason = (False, [], "simulated: no codex") if a.simulate_no_codex else codex_accounts()
+    ok, names, reason, billing, helper_err = (False, [], "simulated: no codex", None, None) if a.simulate_no_codex else codex_accounts()
     api_model = a.model or resolve_api_model(fast=a.fast, key=key)[0]
     if a.exact_size and a.provider == "auto":
         a.provider = "api"
@@ -322,15 +374,29 @@ def main():
         route = "api"
     else:
         route = "codex" if ok else "api"
+    # 도우미 고장은 "계정 없음"이 아니다. 길을 사용자가 정하지 않았으면(auto) 돈이 드는 API 로 저절로 넘어가지 않고 멈춘다.
+    # --provider codex / --provider api / --exact-size 처럼 길을 명시했으면 그대로 따른다(도우미 판정이 필요 없다).
+    helper_stop = helper_err is not None and a.provider == "auto"
+    helper_msg = (f"codex helper broken: {helper_err}. 코덱스 판정 도우미가 없거나 고장 났습니다(코덱스 계정이 없다는 뜻이 아닙니다). "
+                  "유료 API 로 저절로 넘어가지 않고 멈춥니다. IRIS 를 업데이트하거나 다시 설치하면 도우미가 다시 놓입니다. "
+                  "지금 만들려면 길을 명시하세요: --provider codex (구독으로 시도) 또는 --provider api (종량 과금).")
 
     if a.check:
-        log(f"teamclaude codex: {'available' if ok else 'unavailable'} ({reason}) accounts={names}")
+        log(f"teamclaude codex: {'available' if ok else 'unavailable'} ({reason}) accounts={names}" + (f" billing={billing}" if ok else ""))
         log(f"api candidate model: {api_model} (source={resolve_api_model(fast=a.fast, key=key)[1]}, fast={a.fast})")
+        plan = local_codex_plan()
+        log(f"local codex login: plan={plan}" + plan_hint(plan))
+        if helper_stop:
+            log(helper_msg)
+            log("route: provider=none (stopped: codex helper broken)")
+            sys.exit(0)
         log(f"route: provider={route}" + ("" if ok or route == 'codex' else f" (codex unavailable: {reason})"))
         if a.simulate_codex_fail and route == "codex":
             log(f"fallback simulation: codex failed -> provider=api model={api_model} [fallback: codex failed: simulated codex failure]")
         sys.exit(0)
 
+    if helper_stop:
+        log(helper_msg); sys.exit(EXIT_HELPER_BROKEN)
     if not a.prompt_file or not a.out:
         log("--prompt-file and --out are required unless --check"); sys.exit(2)
     prompt = pathlib.Path(a.prompt_file).read_text(encoding="utf-8").strip()
@@ -345,6 +411,9 @@ def main():
         if okc:
             info = res; provider = "codex"
         else:
+            if "image_gen" in str(res):
+                plan = local_codex_plan()
+                res = f"{res} (local codex login plan={plan}{plan_hint(plan)})"
             if a.provider == "codex":
                 log(f"codex failed: {res}"); sys.exit(1)
             fallback = f"codex failed: {res}"
@@ -361,7 +430,8 @@ def main():
     size_note = ""
     if actual and a.size != "auto" and f"{actual[0]}x{actual[1]}" != a.size:
         size_note = f" size-mismatch(actual={actual[0]}x{actual[1]})"
-    log(f"saved {out} ({out.stat().st_size} bytes) provider={provider} model={info['model']} "
+    credit_note = " billing=credit" if provider == "codex" and billing == "credit" else ""  # 충전 크레딧(실제 돈)으로 처리됨 — 보고에 남긴다
+    log(f"saved {out} ({out.stat().st_size} bytes) provider={provider}{credit_note} model={info['model']} "
         f"size={a.size}{size_note} quality={a.quality} elapsed={info.get('elapsed')}s"
         + (f" [fallback: {fallback}]" if fallback else ""))
 

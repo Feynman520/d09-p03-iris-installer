@@ -496,8 +496,19 @@ test('gen-image: the shipped copy derives its paths from the environment and com
   const copyPath = path.join(REPO, 'payload-src', 'tools', 'gen-image.py');
   assert.ok(fs.existsSync(copyPath), 'payload-src/tools/gen-image.py is missing');
 
+  // 2.0.65: the part is a two-file bundle (gen-image.py + its helper codex-ready.py), both
+  // generalized copies in this repo. The lock names exactly those two under payload-src/tools.
+  const helperPath = path.join(REPO, 'payload-src', 'tools', 'codex-ready.py');
+  assert.ok(fs.existsSync(helperPath), 'payload-src/tools/codex-ready.py is missing');
   const lock = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
-  assert.equal(lock.parts['gen-image'].source, 'payload-src/tools/gen-image.py');
+  assert.equal(lock.parts['gen-image'].source, 'payload-src/tools');
+  assert.deepEqual(lock.parts['gen-image'].include, ['gen-image.py', 'codex-ready.py']);
+  const helper = fs.readFileSync(helperPath, 'utf8');
+  assert.equal(/C:[\\/]+IRIS[\\/]/.test(helper), false, 'the shipped helper carries a rooted install path');
+  assert.equal(/C:[\\/]+Users[\\/]/.test(helper), false, 'the shipped helper carries a user profile path');
+  assert.match(helper, /def readiness\(/);
+  assert.match(helper, /STATUS_TIMEOUT = 5\b/, 'the documented time limit and the real one are the same number');
+  assert.ok(!/1초/.test(helper), 'the helper must not promise "1 second" while its limit is 5');
 
   const text = fs.readFileSync(copyPath, 'utf8');
   // No rooted path literal anywhere: that is exactly what the sanitize rule
@@ -517,7 +528,7 @@ test('gen-image: the shipped copy derives its paths from the environment and com
   if (!python) return; // no interpreter on this machine: the text checks above still ran
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-pycompile-'));
   try {
-    execFileSync(python[0], [...python[1], '-m', 'py_compile', copyPath], {
+    execFileSync(python[0], [...python[1], '-m', 'py_compile', copyPath, helperPath], {
       stdio: 'pipe', env: { ...process.env, PYTHONPYCACHEPREFIX: scratch, PYTHONUTF8: '1' },
     });
   } finally {
