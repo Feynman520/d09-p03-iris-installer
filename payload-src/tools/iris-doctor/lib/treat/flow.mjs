@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { doctorPaths, ensureHome, readJsonFile } from '../home.mjs';
-import { acquireFileLock } from '../lock.mjs';
+import { acquireFileLock, TREAT_LOCK_ABANDON_MS } from '../lock.mjs';
 import { openCase, listUnfinished, loadCase } from './record.mjs';
 import { restoreAll, restorePoint, createPoint, sealPoint } from './restore.mjs';
 import { prepareRun, agentDiagnose, agentTreat, baselineTargets } from './agent.mjs';
@@ -19,7 +19,7 @@ import { planPrescriptions } from './prescriptions.mjs';
 import { note } from '../journal.mjs';
 
 const LINE = '────────────────────────────────────────────────────────';
-export const TREAT_LOCK_ABANDON_MS = 20 * 60_000; // 치료 잠금: 소식(5분마다 새로 적음)이 20분 넘게 없으면 버려진 것
+export { TREAT_LOCK_ABANDON_MS };                 // 치료 잠금의 버려짐 기준(값은 lib\lock.mjs — 손 없는 계정 준비도 같은 값을 본다)
 const UPDATE_LOCK_STALE_MS = 30 * 60_000;         // 업데이트기의 잠금 규칙과 같다(updater\agents.mjs LOCK_STALE_MS)
 export const METHOD_LIMIT_MS = 10 * 60_000;        // 처방 하나(방법 하나)에 주는 시간 — 치료 전체의 포기 한도가 아니다
 

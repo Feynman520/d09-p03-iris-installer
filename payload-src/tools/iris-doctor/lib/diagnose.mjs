@@ -7,7 +7,7 @@ import { checkNetwork } from './checks/network.mjs';
 
 // 판 번호 — **실리는 파일(실행 입구 · 시작 파일 · lib\ · guide\)이 하나라도 바뀌면 반드시 올린다.**
 // 지킴이(lib/integrity.mjs)는 "디스크의 판 번호가 달라졌으면 업데이트"로 보고 되돌리지 않는다 — 판이 같은 채 파일만 바뀌면, 떠 있던 Doctor 가 새 파일을 옛 사본으로 되돌릴 수 있다.
-export const VERSION = '0.2.1';
+export const VERSION = '0.2.2';
 
 // [묶음, 검사 함수, 제한 시간(ms)] — 한 검사가 멎어도 나머지 검진표는 나와야 한다.
 const CHECKS = [

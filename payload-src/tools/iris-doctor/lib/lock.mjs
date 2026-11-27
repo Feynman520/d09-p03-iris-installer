@@ -10,6 +10,23 @@ import crypto from 'node:crypto';
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e?.code === 'EPERM'; } };
 const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
 
+// 치료 잠금(<Doctor 집>\treat.lock): 소식(5분마다 새로 적음)이 20분 넘게 없으면 버려진 것. 치료 흐름(lib\treat\flow.mjs)이 쥐고,
+// 손 없는 계정 준비(lib\link.mjs)가 "지금 치료 중인가"를 읽기만 한다 — 그래서 값은 두 쪽이 함께 보는 여기에 둔다.
+export const TREAT_LOCK_ABANDON_MS = 20 * 60_000;
+
+/**
+ * 그 잠금이 **지금 살아 있는가** — 읽기만 한다(잡지 않고 · 옮기지 않고 · 만들지 않는다).
+ * 판정은 acquireFileLock 이 "빼앗지 않는다"고 보는 것과 같다: 지금 잡으려 하면 거절당할 잠금 = 살아 있는 잠금.
+ * 파일이 없으면 거짓.
+ */
+export function fileLockLive(file, { now = Date.now(), isAlive = pidAlive, abandonMs } = {}) {
+  if (!fs.existsSync(file)) return false;
+  const cur = readJson(file);
+  if (cur && Number.isInteger(cur.pid) && typeof cur.id === 'string') return isAlive(cur.pid) && (now - Number(cur.at) < abandonMs);
+  let age = Infinity; try { age = Date.now() - fs.statSync(file).mtimeMs; } catch { return false; } // 그 사이 사라졌다
+  return !(age > 60_000);
+}
+
 /** → { ok:true, id, release(), touch(now) } | { ok:false, holder: { pid, at } | null } */
 export function acquireFileLock(file, { now = Date.now(), pid = process.pid, isAlive = pidAlive, abandonMs, extra = {} } = {}) {
   const id = `${pid}-${now}-${crypto.randomBytes(6).toString('hex')}`;

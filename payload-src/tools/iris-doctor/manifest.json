@@ -1,6 +1,6 @@
 {
   "name": "iris-doctor",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "files": [
     {
       "path": "IRIS Doctor.cmd",
@@ -54,7 +54,7 @@
     },
     {
       "path": "lib/diagnose.mjs",
-      "sha256": "10e3026d9411e9d6b77b3dab57f3d9c365f872cc6dedc58718f618c8006d2f5f",
+      "sha256": "25039a0b95e24c365e99b91f4e0811cf42965689a1de390d786ff3a191fa1a1c",
       "size": 4153
     },
     {
@@ -79,13 +79,13 @@
     },
     {
       "path": "lib/link.mjs",
-      "sha256": "dfe772210d2ad959461f0582d2acfa528f71ecb38ec1cbd914ad328b2f00fb89",
-      "size": 21574
+      "sha256": "502e9fa7133b7001235c066798cf32810726861dd0463f7765970748a74c299c",
+      "size": 23447
     },
     {
       "path": "lib/lock.mjs",
-      "sha256": "cb5f70348d920189e9e4e0fd5e864272843070698dab6691ed662fc1db312f2e",
-      "size": 3274
+      "sha256": "f1c0ddb37483499ec0478013905a44c56dea163cbd42cf5a5525a23e25b1806e",
+      "size": 4410
     },
     {
       "path": "lib/open.mjs",
@@ -124,8 +124,8 @@
     },
     {
       "path": "lib/treat/flow.mjs",
-      "sha256": "fca7d19c8a520938b16714af11cede9ae1ec82cf85ae3cd4db84a8cae79a644e",
-      "size": 42241
+      "sha256": "1fa889a3bf3f556bf3e3d528d2b641b57274e5d5399816de76b2898b1ca8dbca",
+      "size": 42284
     },
     {
       "path": "lib/treat/guard-hook.mjs",

@@ -12,7 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { doctorPaths, ensureHome, writeAtomic, readJsonFile, isProtected, recoverCodexSwap, listCodexNext, inDoctorHome, CODEX_NEXT_RE } from './home.mjs';
 import { maskName } from './report.mjs';
-import { acquireFileLock } from './lock.mjs';
+import { acquireFileLock, fileLockLive, TREAT_LOCK_ABANDON_MS } from './lock.mjs';
 
 const DAY = 86400_000;
 const num = (v) => { const n = typeof v === 'string' ? Date.parse(v) : Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
@@ -90,12 +90,15 @@ export const keyPrint = (token) => crypto.createHash('sha256').update(String(tok
 export const LOCK_ABANDON_MS = 60 * 60_000;
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e?.code === 'EPERM'; } };
 
-export async function withLinkLock(root, fn, { now = Date.now(), pid = process.pid, isAlive = pidAlive } = {}) {
+//   refuseIf = 잠금을 쥔 **바로 뒤, 아무것도 하기 전에** 한 번 더 묻는 것. 참이면 정리도 fn 도 하지 않고 { busy: true } 로 물러난다
+//   (손 없는 준비가 "치료 중이면 물러난다"를 잠금 안에서 다시 볼 때 쓴다 — 잠금을 기다리는 사이 치료가 시작됐을 수 있다).
+export async function withLinkLock(root, fn, { now = Date.now(), pid = process.pid, isAlive = pidAlive, refuseIf = null } = {}) {
   const p = ensureHome(root);
   // 잠금의 방식(올리기 · 버려진 잠금 가리기 · 내 잠금만 풀기)은 lib/lock.mjs — 치료 잠금과 같은 것을 쓴다
   const lock = acquireFileLock(p.linkLock, { now, pid, isAlive, abandonMs: LOCK_ABANDON_MS });
   if (!lock.ok) return { busy: true };
   try {
+    if (refuseIf && refuseIf()) return { busy: true };
     // 끊긴 코덱스 바꿔 끼기의 정리는 잠금을 쥔 뒤에만 한다(다른 실행이 지금 바꿔 끼는 중일 수 있다)
     const recovered = recoverCodexSwap(root);
     ensureHome(root); // 정리가 끝났으면 코덱스 폴더가 없을 때 마련한다
@@ -139,9 +142,16 @@ export function prepareCodexHome({ root, now = Date.now() }) {
  *            카드 파일이 이미 있으면(읽지 못하는 것 · 다른 열쇠의 것 포함) · 바꾸는 중인 후보가 있으면 손대지 않는다 —
  *            다른 열쇠로 바꾸는 일은 실제 확인이 있어야 하므로 사용자가 Doctor 창에서 한다(`link claude`).
  *   코덱스 = 전용 폴더의 설정과 카드 틀이 없을 때만 마련한다(로그인은 하지 않는다 — 브라우저 승인은 사용자가).
+ *   **치료 중이면 물러난다**: 치료 잠금(<Doctor 집>\treat.lock)이 살아 있으면 만들 것이 있어도 아무것도 만들지 않고 'busy' 로 답한다
+ *            (치료 중인 실행이 카드 · 전용 폴더를 쓰고 있다 — 그 밑에서 파일을 새로 놓지 않는다). 잠금 파일도 Doctor 집도 만들지 않는다.
+ *            연결 잠금을 쥔 바로 뒤에 한 번 더 본다(기다리는 사이 치료가 시작된 경우). 치료는 연결 잠금을 쥐지 않으므로
+ *            그 확인과 파일 놓기 사이의 아주 짧은 틈까지 없애지는 못한다 — 줄일 뿐이다.
  * → { linked, why } / { prepared, why }   why: 'no-root' | 'no-iris-key' | 'has-card' | 'ready' | 'busy' | 'stuck' | 'failed' | (열쇠 모양의 까닭)
  */
-export async function autoLinkClaude({ root, claudeDir, now = Date.now() }) {
+/** 지금 이 설치 폴더에서 치료가 진행 중인가(읽기만 — Doctor 집을 만들지 않는다). */
+export const treatingNow = (root, now = Date.now()) => fileLockLive(path.join(doctorPaths(root).home, 'treat.lock'), { now, abandonMs: TREAT_LOCK_ABANDON_MS });
+
+export async function autoLinkClaude({ root, claudeDir, now = Date.now(), treating = treatingNow }) {
   if (!root || !claudeDir) return { linked: false, why: 'no-root' };
   const p = doctorPaths(root);
   const hasCard = () => fs.existsSync(p.claudeCard) || fs.existsSync(p.claudeNext);
@@ -150,21 +160,24 @@ export async function autoLinkClaude({ root, claudeDir, now = Date.now() }) {
   if (!fs.existsSync(irisKeyFile(claudeDir))) return { linked: false, why: 'no-iris-key' };
   const key = readIrisKey(claudeDir, now);
   if (!key.ok) return { linked: false, why: key.why };
+  // 여기부터는 만들 것이 있다 — 치료 중이면 물러난다(연결 잠금을 쥐기 전에: 잠금 파일도 만들지 않는다)
+  if (treating(root, now)) return { linked: false, why: 'busy' };
   const r = await withLinkLock(root, () => {
     if (hasCard()) return { linked: false, why: 'has-card' }; // 잠금을 기다리는 사이 다른 실행이 만들었으면 손대지 않는다
     const s = stageClaudeFromIris({ root, claudeDir, now });
     if (!s.ok) return { linked: false, why: s.why };
     if (s.staged) { discardClaude({ root }); return { linked: false, why: 'has-card' }; } // 여기 올 수 없는 길 — 그래도 확인 없는 후보를 남기지 않는다
     return { linked: true, why: 'linked', daysLeft: s.daysLeft };
-  }, { now });
+  }, { now, refuseIf: () => treating(root, now) });
   return r?.busy ? { linked: false, why: 'busy' } : r;
 }
-export async function autoPrepareCodex({ root, now = Date.now() }) {
+export async function autoPrepareCodex({ root, now = Date.now(), treating = treatingNow }) {
   if (!root) return { prepared: false, why: 'no-root' };
   const p = doctorPaths(root);
   const ready = () => fs.existsSync(path.join(p.codexHome, 'config.toml')) && fs.existsSync(p.codexCard);
   if (ready()) return { prepared: false, why: 'ready' };
   if (fs.existsSync(p.codexSwap) || listCodexNext(root).length) return { prepared: false, why: 'stuck' }; // 바꿔 끼는 중이거나 끊긴 것이 있다 — 그 정리는 사용자가 연 Doctor 가 한다
+  if (treating(root, now)) return { prepared: false, why: 'busy' }; // 만들 것이 있지만 치료 중이다 — 물러난다(잠금 파일도 만들지 않는다)
   const r = await withLinkLock(root, ({ recovered }) => {
     if (recovered === 'failed') return { prepared: false, why: 'stuck' };
     if (ready()) return { prepared: false, why: 'ready' };
@@ -176,7 +189,7 @@ export async function autoPrepareCodex({ root, now = Date.now() }) {
     if (!fs.existsSync(cfg)) { writeAtomic(cfg, CODEX_CONFIG); made = true; }
     if (!fs.existsSync(p.codexCard)) { writeAtomic(p.codexCard, codexCardFrame(now)); made = true; }
     return made ? { prepared: true, why: 'prepared' } : { prepared: false, why: 'ready' };
-  }, { now });
+  }, { now, refuseIf: () => treating(root, now) });
   return r?.busy ? { prepared: false, why: 'busy' } : r;
 }
 
