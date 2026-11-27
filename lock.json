@@ -244,63 +244,67 @@
     "hwp-automation": {
       "kind": "git",
       "repo": "https://github.com/Feynman520/d01-p01-hwp-form-automation-mcp.git",
-      "commit": "825f8a13dba0876f4f8e81222c1e35155bc68e8e",
-      "pinnedAt": "2026-07-07",
+      "commit": "9032e8834ab0c42bca85026e42437f6108ba5773",
+      "pinnedAt": "2026-11-27",
       "entry": "server.py",
       "requires": ["Hangul Office"],
       "runtime": "document-mcp",
       "file": "tools/hwp-automation.zip",
-      "dest": "_agent/shared/tools/document-mcp/hwp/825f8a1",
-      "license": "MIT"
+      "dest": "_agent/shared/tools/document-mcp/hwp/9032e88",
+      "license": "MIT",
+      "note": "2.0.65: 825f8a1 → 9032e88(저장소의 커밋된 최신 — 기여 안내 · 보안 안내 · 이슈/PR 양식 문서만 더해짐, 실행 코드와 파이썬 의존 목록은 그대로)."
     },
     "excel-automation": {
       "kind": "git",
       "repo": "https://github.com/Feynman520/d01-p02-excel-engine-mcp.git",
-      "commit": "4684bb17a8d1f160dfe7b18e2a454ecb947da74e",
-      "pinnedAt": "2026-07-07",
+      "commit": "88a46f2b9ada0d2d6a7e0cc809474f5055f47202",
+      "pinnedAt": "2026-11-27",
       "entry": "server.py",
       "requires": ["Microsoft Excel"],
       "runtime": "document-mcp",
       "file": "tools/excel-automation.zip",
-      "dest": "_agent/shared/tools/document-mcp/excel/4684bb1",
-      "license": "MIT"
+      "dest": "_agent/shared/tools/document-mcp/excel/88a46f2",
+      "license": "MIT",
+      "note": "2.0.65: 4684bb1 → 88a46f2(저장소의 커밋된 최신 — 기여 안내 · 보안 안내 · 이슈/PR 양식 문서만 더해짐, 실행 코드와 파이썬 의존 목록은 그대로)."
     },
     "ppt-automation": {
       "kind": "git",
       "repo": "https://github.com/Feynman520/d01-p03-ppt-engine-mcp.git",
-      "commit": "32ec4d80c2f3ffd10e5017583c57297b8e6a9041",
-      "pinnedAt": "2026-07-07",
+      "commit": "36f09912e744075aaf3f225a7040b380c9f97a44",
+      "pinnedAt": "2026-11-27",
       "entry": "server.py",
       "requires": ["Microsoft PowerPoint"],
       "runtime": "document-mcp",
       "file": "tools/ppt-automation.zip",
-      "dest": "_agent/shared/tools/document-mcp/ppt/32ec4d8",
-      "license": "MIT"
+      "dest": "_agent/shared/tools/document-mcp/ppt/36f0991",
+      "license": "MIT",
+      "note": "2.0.65: 32ec4d8 → 36f0991(저장소의 커밋된 최신 — 기여 안내 · 보안 안내 · 이슈/PR 양식 문서만 더해짐, 실행 코드와 파이썬 의존 목록은 그대로)."
     },
     "word-automation": {
       "kind": "git",
       "repo": "https://github.com/Feynman520/d01-p04-word-engine-mcp.git",
-      "commit": "e8fe5990cfc9caa9a75276cc73ae409064154684",
-      "pinnedAt": "2026-07-07",
+      "commit": "db31b535a15ce3bfd67a97568ac4abb910c20b62",
+      "pinnedAt": "2026-11-27",
       "entry": "server.py",
       "requires": ["Microsoft Word"],
       "runtime": "document-mcp",
       "file": "tools/word-automation.zip",
-      "dest": "_agent/shared/tools/document-mcp/word/e8fe599",
-      "license": "MIT"
+      "dest": "_agent/shared/tools/document-mcp/word/db31b53",
+      "license": "MIT",
+      "note": "2.0.65: e8fe599 → db31b53(저장소의 커밋된 최신 — 기여 안내 · 보안 안내 · 이슈/PR 양식 문서만 더해짐, 실행 코드와 파이썬 의존 목록은 그대로)."
     },
     "pdf-automation": {
       "kind": "git",
       "repo": "https://github.com/Feynman520/d01-p05-pdf-engine-mcp.git",
-      "commit": "564291f4c75b009e483900179ae386bd2657e6f7",
-      "pinnedAt": "2026-11-02",
+      "commit": "d699dd4a364c41b858222770aabdce00729c74fe",
+      "pinnedAt": "2026-11-27",
       "entry": "server.py",
       "requires": [],
       "runtime": "document-mcp",
       "file": "tools/pdf-automation.zip",
-      "dest": "_agent/shared/tools/document-mcp/pdf/564291f",
+      "dest": "_agent/shared/tools/document-mcp/pdf/d699dd4",
       "license": "MIT",
-      "note": "2.0.53: b8acf47 → 564291f(pdf_health 가 pypdfium2 5.x 에서 __version__ 이 없어 실패하던 것을 패키지 메타데이터에서 읽도록 고침, 2026-10-29 사용자 결정 '다음 릴리스 때 함께')."
+      "note": "2.0.65: 564291f → d699dd4(저장소의 커밋된 최신 — 기여 안내 · 보안 안내 · 이슈/PR 양식 문서와 시험 파일 한 줄만 바뀜, 실행 코드와 파이썬 의존 목록은 그대로). 2.0.53: b8acf47 → 564291f(pdf_health 가 pypdfium2 5.x 에서 __version__ 이 없어 실패하던 것을 패키지 메타데이터에서 읽도록 고침, 2026-10-29 사용자 결정 '다음 릴리스 때 함께')."
     },
     "document-mcp-wheelhouse": {
       "kind": "wheelhouse",
