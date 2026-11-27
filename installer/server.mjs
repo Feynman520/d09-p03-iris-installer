@@ -53,6 +53,7 @@ import { listHolders, stopHolders } from './lib/holders.mjs';
 import { trustSystemRoots } from './lib/systemca.mjs';
 import { buildReportPayload, sendReport, saveReportCopy } from './lib/report-send.mjs';
 import { prepareDoctorAccounts, doctorPrepareLine } from './lib/doctor-prepare.mjs';
+import { agyLock } from './lib/agylock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -620,6 +621,19 @@ export function startServer({
   save();
   log(`start version=${version} step=${state.step} soul=${state.soul?.mode ?? 'unknown'} auto=${state.auto.eligible} resume=${resume}`);
 
+  // --- Antigravity 화면 잠금(2.0.67) ---------------------------------------
+  // 판정은 lib/agylock.mjs 한 곳이고, 이 설치 폴더의 열쇠만 본다(읽기만 — 설치기는 열쇠 파일을 쓰지 않는다).
+  // 서버가 뜰 때 **한 번** 읽어 이 실행이 끝날 때까지 쓴다(도는 중에 파일이 바뀌어도 따라가지 않는다 — 창 · 대시보드와 같다).
+  // 값은 메모리에만 두고 `GET /api/state` 응답에만 싣는다: 상태 파일 · 영수증 · 인수 문서에 적지 않는다.
+  // 이 판에서 이 값이 바꾸는 것은 화면의 설명 한 줄뿐이다 — 받기 장치를 싣지 않았으므로 열쇠가 열린 PC 에서도
+  // Antigravity 는 고를 수 없고, 받은 antigravity 값은 아래 두 선택 길이 잠금과 상관없이 버린다.
+  const agyLockNow = agyLock(soulRoot);
+  const locksView = () => ({ antigravity: agyLockNow.state });
+  log(`screen lock: antigravity=${agyLockNow.state} (${agyLockNow.why})`);
+  /** 선택 요청이 antigravity 를 실어 왔는가(목록의 값이든 따로 온 칸이든). 버린다는 기록 한 줄에만 쓴다. */
+  const askedAntigravity = (body) => (Array.isArray(body?.subscriptions) && body.subscriptions.includes('antigravity'))
+    || (body != null && typeof body === 'object' && Object.hasOwn(body, 'antigravity') && body.antigravity !== false && body.antigravity != null);
+
   // =========================================================================
   // routes
   // =========================================================================
@@ -636,7 +650,8 @@ export function startServer({
   });
 
   routes.set('GET /api/state', async (req, res) => {
-    sendJson(res, 200, { ok: true, name: 'iris-installer', version, ...state });
+    // 2.0.67: `locks` = 화면 잠금(읽기만 — state 에 넣지 않으므로 상태 파일에는 가지 않는다).
+    sendJson(res, 200, { ok: true, name: 'iris-installer', version, ...state, locks: locksView() });
   });
 
   // --- ① 준비 확인 ---------------------------------------------------------
@@ -685,6 +700,9 @@ export function startServer({
     const subs = Array.isArray(body?.subscriptions)
       ? [...new Set(body.subscriptions.filter((s) => s === 'claude' || s === 'chatgpt'))]
       : [];
+    // 2.0.67: antigravity 는 이 판에서 고를 수 없다 — 잠금과 상관없이 버린다(거절이 아니라 무시: 아래는 그것 없이 온 요청과 똑같이 처리한다).
+    // `subscriptions` 에 셋째 값을 넣지 않는다(주도 에이전트 · 로그인 상자 · "전부 로그인돼야 다음"이 그 목록에 묶여 있다).
+    if (askedAntigravity(body)) log(`choice: antigravity dropped (not installable in this version; lock=${agyLockNow.state})`);
     if (subs.length === 0) {
       sendJson(res, 200, { ok: false, reason: 'empty', message: '구독을 적어도 하나는 골라 주세요.' });
       return;
@@ -1202,6 +1220,8 @@ export function startServer({
     const subs = Array.isArray(body?.subscriptions)
       ? [...new Set(body.subscriptions.filter((s) => s === 'claude' || s === 'chatgpt'))]
       : [];
+    // 2.0.67: 위 `POST /api/choice` 와 같다 — antigravity 는 잠금과 상관없이 버린다(로그인 상자는 클로드 · 챗지피티 둘뿐).
+    if (askedAntigravity(body)) log(`online choice: antigravity dropped (not installable in this version; lock=${agyLockNow.state})`);
     if (subs.length === 0) {
       sendJson(res, 200, { ok: false, reason: 'empty', message: '구독을 적어도 하나는 남겨 주세요. 비서는 유료 구독 하나가 있어야 일합니다.' });
       return;

@@ -12,6 +12,7 @@
 //   --longkey ok|fail|wait|none   「1년 열쇠 받기(권장)」 카드에서 「받기」를 누른 뒤의 모습(2.0.66)
 //             ok = 승인 대기 → 받음(기본) · fail = 시간 초과 · wait = 승인 대기에서 멈춤 · none = 카드 없음
 //             카드는 Claude 로그인이 끝난 뒤에만 보인다(ChatGPT 만 고르면 없다). 가짜라 아무것도 받지 않고 쓰지 않는다.
+//   --agy-key    Antigravity 열쇠가 열린 PC 의 화면(2.0.67): 잠긴 줄의 설명만 바뀐다 — 이 판에서는 그 PC 에서도 고를 수 없다
 //   --no-doctor-shortcut   「IRIS Doctor」 바로가기를 만들지 못한 설치의 완료 화면
 //   --no-doctor-startmenu  「IRIS Doctor」 바로가기가 바탕화면에만 있는 설치의 완료 화면
 
@@ -65,6 +66,8 @@ const state = {
     relay: { state: 'pending', accounts: [] },
   },
   report: null,
+  // 2.0.67 — 화면 잠금. 진짜 서버는 설치 폴더의 열쇠 파일로 판정한다(lib/agylock.mjs). 여기서는 인자로만 고른다 — 파일을 읽지 않는다.
+  locks: { antigravity: flag('agy-key') ? 'open' : 'locked' },
 };
 
 function precheckResult() {
@@ -230,7 +233,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (path === '/api/choice') {
-      const subs = Array.isArray(body.subscriptions) ? body.subscriptions : [];
+      // 진짜 서버처럼 클로드 · 챗지피티만 남긴다(2.0.67 — 받은 antigravity 는 잠금과 상관없이 버린다).
+      const subs = Array.isArray(body.subscriptions) ? [...new Set(body.subscriptions.filter((s) => s === 'claude' || s === 'chatgpt'))] : [];
       if (!subs.length) return json(res, 200, { ok: false, code: 'empty', message: '적어도 하나는 골라야 합니다.' });
       const leadAgent = subs.includes('claude') ? 'claude' : 'chatgpt';
       state.choice = { subscriptions: subs, leadAgent };
