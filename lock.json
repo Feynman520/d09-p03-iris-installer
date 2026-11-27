@@ -365,7 +365,16 @@
       "file": "tools/hooks.zip",
       "dest": "_agent/claude/scripts",
       "license": "MIT",
-      "note": "PreToolUse 안전 훅 2종(block-blanket-kill.ps1 · guard-iris-path.py — 2.0.42 부터 루트 낱개 파일 규칙 D 포함)과 클로드 Stop 훅 bg-leftover-guard.py(2.0.42, 코덱스에는 등록 안 함), 각 .test.py. 원본은 이 PC 의 _agent 스크립트지만, T20 이 사고 날짜·이 PC 전용 경로를 일반화한 사본을 저장소 안에 두었으므로 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다). .ps1 은 순수 ASCII -- 2026-09-15 확인. 훅 등록은 클로드·코덱스 양쪽(T14). 2.0.67: Antigravity 훅 다리 agy-hook-bridge.py(+ .test.py)를 함께 싣는다 -- 가드 둘 옆에 놓기만 하고 클로드 · 코덱스 어느 쪽에도 등록하지 않는다(다른 점의 목록 = payload-src/policy/README.md)."
+      "note": "PreToolUse 안전 훅 2종(block-blanket-kill.ps1 · guard-iris-path.py — 2.0.42 부터 루트 낱개 파일 규칙 D 포함)과 클로드 Stop 훅 bg-leftover-guard.py(2.0.42, 코덱스에는 등록 안 함), 각 .test.py. 원본은 이 PC 의 _agent 스크립트지만, T20 이 사고 날짜·이 PC 전용 경로를 일반화한 사본을 저장소 안에 두었으므로 그쪽을 잠근다(빌드가 이 PC 를 읽지 않아 재현된다). .ps1 은 순수 ASCII -- 2026-09-15 확인. 훅 등록은 클로드·코덱스 양쪽(T14)."
+    },
+    "agy-hook-bridge": {
+      "kind": "dir",
+      "source": "payload-src/tools/agy-hook-bridge",
+      "include": ["agy-hook-bridge.py", "agy-hook-bridge.test.py"],
+      "file": "tools/agy-hook-bridge.zip",
+      "dest": "_agent/claude/scripts",
+      "license": "MIT",
+      "note": "2.0.67: Antigravity 훅 다리 -- 그 프로그램의 PreToolUse 입력을 hooks 부품의 가드 둘(guard-iris-path.py · block-blanket-kill.ps1)에 잇는 번역기와 그 시험 파일. 가드 옆(_agent/claude/scripts)에 놓기만 하고 클로드 · 코덱스 어느 쪽에도 등록하지 않는다(등록은 IRIS 창이, 그 기능이 열린 PC 에서 세션을 열 때만). **hooks 부품에 넣지 않고 따로 둔 까닭**: hooks 는 섞여 사는 폴더에 압축을 통째로 푸는 부품이라, 파일 하나를 더해 지문이 바뀌면 업데이트 때 전체가 다시 풀려 그 사람이 고쳐 둔 가드 파일을 사본 없이 덮는다. 이 부품은 그림 도구처럼 두 파일 묶음(배치표 merge + files)이라 이 두 파일만 놓고, 바뀌는 옛 파일은 옆에 .prev 로 남긴다. 원본은 이 PC 의 _agent 스크립트이고 여기는 일반화한 사본이다(다른 점의 목록 = payload-src/tools/COPY-NOTES.md)."
     },
     "hwpx-templates": {
       "kind": "dir",

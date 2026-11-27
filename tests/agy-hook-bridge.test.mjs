@@ -1,55 +1,88 @@
-// 2.0.67 — 훅 다리 사본(agy-hook-bridge.py): 설치기는 **놓기만** 한다.
+// 2.0.67 — Antigravity 훅 다리(agy-hook-bridge.py): 설치기는 **놓기만** 한다. 그리고 `hooks` 부품을 건드리지 않는다.
 //
 // 지키는 것:
-//   · 사본과 그 시험 파일이 `hooks` 부품의 원본 폴더에 있고(LF · 머리표 없음), 놓이는 자리는 가드 둘과 같은 `_agent\claude\scripts`.
-//   · **어디에도 등록하지 않는다** — 클로드 `settings.json` · 코덱스 `hooks.json` 은 다리가 없는 꾸러미로 만든 것과 바이트까지 같고,
-//     `NAME_MATCHED_HOOKS` · 등록하는 훅 목록에 다리 이름이 없다. 설치기는 Antigravity 의 설정 폴더를 모른다.
-//   · 부품 검증기(V.hooks)는 다리가 없으면 "없음"으로 답한다. 풀기 단계는 섞여 사는 폴더에 다리를 놓고 그 사람 파일은 그대로 둔다.
-//   · 사본의 자체 시험(파이썬이 있을 때): 임시 영혼 폴더에서 가드 둘을 진짜로 불러 막을 것을 막고 통과시킬 것을 통과시킨다.
+//   · 다리는 **따로 된 작은 부품**(`agy-hook-bridge` — 그림 도구와 같은 두 파일 묶음)이다. `hooks` 부품에 넣지 않는다:
+//     `hooks` 는 섞여 사는 폴더에 압축을 통째로 푸는 부품이라, 파일 하나를 더해 지문이 바뀌면 업데이트 때 전체가 다시 풀려
+//     그 사람이 고쳐 둔 가드 파일(guard-iris-path.py 등)을 사본 없이 덮는다(2026-11-28 코드 검토 "막아야 함").
+//   · `hooks` 부품은 이 판에서 한 바이트도 달라지지 않았다(파일 목록 · 파일마다의 지문 · 잠금표 줄).
+//   · 옛 설치에 그 사람이 고친 가드가 있어도 새 판의 풀기는 그 파일을 그대로 두고 다리만 새로 놓는다. 한 번 더 돌려도 변경 0.
+//   · 같은 이름의 파일이 이미 있으면(그 사람이 놓아 둔 다리) 옆에 `.prev` 로 남기고 바꾼다. 실패하면 시작 전으로 되돌린다.
+//   · **어디에도 등록하지 않는다** — 클로드 `settings.json` · 코덱스 `hooks.json` 은 다리가 없을 때와 바이트까지 같다.
+//   · 사본의 자체 시험(파이썬이 있을 때): 가드 둘을 진짜로 불러 막을 것을 막고 통과시킬 것을 통과시킨다.
 //
-// 진짜 설치 폴더 · 진짜 사용자 폴더에는 닿지 않는다: 가드와 다리는 `IRIS_ROOT`(시험이 준 임시 폴더)만 본다.
+// 진짜 설치 폴더 · 진짜 사용자 폴더에 쓰지 않는다. 가드와 다리는 임시 폴더의 사본이다.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as adapters from '../installer/setup/adapters.mjs';
 import * as unpack from '../installer/setup/unpack.mjs';
-import { run } from '../lib/run.mjs';
+import { planUpdateReset, RELAY_PARTS, VENV_PARTS } from '../installer/lib/update-plan.mjs';
+import { isStageError } from '../installer/lib/errors.mjs';
+import { collect, listFiles } from '../build/collect.mjs';
+import { extractZip, zipDir } from '../lib/zip.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOOKS_SRC = path.join(REPO, 'payload-src', 'policy', 'hooks');
+const BRIDGE_SRC = path.join(REPO, 'payload-src', 'tools', 'agy-hook-bridge');
 const LOCK = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
+const PART = 'agy-hook-bridge';
 const BRIDGE = 'agy-hook-bridge.py';
 const BRIDGE_TEST = 'agy-hook-bridge.test.py';
 const RELEASE_GATE = process.env.IRIS_RELEASE_GATE === '1';
-const TAR = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
 
 const tmp = fs.mkdtempSync(path.join(process.env.IRIS_TEST_TMP || os.tmpdir(), 'iris-agy-bridge-'));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 const put = (p, body) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body); return p; };
 const under = (root, rel) => path.join(root, String(rel).split('/').join(path.sep));
+const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+const scriptsDir = (root) => path.join(root, '_agent', 'claude', 'scripts');
+/** 폴더 지문: 경로 → 크기 · 수정 시각 · 내용 지문(두 번 돌려 "변경 0"을 볼 때 쓴다). */
+function snapshot(dir) {
+  const out = {};
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      const st = fs.statSync(p);
+      out[path.relative(dir, p)] = `${st.size}:${st.mtimeMs}:${sha(fs.readFileSync(p))}`;
+    }
+  };
+  walk(dir);
+  return out;
+}
 
 // ---------------------------------------------------------------------------
-// 원본 폴더의 두 파일
+// 부품의 모양 — 따로 된 두 파일 묶음
 // ---------------------------------------------------------------------------
-test('사본과 시험 파일이 hooks 부품의 원본 폴더에 있다 — LF · 머리표 없음 · 가드 둘 옆', () => {
-  assert.equal(LOCK.parts.hooks.source, 'payload-src/policy/hooks');
-  assert.equal(LOCK.parts.hooks.dest, '_agent/claude/scripts', '다리는 자기 자리에서 가드와 영혼 루트를 찾으므로 이 자리여야 한다');
-  for (const name of [BRIDGE, BRIDGE_TEST, 'guard-iris-path.py', 'block-blanket-kill.ps1']) {
-    assert.ok(fs.existsSync(path.join(HOOKS_SRC, name)), `${name} 없음`);
-  }
+test('잠금표 · 배치표: 다리는 따로 된 두 파일 묶음(dir + include / merge + files)이고 가드 옆에 놓인다', () => {
+  const p = LOCK.parts[PART];
+  assert.ok(p, '잠금표에 부품이 있다');
+  assert.deepEqual({ kind: p.kind, source: p.source, include: p.include, file: p.file, dest: p.dest, license: p.license },
+    { kind: 'dir', source: 'payload-src/tools/agy-hook-bridge', include: [BRIDGE, BRIDGE_TEST], file: 'tools/agy-hook-bridge.zip', dest: '_agent/claude/scripts', license: 'MIT' });
+  assert.equal(p.dest, LOCK.parts.hooks.dest, '다리는 자기 자리에서 가드와 영혼 루트를 찾으므로 가드와 같은 폴더여야 한다');
+  assert.equal(p.redistribute, undefined, '꾸러미에 싣는 부품이다(내려받기 아님)');
+  assert.deepEqual(unpack.V2_LAYOUT[PART], { kind: 'archive', strip: 0, mode: 'merge', files: [BRIDGE, BRIDGE_TEST] });
+  // `hooks` 의 배치는 그대로다: files 가 없는 통째 풀기. 그래서 이 부품에는 아무것도 더하면 안 된다.
+  assert.deepEqual(unpack.V2_LAYOUT.hooks, { kind: 'archive', strip: 0, mode: 'merge' });
+  const order = unpack.UNPACK_ORDER;
+  assert.equal(order.indexOf(PART), order.indexOf('hooks') + 1, '풀기 차례는 hooks 바로 뒤');
+  assert.equal(order.filter((x) => x === PART).length, 1);
+
   for (const name of [BRIDGE, BRIDGE_TEST]) {
-    const buf = fs.readFileSync(path.join(HOOKS_SRC, name));
+    const buf = fs.readFileSync(path.join(BRIDGE_SRC, name));
     assert.ok(buf.length > 1000, name);
     assert.equal(buf.includes(0x0d), false, `${name}: CR 이 없다(LF 만)`);
     assert.notDeepEqual([...buf.subarray(0, 3)], [0xef, 0xbb, 0xbf], `${name}: 머리표(BOM) 없음`);
     assert.equal(buf.some((b) => b < 0x20 && b !== 0x0a), false, `${name}: 제어 문자 없음`);
     assert.equal(buf[buf.length - 1], 0x0a, `${name}: 끝 줄바꿈`);
   }
-  const src = fs.readFileSync(path.join(HOOKS_SRC, BRIDGE), 'utf8');
+  assert.deepEqual(fs.readdirSync(BRIDGE_SRC).filter((n) => n !== '__pycache__').sort(), [BRIDGE, BRIDGE_TEST], '원본 폴더에는 그 두 파일뿐');
+  const src = fs.readFileSync(path.join(BRIDGE_SRC, BRIDGE), 'utf8');
   // 다리가 기대는 것: 같은 폴더의 가드 둘 · 자기 자리에서 세 칸 위가 영혼 루트 · 고장 나면 막는다.
   assert.match(src, /GUARD_PATH = os\.path\.join\(HERE, "guard-iris-path\.py"\)/);
   assert.match(src, /GUARD_KILL = os\.path\.join\(HERE, "block-blanket-kill\.ps1"\)/);
@@ -60,7 +93,198 @@ test('사본과 시험 파일이 hooks 부품의 원본 폴더에 있다 — LF 
 });
 
 // ---------------------------------------------------------------------------
-// 놓기만 한다 — 어댑터 단계
+// ⓐ hooks 부품은 이 판에서 한 바이트도 달라지지 않았다
+// ---------------------------------------------------------------------------
+// 2.0.66(가른 곳)의 hooks 원본 폴더 — 파일 이름과 내용 지문. 이 표가 달라지면 hooks 묶음의 지문이 달라진다.
+const HOOKS_AS_OF_2_0_66 = {
+  'bg-leftover-guard.py': '10c9f3129b2e729f2cbf15b99c84320ef04ca2e77c329d252315c10f6ad402ee',
+  'bg-leftover-guard.test.py': '4c59ffb44fbacd89a26b675afd48591f25f30802fe8bda6c6e9d1cca85d2f5e6',
+  'block-blanket-kill.ps1': '814bcb76671d4be69e5fb827f0e961f8daf7ca64ccb7cdda4f3dffd3d032922f',
+  'block-blanket-kill.test.py': '06660dfdd6bb1516b3ce0cd4d6780a9aed48f4661aa04ae53eed6a0271215454',
+  'guard-iris-path.py': '87005154e834cbae1dbd41a417283261cb768aeed30ce6aac63fde1c20787c76',
+  'guard-iris-path.test.py': 'b36398ea48d0c782b49cbb672910ee6b8aacdc9e33ef783eea5be09f7275fc76',
+};
+const WHY_PINNED = 'hooks 부품의 파일이 하나라도 더해지거나 바뀌면 그 묶음의 지문이 바뀌고, 업데이트 때 압축 전체가 섞여 사는 폴더에 다시 풀려 '
+  + '그 사람이 고쳐 둔 가드 파일을 사본 없이 덮는다. 새 파일은 이 부품에 넣지 말고 따로 된 파일 묶음 부품으로 싣는다. '
+  + '가드 자체를 고쳐야 하는 판은 그 덮어쓰기를 알고 정한 뒤에 이 표를 고친다.';
+
+test('hooks 부품은 2.0.66 과 같다 — 잠금표 줄 · 원본 폴더의 파일 목록 · 파일마다의 지문 · 빌드가 묶는 것', async () => {
+  const h = LOCK.parts.hooks;
+  assert.deepEqual({ kind: h.kind, source: h.source, exclude: h.exclude, include: h.include, asciiRequired: h.asciiRequired, file: h.file, dest: h.dest },
+    { kind: 'dir', source: 'payload-src/policy/hooks', exclude: ['__pycache__'], include: undefined, asciiRequired: true, file: 'tools/hooks.zip', dest: '_agent/claude/scripts' }, WHY_PINNED);
+  assert.doesNotMatch(String(h.note), /agy|Antigravity/i, '잠금표의 hooks 줄에 다리 이야기가 없다');
+  const names = fs.readdirSync(HOOKS_SRC).filter((n) => n !== '__pycache__').sort();
+  assert.deepEqual(names, Object.keys(HOOKS_AS_OF_2_0_66).sort(), WHY_PINNED);
+  for (const [name, want] of Object.entries(HOOKS_AS_OF_2_0_66)) assert.equal(sha(fs.readFileSync(path.join(HOOKS_SRC, name))), want, `${name}: ${WHY_PINNED}`);
+
+  // 빌드의 수집(build/collect.mjs)이 실제로 묶는 것: hooks = 그 여섯 파일 그대로, 다리 부품 = 그 두 파일 그대로.
+  const stage = (tag) => ({ cacheDir: path.join(tmp, `cache-${tag}`), stageDir: path.join(tmp, `stage-${tag}`) });
+  const built = await collect({ lock: { package: { version: '0' }, parts: { hooks: LOCK.parts.hooks, [PART]: LOCK.parts[PART] } }, ...stage('both'), log: () => {} });
+  const hooksOut = path.join(tmp, 'hooks-out');
+  await extractZip(path.join(built.payloadDir, 'tools', 'hooks.zip'), hooksOut);
+  assert.deepEqual(listFiles(hooksOut).map((f) => f.split(path.sep).join('/')).sort(), Object.keys(HOOKS_AS_OF_2_0_66).sort(), 'hooks 묶음 안의 파일 목록');
+  for (const [name, want] of Object.entries(HOOKS_AS_OF_2_0_66)) assert.equal(sha(fs.readFileSync(path.join(hooksOut, name))), want, `hooks 묶음 안의 ${name}`);
+  const bridgeOut = path.join(tmp, 'bridge-out');
+  await extractZip(path.join(built.payloadDir, 'tools', 'agy-hook-bridge.zip'), bridgeOut);
+  assert.deepEqual(listFiles(bridgeOut).map((f) => f.split(path.sep).join('/')).sort(), [BRIDGE, BRIDGE_TEST]);
+  for (const name of [BRIDGE, BRIDGE_TEST]) assert.ok(fs.readFileSync(path.join(bridgeOut, name)).equals(fs.readFileSync(path.join(BRIDGE_SRC, name))), `${name} 은 바이트 그대로 묶인다`);
+  // 다리 부품이 잠금표에 있든 없든 hooks 묶음은 같은 바이트다(두 부품은 서로를 모른다).
+  const alone = await collect({ lock: { package: { version: '0' }, parts: { hooks: LOCK.parts.hooks } }, ...stage('alone'), log: () => {} });
+  assert.equal(sha(fs.readFileSync(path.join(alone.payloadDir, 'tools', 'hooks.zip'))), sha(fs.readFileSync(path.join(built.payloadDir, 'tools', 'hooks.zip'))), 'hooks 묶음의 지문');
+});
+
+// ---------------------------------------------------------------------------
+// 풀기 — 옛 설치 위에 얹는다
+// ---------------------------------------------------------------------------
+/** 진짜 원본 폴더로 꾸러미를 만든다(hooks 묶음 · 다리 묶음). bridgeFiles 로 다리 묶음의 내용을 바꿀 수 있다(실패 시험용). */
+async function makePayload(label, { bridgeFiles = null } = {}) {
+  const payloadDir = path.join(tmp, label, 'payload');
+  fs.mkdirSync(path.join(payloadDir, 'tools'), { recursive: true });
+  // 묶는 함수는 폴더의 시각을 고정값으로 바꾼다 — 저장소의 원본 폴더가 아니라 임시 사본을 묶는다.
+  const copyOf = (from, name) => {
+    const to = path.join(tmp, label, name);
+    for (const f of fs.readdirSync(from)) if (f !== '__pycache__') put(path.join(to, f), fs.readFileSync(path.join(from, f)));
+    return to;
+  };
+  await zipDir(copyOf(HOOKS_SRC, 'hooks-src'), path.join(payloadDir, 'tools', 'hooks.zip'));
+  let src;
+  if (bridgeFiles) {
+    src = path.join(tmp, label, 'bridge-src');
+    for (const [name, body] of Object.entries(bridgeFiles)) put(path.join(src, name), body);
+  } else src = copyOf(BRIDGE_SRC, 'bridge-src');
+  await zipDir(src, path.join(payloadDir, 'tools', 'agy-hook-bridge.zip'));
+  return payloadDir;
+}
+/** 풀기 단계의 ctx. parts = { 부품: 지문 } — 지문이 같으면 "같은 부품"이다. 검증기는 진짜 것을 쓴다. */
+function unpackCtx(root, payloadDir, parts) {
+  const lockParts = Object.fromEntries(Object.keys(parts).map((id) => [id, { ...LOCK.parts[id] }]));
+  const lock = { schema: 2, package: { version: '2.0.67' }, parts: lockParts };
+  const manifest = { schema: 2, package: { version: '2.0.67' }, parts: Object.fromEntries(Object.entries(parts).map(([id, sha256]) => [id, { file: lockParts[id].file, version: null, sha256, dest: lockParts[id].dest }])) };
+  // 검증기 표는 만들 때 런타임 부품(node · python · git)의 자리도 읽으므로 진짜 잠금표로 만든다 — 놓는 것은 위 부품뿐이다.
+  const real = unpack.v2Verifiers({ root, fs, lock: LOCK, manifest: null });
+  return {
+    root, payloadDir, lock, manifest, offline: true, fs,
+    choice: { subscriptions: ['claude'], leadAgent: 'claude' },
+    log: () => {}, progress: () => {},
+    run: async () => ({ code: 0, out: 'stub', err: '' }),
+    processes: { list: async () => [], files: async () => [] },
+    env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '1' },
+    verifiers: Object.fromEntries(Object.keys(parts).map((id) => [id, real[id]])),
+  };
+}
+const HOOKS_SHA = 'sha-of-hooks-as-shipped-in-2.0.66';
+
+test('옛 설치에 그 사람이 고친 가드가 있다 → 새 판의 풀기는 그 파일을 그대로 두고 다리만 새로 놓는다 · 한 번 더 돌려도 변경 0', async () => {
+  const payloadDir = await makePayload('upgrade');
+  const root = path.join(tmp, 'upgrade', 'soul-IRIS');
+  const dest = scriptsDir(root);
+
+  // ① 옛 판(2.0.66): hooks 부품만 있다. 진짜 풀기로 놓는다 → 영수증 쪽 기록(부품 지문)이 남는다.
+  const first = await unpack.run(unpackCtx(root, payloadDir, { hooks: HOOKS_SHA }));
+  assert.deepEqual(first.recorded.placed, ['hooks']);
+  assert.equal(fs.existsSync(path.join(dest, BRIDGE)), false, '옛 판에는 다리가 없다');
+
+  // ② 그 사람이 가드를 고쳐 쓰고, 같은 폴더에 자기 훅도 두고, 설정 파일도 있다.
+  const mine = `${fs.readFileSync(path.join(dest, 'guard-iris-path.py'), 'utf8')}\n# 내가 고친 줄: 우리 학교 폴더 규칙\n`;
+  fs.writeFileSync(path.join(dest, 'guard-iris-path.py'), mine);
+  const minePs = `${fs.readFileSync(path.join(dest, 'block-blanket-kill.ps1'), 'utf8')}\r\n# my own line\r\n`;
+  fs.writeFileSync(path.join(dest, 'block-blanket-kill.ps1'), minePs);
+  put(path.join(dest, 'my-own-hook.py'), '# 내 훅\n');
+  put(path.join(root, '_agent', 'claude', 'settings.json'), '{"mine":true}\n');
+  const before = snapshot(root);
+
+  // ③ 새 판(2.0.67): hooks 는 같은 지문 · 다리 부품이 새로 생겼다.
+  const second = await unpack.run(unpackCtx(root, payloadDir, { hooks: HOOKS_SHA, [PART]: 'sha-bridge-1' }));
+  assert.deepEqual(second.recorded.placed, [PART], '놓은 것은 다리뿐');
+  assert.deepEqual(second.recorded.skipped, ['hooks'], 'hooks 는 같은 부품이라 건드리지 않는다');
+  assert.equal(fs.readFileSync(path.join(dest, 'guard-iris-path.py'), 'utf8'), mine, '그 사람이 고친 가드는 바이트 그대로');
+  assert.equal(fs.readFileSync(path.join(dest, 'block-blanket-kill.ps1'), 'utf8'), minePs);
+  assert.equal(fs.readFileSync(path.join(dest, 'my-own-hook.py'), 'utf8'), '# 내 훅\n');
+  for (const name of [BRIDGE, BRIDGE_TEST]) assert.ok(fs.readFileSync(path.join(dest, name)).equals(fs.readFileSync(path.join(BRIDGE_SRC, name))), `${name} 이 새로 놓였다`);
+  const after1 = snapshot(root);
+  const changed = [...new Set([...Object.keys(before), ...Object.keys(after1)])].filter((k) => before[k] !== after1[k]).sort();
+  assert.deepEqual(changed, [
+    path.join('_agent', 'claude', 'scripts', BRIDGE), path.join('_agent', 'claude', 'scripts', BRIDGE_TEST), path.join('_agent', 'setup', 'unpack-state.json'),
+  ].sort(), '달라진 것은 새 두 파일과 풀기 기록뿐(.prev 없음 · 설정 파일 무접촉 · 임시 자리 남지 않음)');
+  assert.deepEqual(second.recorded.moved, [], '옆으로 옮기거나 사본을 남긴 것이 없다');
+  assert.equal(fs.existsSync(`${dest}.prev`), false, '섞여 사는 폴더는 옆으로 옮기지 않는다');
+
+  // ④ 한 번 더(같은 판 재실행 · 이어하기): 변경 0.
+  const third = await unpack.run(unpackCtx(root, payloadDir, { hooks: HOOKS_SHA, [PART]: 'sha-bridge-1' }));
+  assert.deepEqual(third.recorded.placed, []);
+  assert.deepEqual(third.recorded.skipped, ['hooks', PART]);
+  assert.deepEqual(snapshot(root), after1, '두 번째 적용은 아무것도 바꾸지 않는다');
+
+  // ⑤ 그 뒤에 그 사람이 다리를 고쳐 써도 같은 판에서는 덮지 않는다.
+  fs.writeFileSync(path.join(dest, BRIDGE), '# 내가 고친 다리\ndef to_claude(j):\n    return None, []\n');
+  await unpack.run(unpackCtx(root, payloadDir, { hooks: HOOKS_SHA, [PART]: 'sha-bridge-1' }));
+  assert.match(fs.readFileSync(path.join(dest, BRIDGE), 'utf8'), /^# 내가 고친 다리/);
+});
+
+test('같은 이름의 파일이 이미 있다 → 옆에 .prev 로 남기고 바꾼다(.prev 가 있으면 .prev-2) · 내용이 같으면 손대지 않는다', async () => {
+  const payloadDir = await makePayload('prev');
+  const root = path.join(tmp, 'prev', 'soul-IRIS');
+  const dest = scriptsDir(root);
+  // 그 사람이 손으로 놓아 둔 다리(다른 내용)와, 전에 남은 .prev, 그리고 이미 같은 내용인 시험 파일.
+  put(path.join(dest, BRIDGE), '# 그 사람이 놓아 둔 다리\n');
+  put(path.join(dest, `${BRIDGE}.prev`), '# 더 옛것\n');
+  fs.copyFileSync(path.join(BRIDGE_SRC, BRIDGE_TEST), path.join(dest, BRIDGE_TEST));
+  const testStat = fs.statSync(path.join(dest, BRIDGE_TEST)).mtimeMs;
+
+  const r = await unpack.run(unpackCtx(root, payloadDir, { [PART]: 'sha-bridge-1' }));
+  assert.deepEqual(r.recorded.placed, [PART]);
+  assert.ok(fs.readFileSync(path.join(dest, BRIDGE)).equals(fs.readFileSync(path.join(BRIDGE_SRC, BRIDGE))), '새 다리로 바뀌었다');
+  assert.equal(fs.readFileSync(path.join(dest, `${BRIDGE}.prev-2`), 'utf8'), '# 그 사람이 놓아 둔 다리\n', '옛 내용은 옆에 남는다');
+  assert.equal(fs.readFileSync(path.join(dest, `${BRIDGE}.prev`), 'utf8'), '# 더 옛것\n', '전에 남은 사본을 덮지 않는다');
+  assert.deepEqual(r.recorded.moved, [{ part: PART, previous: path.join('_agent', 'claude', 'scripts', `${BRIDGE}.prev-2`) }]);
+  assert.equal(fs.statSync(path.join(dest, BRIDGE_TEST)).mtimeMs, testStat, '내용이 같은 파일은 다시 쓰지도 않는다');
+  assert.deepEqual(fs.readdirSync(dest).sort(), [BRIDGE, `${BRIDGE}.prev`, `${BRIDGE}.prev-2`, BRIDGE_TEST].sort());
+});
+
+test('다리 묶음이 깨졌다(파일 하나가 없다) → 멈추고, 그 사람의 파일은 시작 전 그대로 · 사본도 남기지 않는다', async () => {
+  const payloadDir = await makePayload('broken', { bridgeFiles: { [BRIDGE]: 'def to_claude(j):\n    pass\n' } }); // 시험 파일이 빠진 묶음
+  const root = path.join(tmp, 'broken', 'soul-IRIS');
+  const dest = scriptsDir(root);
+  put(path.join(dest, BRIDGE), '# 그 사람이 놓아 둔 다리\n');
+  put(path.join(dest, 'guard-iris-path.py'), '# 내 가드\n');
+  const before = snapshot(dest);
+  await assert.rejects(unpack.run(unpackCtx(root, payloadDir, { [PART]: 'sha-bridge-bad' })), (err) => isStageError(err) && err.code === 'E-UNPACK');
+  assert.deepEqual(snapshot(dest), before, '폴더는 시작 전과 같다');
+});
+
+test('부품 검증기: 다리 부품은 두 파일이 다 있고 그 파일이어야 통과 — hooks 검증기는 다리를 요구하지 않는다', async () => {
+  const root = path.join(tmp, 'verify', 'soul-IRIS');
+  const dest = scriptsDir(root);
+  const V = unpack.v2Verifiers({ root, fs, lock: LOCK, manifest: null });
+  for (const f of ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py']) put(path.join(dest, f), '# x\n');
+  assert.equal((await V.hooks()).ok, true, 'hooks 는 지금까지의 세 파일만 본다(다리가 없어도 통과 — 옛 판에서 올라오는 PC 가 여기서 막히지 않는다)');
+  const none = await V[PART]();
+  assert.equal(none.ok, false);
+  assert.match(none.detail, /agy-hook-bridge\.py 없음/);
+  put(path.join(dest, BRIDGE), '');
+  put(path.join(dest, BRIDGE_TEST), '# 다른 파일\n');
+  const wrong = await V[PART]();
+  assert.equal(wrong.ok, false);
+  assert.match(wrong.detail, /agy-hook-bridge\.py 없음, agy-hook-bridge\.test\.py 내용이 다름/);
+  for (const name of [BRIDGE, BRIDGE_TEST]) fs.copyFileSync(path.join(BRIDGE_SRC, name), path.join(dest, name));
+  assert.equal((await V[PART]()).ok, true);
+});
+
+test('업데이트 계획: 다리 부품이 새로 생겨도 풀기 · 환경 · 어댑터만 다시 돈다 — 실행기 · 파이썬 환경 단계를 돌릴 까닭이 없다', () => {
+  assert.equal(RELAY_PARTS.includes(PART), false, '실행기 · 바로가기가 이 부품을 가리키지 않는다');
+  assert.equal(VENV_PARTS.includes(PART), false);
+  // 2.0.66 을 깐 PC 의 영수증: hooks 는 같은 지문으로 기록돼 있고 다리 부품은 없다.
+  const receipt = { setup: { unpack: { recorded: { parts: { hooks: { identity: { version: null, sha256: HOOKS_SHA, tail: 'scripts', commit: null } } } } }, relay: { status: 'done' }, venv: { status: 'done' } } };
+  const lock = { parts: { hooks: LOCK.parts.hooks, [PART]: LOCK.parts[PART] } };
+  const manifest = { parts: { hooks: { sha256: HOOKS_SHA, dest: LOCK.parts.hooks.dest }, [PART]: { sha256: 'sha-bridge-1', dest: LOCK.parts[PART].dest } } };
+  const plan = planUpdateReset({ receipt, lock, manifest });
+  assert.deepEqual(plan.changed, [PART], '바뀐 부품은 다리뿐(hooks 는 같은 지문)');
+  assert.deepEqual(plan.reset, ['unpack', 'env', 'adapters']);
+  assert.ok(plan.keptDone.includes('relay') && plan.keptDone.includes('venv'));
+});
+
+// ---------------------------------------------------------------------------
+// ⓓ 놓기만 한다 — 어디에도 등록하지 않는다
 // ---------------------------------------------------------------------------
 function makeTools(root) {
   const sp = under(root, LOCK.parts.superpowers.dest);
@@ -76,18 +300,16 @@ function makeTools(root) {
     put(path.join(under(root, LOCK.parts[id].dest), 'server.py'), '# server\n');
   }
 }
-/** withBridge:false = 다리가 없던 판의 꾸러미(같은 폴더에서 다리 두 파일만 뺀 것). */
-function makeCtx(label, { withBridge = true } = {}) {
-  // 두 실행의 루트 경로 길이가 같아야 설정 파일의 바이트를 그대로 견줄 수 있다 → 같은 이름 · 다른 부모.
+/** 풀기가 끝난 영혼(가드는 제자리에 있다). withBridge = 다리 부품도 놓였는가. */
+function makeAdaptersCtx(label, { withBridge }) {
+  // 두 실행의 루트 경로 길이가 같아야 설정 파일의 바이트를 그대로 견줄 수 있다 → 같은 이름 · 같은 길이의 다른 부모.
   const root = path.join(tmp, label, 'soul-IRIS');
   fs.mkdirSync(root, { recursive: true });
   makeTools(root);
+  for (const f of fs.readdirSync(HOOKS_SRC)) if (f !== '__pycache__') put(path.join(scriptsDir(root), f), fs.readFileSync(path.join(HOOKS_SRC, f)));
+  if (withBridge) for (const f of [BRIDGE, BRIDGE_TEST]) put(path.join(scriptsDir(root), f), fs.readFileSync(path.join(BRIDGE_SRC, f)));
   const payloadDir = path.join(tmp, label, 'payload');
-  fs.mkdirSync(path.join(payloadDir, 'policy', 'hooks'), { recursive: true });
-  for (const f of fs.readdirSync(HOOKS_SRC)) {
-    if (!withBridge && f.startsWith('agy-hook-bridge')) continue;
-    fs.copyFileSync(path.join(HOOKS_SRC, f), path.join(payloadDir, 'policy', 'hooks', f));
-  }
+  for (const f of fs.readdirSync(HOOKS_SRC)) if (f !== '__pycache__') put(path.join(payloadDir, 'policy', 'hooks', f), fs.readFileSync(path.join(HOOKS_SRC, f)));
   const logs = [];
   return {
     root, payloadDir, lock: LOCK,
@@ -101,14 +323,7 @@ function makeCtx(label, { withBridge = true } = {}) {
     fs, env: { PATH: 'X' }, logs,
   };
 }
-const scriptsDir = (root) => path.join(root, '_agent', 'claude', 'scripts');
 const claudeSettings = (root) => path.join(root, '_agent', 'claude', 'settings.json');
-function findFiles(root, name) {
-  const out = [];
-  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (e.name === name) out.push(p); } };
-  walk(root);
-  return out;
-}
 function allFiles(root) {
   const out = [];
   const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else out.push(p); } };
@@ -116,122 +331,48 @@ function allFiles(root) {
   return out;
 }
 
-test('어댑터 단계: 다리와 시험 파일을 가드 옆에 놓는다 — 훅 설정에는 넣지 않는다(다리가 없는 꾸러미와 바이트까지 같다)', async () => {
-  const withB = makeCtx('with', { withBridge: true });
-  const without = makeCtx('none', { withBridge: false });
+test('어댑터 단계: 다리가 놓여 있어도 훅 설정은 다리가 없을 때와 바이트까지 같다 — 클로드 settings.json · 코덱스 hooks.json', async () => {
+  const withB = makeAdaptersCtx('with', { withBridge: true });
+  const without = makeAdaptersCtx('none', { withBridge: false });
+  const bridgeBefore = [BRIDGE, BRIDGE_TEST].map((f) => sha(fs.readFileSync(path.join(scriptsDir(withB.root), f))));
   await adapters.run(withB);
   await adapters.run(without);
 
-  // ① 놓였다 — 꾸러미의 것과 바이트까지 같다.
-  for (const name of [BRIDGE, BRIDGE_TEST]) {
-    const placed = path.join(scriptsDir(withB.root), name);
-    assert.ok(fs.existsSync(placed), `${name} 이 놓이지 않았다`);
-    assert.deepEqual(fs.readFileSync(placed), fs.readFileSync(path.join(HOOKS_SRC, name)), name);
-    assert.equal(fs.existsSync(path.join(scriptsDir(without.root), name)), false, '없는 꾸러미에서는 만들지 않는다');
-  }
-  assert.ok(without.logs.some((l) => l.includes(BRIDGE) && l.includes('없어')), '꾸러미에 없으면 기록 한 줄로 알린다(설치는 계속)');
-
-  // ② 두 설정 파일은 다리가 없는 꾸러미로 만든 것과 **바이트까지** 같다(루트 경로만 다르다 — 같은 길이의 다른 폴더).
   const norm = (ctx, file) => fs.readFileSync(file, 'utf8').split(JSON.stringify(ctx.root).slice(1, -1)).join('<ROOT>').split(ctx.root).join('<ROOT>');
   const settingsA = norm(withB, claudeSettings(withB.root));
-  const settingsB = norm(without, claudeSettings(without.root));
-  assert.equal(settingsA, settingsB, '클로드 settings.json 이 달라졌다');
-  const codexA = findFiles(path.join(withB.root, '_agent'), 'hooks.json');
-  const codexB = findFiles(path.join(without.root, '_agent'), 'hooks.json');
+  assert.equal(settingsA, norm(without, claudeSettings(without.root)), '클로드 settings.json 이 달라졌다');
+  const hooksJson = (root) => allFiles(path.join(root, '_agent')).filter((f) => path.basename(f) === 'hooks.json');
+  const codexA = hooksJson(withB.root);
+  const codexB = hooksJson(without.root);
   assert.ok(codexA.length >= 1, '코덱스 hooks.json 이 있다');
   assert.deepEqual(codexA.map((f) => path.relative(withB.root, f)), codexB.map((f) => path.relative(without.root, f)));
   for (let i = 0; i < codexA.length; i += 1) assert.equal(norm(withB, codexA[i]), norm(without, codexB[i]), `코덱스 ${path.relative(withB.root, codexA[i])} 이 달라졌다`);
 
-  // ③ 등록된 훅의 수는 지금까지와 같다(클로드: 막는 훅 둘 · 세션 시작 둘 · 끝날 때 하나).
+  // 등록된 훅의 수는 지금까지와 같다(클로드: 막는 훅 둘 · 세션 시작 둘 · 끝날 때 하나).
   const hooks = JSON.parse(fs.readFileSync(claudeSettings(withB.root), 'utf8')).hooks;
   assert.deepEqual({ pre: hooks.PreToolUse.length, start: hooks.SessionStart.length, stop: hooks.Stop.length }, { pre: 2, start: 2, stop: 1 });
 
-  // ④ 다리 이름은 그 두 파일 말고는 영혼 폴더 어디에도 없다(설정 · 등록부 · 기록 파일 전부).
+  // 다리 이름은 그 두 파일 말고는 영혼 폴더 어디에도 없다(설정 · 등록부 · 기록 파일 전부). 어댑터는 다리 파일을 건드리지도 않는다.
   for (const file of allFiles(withB.root)) {
     if (path.dirname(file) === scriptsDir(withB.root) && path.basename(file).startsWith('agy-hook-bridge')) continue;
     assert.equal(fs.readFileSync(file).includes('agy-hook-bridge'), false, `${path.relative(withB.root, file)} 에 다리 이름이 있다`);
   }
-  // ⑤ 설치기는 Antigravity 의 설정 폴더를 만들지 않는다(영혼 폴더 안에도).
+  assert.deepEqual([BRIDGE, BRIDGE_TEST].map((f) => sha(fs.readFileSync(path.join(scriptsDir(withB.root), f)))), bridgeBefore);
+  assert.equal(without.logs.some((l) => l.includes('agy-hook-bridge')), false, '어댑터는 다리를 찾지도 않는다(없다고 알리지도 않는다)');
+  // 설치기는 Antigravity 의 설정 폴더를 만들지 않는다(영혼 폴더 안에도).
   assert.equal(allFiles(withB.root).some((f) => /[\\/]\.gemini[\\/]/.test(f)), false);
-
-  // ⑥ 두 번 돌려도 같다(이미 있으면 건너뛴다 — 그 사람이 고친 사본을 덮지 않는다).
-  const mine = path.join(scriptsDir(withB.root), BRIDGE);
-  fs.writeFileSync(mine, '# 내가 고친 사본\n');
-  await adapters.run(withB);
-  assert.equal(fs.readFileSync(mine, 'utf8'), '# 내가 고친 사본\n');
-  assert.equal(norm(withB, claudeSettings(withB.root)), settingsA, '되풀이 실행에도 설정은 그대로');
 });
 
-test('목록: 다리는 "놓기만 하는 파일" 쪽에 있고, 훅으로 등록하는 목록 · 이름으로 알아보는 목록에는 없다', () => {
-  assert.deepEqual(adapters.HOOK_SCRIPTS, ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py'], '등록하는 훅 스크립트는 그대로 셋');
-  assert.ok(adapters.HOOK_EXTRAS.includes(BRIDGE) && adapters.HOOK_EXTRAS.includes(BRIDGE_TEST));
-  assert.deepEqual(adapters.HOOK_EXTRAS.slice(0, 3), ['block-blanket-kill.test.py', 'guard-iris-path.test.py', 'bg-leftover-guard.test.py'], '있던 셋은 그대로');
+test('어댑터 코드는 다리를 모른다 — 놓을 파일 목록 · 등록하는 훅 목록 · 이름으로 알아보는 목록이 2.0.66 그대로', () => {
+  assert.deepEqual(adapters.HOOK_SCRIPTS, ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py']);
+  assert.deepEqual(adapters.HOOK_EXTRAS, ['block-blanket-kill.test.py', 'guard-iris-path.test.py', 'bg-leftover-guard.test.py']);
   const src = fs.readFileSync(path.join(REPO, 'installer', 'setup', 'adapters.mjs'), 'utf8');
-  const named = /NAME_MATCHED_HOOKS\s*=\s*[^;]*;/.exec(src)?.[0] ?? '';
-  assert.ok(named.length > 0, 'NAME_MATCHED_HOOKS 를 찾는다');
-  assert.doesNotMatch(named, /agy/);
-  // 다리 이름은 그 목록 한 곳에만 나온다(훅 명령을 만드는 코드에 없다).
-  const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.equal((code.match(/agy-hook-bridge/g) || []).length, 2, '목록의 두 이름뿐');
+  assert.equal(src.includes('agy-hook-bridge'), false, 'adapters.mjs 에 다리 이름이 없다(주석 포함)');
+  assert.doesNotMatch(/NAME_MATCHED_HOOKS\s*=\s*[^;]*;/.exec(src)?.[0] ?? 'agy', /agy/);
   // 설치기 전체에서 Antigravity 의 설정 폴더 이름은 0건이다.
   for (const rel of ['installer/setup/adapters.mjs', 'installer/setup/unpack.mjs', 'installer/server.mjs', 'installer/lib/agylock.mjs', 'installer/lib/online.mjs', 'installer/uninstall.ps1', 'updater/agents.mjs', 'updater/apply.mjs']) {
     assert.equal(fs.readFileSync(path.join(REPO, rel), 'utf8').includes('.gemini'), false, rel);
   }
-});
-
-// ---------------------------------------------------------------------------
-// 부품 검증기 · 풀기
-// ---------------------------------------------------------------------------
-test('부품 검증기(V.hooks): 다리가 없으면 "없음" — 있어야 통과', async () => {
-  const root = path.join(tmp, 'verify', 'soul-IRIS');
-  const dest = under(root, LOCK.parts.hooks.dest);
-  for (const f of ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py']) put(path.join(dest, f), '# x\n');
-  // 검증기 표는 만들 때 런타임 부품(node · python · git)의 자리도 읽으므로 진짜 잠금표를 준다(그 부품들을 놓지는 않는다).
-  const V = unpack.v2Verifiers({ root, fs, lock: LOCK, manifest: null });
-  const before = await V.hooks();
-  assert.equal(before.ok, false);
-  assert.match(before.detail, /없음: agy-hook-bridge\.py/);
-  put(path.join(dest, BRIDGE), '# x\n');
-  const after_ = await V.hooks();
-  assert.equal(after_.ok, true);
-  assert.match(after_.detail, /agy-hook-bridge\.py/);
-});
-
-test('풀기 단계: 옛 판이 깔린 섞여 사는 폴더에 다리를 놓는다 — 그 사람 파일은 그대로, 진짜 검증기 통과', async () => {
-  const base = path.join(tmp, 'unpack');
-  const payloadDir = path.join(base, 'payload');
-  const zip = path.join(payloadDir, 'tools', 'hooks.zip');
-  fs.mkdirSync(path.dirname(zip), { recursive: true });
-  const names = fs.readdirSync(HOOKS_SRC).filter((n) => n !== '__pycache__').sort();
-  const z = await run(TAR, ['-a', '-cf', zip, '-C', HOOKS_SRC, '--', ...names]);
-  assert.equal(z.code, 0, `tar failed: ${z.err}`);
-
-  const root = path.join(base, 'soul-IRIS');
-  const dest = under(root, LOCK.parts.hooks.dest);
-  // 옛 판(다리 없음)이 놓은 것 + 그 사람이 같은 폴더에 둔 파일.
-  fs.mkdirSync(dest, { recursive: true });
-  for (const f of ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py']) fs.copyFileSync(path.join(HOOKS_SRC, f), path.join(dest, f));
-  put(path.join(dest, 'my-own-hook.py'), '# 내 훅\n');
-  put(path.join(root, '_agent', 'claude', 'settings.json'), '{"mine":true}\n');
-
-  const lock = { schema: 2, package: { version: '2.0.67' }, parts: { hooks: { ...LOCK.parts.hooks, kind: 'dir' } } };
-  const manifest = { schema: 2, package: { version: '2.0.67' }, parts: { hooks: { file: lock.parts.hooks.file, version: null, sha256: 'sha-hooks-new', dest: lock.parts.hooks.dest } } };
-  const ctx = {
-    root, payloadDir, lock, manifest, offline: true, fs,
-    choice: { subscriptions: ['claude'], leadAgent: 'claude' },
-    log: () => {}, progress: () => {},
-    run: async () => ({ code: 0, out: 'stub', err: '' }),
-    processes: { list: async () => [], files: async () => [] },
-    env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '1' },
-  };
-  // 진짜 검증기 표에서 hooks 것만 꺼내 준다(표는 런타임 부품의 자리도 읽으므로 진짜 잠금표로 만든다 — 놓는 것은 hooks 하나뿐).
-  ctx.verifiers = { hooks: unpack.v2Verifiers({ root, fs, lock: LOCK, manifest: null }).hooks };
-  const { recorded } = await unpack.run(ctx);
-  assert.deepEqual(recorded.placed, ['hooks']);
-  for (const name of [BRIDGE, BRIDGE_TEST]) assert.deepEqual(fs.readFileSync(path.join(dest, name)), fs.readFileSync(path.join(HOOKS_SRC, name)), name);
-  assert.equal(fs.readFileSync(path.join(dest, 'my-own-hook.py'), 'utf8'), '# 내 훅\n', '그 사람 파일은 그대로');
-  assert.equal(fs.readFileSync(path.join(root, '_agent', 'claude', 'settings.json'), 'utf8'), '{"mine":true}\n', '풀기는 설정 파일에 손대지 않는다');
-  assert.equal(fs.existsSync(`${dest}.prev`), false, '섞여 사는 폴더는 옆으로 옮기지 않는다');
 });
 
 // ---------------------------------------------------------------------------
@@ -249,8 +390,8 @@ function makeSoul(label, { drop = [] } = {}) {
   put(path.join(root, 'AGENTS.md'), '# test\n');
   const scripts = scriptsDir(root);
   fs.mkdirSync(scripts, { recursive: true });
-  for (const f of [BRIDGE, BRIDGE_TEST, 'guard-iris-path.py', 'block-blanket-kill.ps1']) {
-    if (!drop.includes(f)) fs.copyFileSync(path.join(HOOKS_SRC, f), path.join(scripts, f));
+  for (const [dir, names] of [[BRIDGE_SRC, [BRIDGE, BRIDGE_TEST]], [HOOKS_SRC, ['guard-iris-path.py', 'block-blanket-kill.ps1']]]) {
+    for (const f of names) if (!drop.includes(f)) fs.copyFileSync(path.join(dir, f), path.join(scripts, f));
   }
   return { root, scripts };
 }

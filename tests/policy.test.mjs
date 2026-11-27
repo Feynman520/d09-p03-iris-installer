@@ -86,9 +86,6 @@ test('policy: every expected source file exists', () => {
     path.join('hooks', 'guard-iris-path.test.py'),
     path.join('hooks', 'bg-leftover-guard.py'),
     path.join('hooks', 'bg-leftover-guard.test.py'),
-    // 2.0.67: Antigravity 훅 다리 — 놓기만 하고 등록하지 않는다(tests/agy-hook-bridge.test.mjs).
-    path.join('hooks', 'agy-hook-bridge.py'),
-    path.join('hooks', 'agy-hook-bridge.test.py'),
   ]) {
     assert.ok(fs.existsSync(path.join(POLICY, rel)), `missing policy file: ${rel}`);
   }

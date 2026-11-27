@@ -99,8 +99,8 @@ export const UNPACK_ORDER = [
   'superpowers', 'self-improve', 'playwright-mcp', 'ui-ux-pro-max',
   'hwp-automation', 'excel-automation', 'ppt-automation', 'word-automation', 'pdf-automation',
   'document-mcp-wheelhouse', 'frontend-design', 'insane-search', 'gen-image',
-  // 영혼 살림
-  'hooks', 'hwpx-templates', 'ontology',
+  // 영혼 살림 (`agy-hook-bridge` 는 가드 둘 옆에 놓이는 파일 묶음이라 `hooks` 바로 뒤)
+  'hooks', 'agy-hook-bridge', 'hwpx-templates', 'ontology',
 ];
 
 // kind:
@@ -179,6 +179,11 @@ export const V2_LAYOUT = {
   // `files` = 이 부품"인" 파일들: 전부 있어야 "이미 놓였다"로 보고(하나라도 빠지면 다시 놓는다), 바뀌는 옛 사본은 옆에 남긴다.
   'gen-image': { kind: 'archive', strip: 0, mode: 'merge', files: ['gen-image.py', 'codex-ready.py'] },
   hooks: { kind: 'archive', strip: 0, mode: 'merge' },
+  // 2.0.67: Antigravity 훅 다리. 가드 둘과 같은 폴더(`_agent\claude\scripts` — 그 사람 훅과 섞여 사는 폴더)에 놓이지만 `hooks` 부품에 넣지 않았다:
+  // `hooks` 는 `files` 가 없는 묶음이라 지문이 바뀌면 그 폴더에 압축을 통째로 다시 풀고, 그 사람이 고쳐 둔 가드 파일을 사본 없이 덮는다.
+  // 이 부품은 그림 도구와 같은 파일 묶음이다 — 이 두 파일만 놓고(placeOwnedFiles), 바뀌는 옛 파일은 `<파일>.prev` 로 남기며, 실패하면 되돌린다.
+  // 놓기만 한다: 클로드 · 코덱스의 훅 설정에 등록하지 않는다(adapters.mjs 는 이 부품을 모른다).
+  'agy-hook-bridge': { kind: 'archive', strip: 0, mode: 'merge', files: ['agy-hook-bridge.py', 'agy-hook-bridge.test.py'] },
   'hwpx-templates': { kind: 'archive', strip: 0, mode: 'merge' },
   ontology: { kind: 'archive', strip: 0, mode: 'merge' },
 };
@@ -527,10 +532,25 @@ export function v2Verifiers(ctx) {
   };
   V.hooks = async () => {
     const d = dest('hooks');
-    // 2.0.67: 훅 다리(agy-hook-bridge.py)도 이 부품의 필수 파일이다 — 놓기만 하고 어디에도 등록하지 않는다(adapters.mjs HOOK_EXTRAS).
-    const need = ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py', 'agy-hook-bridge.py'];
+    const need = ['block-blanket-kill.ps1', 'guard-iris-path.py', 'bg-leftover-guard.py'];
     const gone = need.filter((f) => !exists(fs, d, f));
     return { ok: gone.length === 0, detail: gone.length ? `없음: ${gone.join(',')}` : need.join(',') };
+  };
+  V['agy-hook-bridge'] = async () => {
+    // Antigravity 훅 다리(2.0.67): 두 파일이 한 부품이다 — 다리와 그 시험 파일. 가드 둘 옆에 **놓이기만** 한다(등록은 설치기가 하지 않는다).
+    // 둘 다 있고 내용이 그 파일인지까지 본다(같은 이름의 빈 파일 · 다른 파일을 "놓였다"로 치지 않는다).
+    const d = dest('agy-hook-bridge');
+    const need = { 'agy-hook-bridge.py': 'def to_claude(', 'agy-hook-bridge.test.py': 'agy-hook-bridge.py' };
+    const bad = [];
+    const sizes = [];
+    for (const [name, mark] of Object.entries(need)) {
+      let text = null;
+      try { text = fs.readFileSync(path.join(d, name), 'utf8'); } catch { /* 없음 */ }
+      if (text === null || text.length === 0) bad.push(`${name} 없음`);
+      else if (!text.includes(mark)) bad.push(`${name} 내용이 다름`);
+      else sizes.push(`${name} ${Buffer.byteLength(text)} bytes`);
+    }
+    return { ok: bad.length === 0, detail: bad.length ? bad.join(', ') : `${d} (${sizes.join(', ')})` };
   };
   V.ontology = async () => {
     const d = dest('ontology');
