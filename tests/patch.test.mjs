@@ -143,6 +143,54 @@ test('applyPatches on a fresh pristine install reproduces the live TeamClaude in
     if (!patched.equals(live)) mismatches.push(rel);
   }
   assert.deepEqual(mismatches, [], `files not byte-identical to the live install after patching: ${mismatches.join(', ')}`);
+
+  // 5. (2.0.65) And the other way round: the WHOLE package folder must match,
+  //    not only the files a rule names. Step 4 alone cannot see a file that
+  //    exists only in the live install -- a source file copied in by hand with
+  //    no rule for it -- and the shipped relay would simply lack it. (A rule
+  //    set that brought the eleven changed files of the 2026-11 rounds up to
+  //    date but forgot the new src/google-auth.js and src/wake-guard.js would
+  //    have passed step 4 and shipped a relay that cannot start.)
+  const listPackage = (root) => {
+    const out = [];
+    const rec = (dir, rel) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === 'node_modules') continue;
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) rec(path.join(dir, e.name), r);
+        else out.push(r);
+      }
+    };
+    rec(root, '');
+    return out.sort();
+  };
+  const madeRoot = path.join(installRoot, ...PKG_PREFIX.split('/').filter(Boolean));
+  const madeFiles = listPackage(madeRoot);
+  const liveFiles = listPackage(liveSnapshot);
+  assert.deepEqual(liveFiles.filter((rel) => !madeFiles.includes(rel)), [], 'files only the live install has (no rule ships them)');
+  assert.deepEqual(madeFiles.filter((rel) => !liveFiles.includes(rel)), [], 'files the rules produce that the live install does not have');
+  const treeMismatches = liveFiles.filter((rel) => !fs.readFileSync(path.join(madeRoot, rel)).equals(fs.readFileSync(path.join(liveSnapshot, rel))));
+  assert.deepEqual(treeMismatches, [], `package files not byte-identical to the live install: ${treeMismatches.join(', ')}`);
+
+  // 6. What the installer on a user's PC accepts as "this relay is patched"
+  //    (installer/lib/install.mjs verifyTeamclaudePatches, restated here
+  //    because rules are appended round after round): a `create` file equals
+  //    its rule text; a `replace` file still shows the IRIS marker when any of
+  //    its rules carries one, otherwise the text its FIRST rule put in. A
+  //    later rule that rewrote that first text would make a correctly built
+  //    relay fail the check on every new install.
+  const noEvidence = [];
+  for (const f of rules.files) {
+    const text = fs.readFileSync(path.join(installRoot, f.path), 'utf8');
+    if (f.create !== undefined) {
+      if (text !== f.create) noEvidence.push(f.path);
+    } else if (f.replace.some((r) => r.with.includes('IRIS'))) {
+      if (!text.includes('IRIS')) noEvidence.push(f.path);
+    } else if (!text.includes(f.replace[0].with)) {
+      noEvidence.push(f.path);
+    }
+  }
+  assert.deepEqual(noEvidence, [], `the installer's patch check would reject: ${noEvidence.join(', ')}`);
 });
 
 test('teamclaude-manage.ps1 copy stays ASCII-only', () => {
