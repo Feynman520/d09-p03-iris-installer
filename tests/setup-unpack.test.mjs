@@ -771,6 +771,111 @@ test('unpack (2.0.65): 두 파일 가운데 하나가 빠져 있으면 "폴더�
   assert.deepEqual(fs.readdirSync(tools).sort(), ['codex-ready.py', 'gen-image.py', 'my-own-tool.py'], '같은 내용을 다시 놓을 때는 옛 사본(.prev)을 만들지 않는다');
 });
 
+// 2026-11-27 코드 검토 "막아야 함": 두 파일을 실제 폴더에 덮은 **뒤에** 옛 사본을 남기면, 첫 파일을 바꾸고 둘째에서
+// 실패했을 때(접근 거부 등) 옛 사본 없이 첫 파일이 바뀐 채로 남는다 — 그 사람이 고쳐 쓴 내용이 사라진다.
+// 지금은: 임시 자리에 풀어 확인 → 옛 사본 먼저 → 한 파일씩 바꿈 → 실패하면 되돌림.
+async function installedThenEdited(label) {
+  const v1 = await makePayload(`${label}-v1`);
+  const ctx = makeCtx(label, { built: v1 });
+  ctx.verifiers = withRealGenVerifier(ctx, v1.lock);
+  await unpack.run(ctx);
+  const tools = genTools(ctx.root);
+  // 그 사람이 우리 두 파일을 고쳐 썼고, 자기 파일도 옆에 두었다.
+  put(path.join(tools, 'gen-image.py'), '# 내가 고친 그림 도구\ndef main():\n    pass\n');
+  put(path.join(tools, 'codex-ready.py'), '# 내가 고친 도우미\ndef readiness():\n    return {}\n');
+  put(path.join(tools, 'my-own-tool.py'), '# 내 것\n');
+  const v2 = await makePayload(`${label}-v2`, { genImageBody: 'v2' });
+  v2.manifest.parts['gen-image'].sha256 = 'sha-gen-image-new'; // 새 판(지문이 다르다)
+  return { root: ctx.root, tools, v2, before: snapshot(tools) };
+}
+// 진짜 fs 에서 copyFileSync 만 바꿔 끼운다: `deny(src, dst, n)` 이 참이면 접근 거부로 던진다(n = 그 대상에 쓴 횟수, 1부터).
+function fsDenying(deny) {
+  const seen = new Map();
+  return {
+    ...fs,
+    copyFileSync(src, dst, ...rest) {
+      const n = (seen.get(dst) ?? 0) + 1;
+      seen.set(dst, n);
+      if (deny(src, dst, n)) throw Object.assign(new Error(`EACCES: permission denied, copyfile '${src}' -> '${dst}'`), { code: 'EACCES' });
+      return fs.copyFileSync(src, dst, ...rest);
+    },
+  };
+}
+const stagingDir = (root) => path.join(root, '_agent', 'setup', 'staging');
+
+test('unpack (2.0.65): 둘째 파일을 바꾸다 실패하면 첫 파일까지 되돌린다 — 그 사람이 고친 두 파일과 다른 파일이 그대로다', async () => {
+  const s = await installedThenEdited('gen-rollback');
+  const target = path.join(s.tools, 'codex-ready.py');
+  const ctx = makeCtx('gen-rollback', { built: s.v2, root: s.root });
+  ctx.fs = fsDenying((src, dst) => dst === target); // 둘째 파일(도우미)에는 쓸 수 없다
+  ctx.verifiers = withRealGenVerifier(ctx, s.v2.lock);
+
+  await assert.rejects(unpack.run(ctx), (err) => {
+    assert.ok(isStageError(err), `StageError 가 아님: ${err}`);
+    assert.equal(err.code, 'E-UNPACK');
+    assert.equal(err.detail.part, 'gen-image');
+    assert.match(err.detail.error, /EACCES/);
+    return true;
+  });
+
+  assert.deepEqual(snapshot(s.tools), s.before, '폴더가 시작 전과 글자 · 시각까지 같다(고친 두 파일 · 그 사람 파일 · 남은 사본 없음)');
+  assert.ok(!fs.existsSync(stagingDir(s.root)), '임시 자리를 치웠다');
+  const state = JSON.parse(fs.readFileSync(unpack.statePath(s.root), 'utf8'));
+  assert.equal(state.parts['gen-image'].verified, false, '다음 실행이 다시 시도하도록 기록한다');
+
+  // 막힌 것이 풀린 뒤 다시 돌리면: 두 파일이 새 것으로 바뀌고, 그 사람이 고친 내용은 옆에 남는다.
+  const again = makeCtx('gen-rollback', { built: s.v2, root: s.root });
+  again.verifiers = withRealGenVerifier(again, s.v2.lock);
+  const { recorded } = await unpack.run(again);
+  assert.ok(recorded.placed.includes('gen-image'));
+  assert.match(fs.readFileSync(path.join(s.tools, 'gen-image.py'), 'utf8'), /gen-image v2/);
+  assert.equal(fs.readFileSync(path.join(s.tools, 'gen-image.py.prev'), 'utf8'), '# 내가 고친 그림 도구\ndef main():\n    pass\n');
+  assert.equal(fs.readFileSync(path.join(s.tools, 'codex-ready.py.prev'), 'utf8'), '# 내가 고친 도우미\ndef readiness():\n    return {}\n');
+  assert.equal(fs.readFileSync(path.join(s.tools, 'my-own-tool.py'), 'utf8'), '# 내 것\n');
+});
+
+test('unpack (2.0.65): 옛 사본을 만들지 못하면 아무것도 바꾸지 않는다', async () => {
+  const s = await installedThenEdited('gen-nobackup');
+  const ctx = makeCtx('gen-nobackup', { built: s.v2, root: s.root });
+  ctx.fs = fsDenying((src, dst) => dst.endsWith('codex-ready.py.prev')); // 둘째 파일의 사본을 만들 수 없다
+  ctx.verifiers = withRealGenVerifier(ctx, s.v2.lock);
+  await assert.rejects(unpack.run(ctx), (err) => isStageError(err) && err.code === 'E-UNPACK');
+  assert.deepEqual(snapshot(s.tools), s.before, '사본을 다 만들기 전에는 어떤 파일도 바꾸지 않는다(먼저 만든 사본도 치운다)');
+  assert.ok(!fs.existsSync(stagingDir(s.root)));
+});
+
+test('unpack (2.0.65): 되돌리기까지 실패하면 옛 내용이 든 사본은 지우지 않고, 까닭에 그 파일을 적는다', async () => {
+  const s = await installedThenEdited('gen-stuck');
+  const first = path.join(s.tools, 'gen-image.py');
+  const second = path.join(s.tools, 'codex-ready.py');
+  const ctx = makeCtx('gen-stuck', { built: s.v2, root: s.root });
+  // 첫 파일은 한 번은 써지고(새 것으로 바뀜) 그 뒤로 막힌다(되돌리기 실패). 둘째 파일은 처음부터 막힌다.
+  ctx.fs = fsDenying((src, dst, n) => dst === second || (dst === first && n > 1));
+  ctx.verifiers = withRealGenVerifier(ctx, s.v2.lock);
+  await assert.rejects(unpack.run(ctx), (err) => {
+    assert.ok(isStageError(err) && err.code === 'E-UNPACK');
+    assert.match(err.detail.error, /되돌리지 못한 파일: gen-image\.py/);
+    return true;
+  });
+  assert.equal(fs.readFileSync(`${first}.prev`, 'utf8'), '# 내가 고친 그림 도구\ndef main():\n    pass\n', '되돌리지 못한 파일의 옛 내용은 사본에 남아 있다');
+  assert.equal(fs.readFileSync(second, 'utf8'), '# 내가 고친 도우미\ndef readiness():\n    return {}\n', '바꾸지 못한 둘째 파일은 그대로');
+  assert.ok(!fs.existsSync(`${second}.prev`), '그대로인 파일의 사본은 치운다');
+  assert.equal(fs.readFileSync(path.join(s.tools, 'my-own-tool.py'), 'utf8'), '# 내 것\n');
+});
+
+test('unpack (2.0.65): 압축 안에 있어야 할 파일이 빠져 있으면 실제 폴더를 건드리기 전에 멈춘다', async () => {
+  const s = await installedThenEdited('gen-badzip');
+  // 도우미가 빠진 압축(빌드가 잘못됐을 때).
+  const only = path.join(tmp, 'gen-badzip-only');
+  put(path.join(only, 'gen-image.py'), '# gen-image broken build\ndef main():\n    pass\n');
+  await zipFrom(only, path.join(s.v2.payloadDir, 'tools', 'gen-image.zip'));
+  const ctx = makeCtx('gen-badzip', { built: s.v2, root: s.root });
+  ctx.verifiers = withRealGenVerifier(ctx, s.v2.lock);
+  await assert.rejects(unpack.run(ctx), (err) => isStageError(err) && /codex-ready\.py/.test(err.detail.error));
+  assert.deepEqual(snapshot(s.tools), s.before);
+  assert.ok(!fs.existsSync(stagingDir(s.root)));
+});
+
 test('unpack (2.0.65): 그림 도구 검증기는 두 파일을 모두 본다(하나가 없거나 내용이 다르면 실패)', async () => {
   const built = await makePayload('gen-verify');
   const ctx = makeCtx('gen-verify', { built });

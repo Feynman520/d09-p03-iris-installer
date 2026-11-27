@@ -109,7 +109,8 @@ export const UNPACK_ORDER = [
 // files (선택, 'merge' 압축 부품):
 //   섞여 사는 폴더 안에서 이 부품"인" 파일 이름들. 적어 두면 ① 그 파일이 **전부** 있어야 "이미 놓였다"로 보고
 //   (폴더만 있고 파일 하나가 빠진 것을 건너뛰지 않는다) ② 새 판으로 바뀌는 옛 파일은 `<파일>.prev` 로 옆에 남긴다
-//   (낱개 파일 부품이 해 온 약속 그대로 — 지우지 않는다).
+//   (낱개 파일 부품이 해 온 약속 그대로 — 지우지 않는다) ③ 그 폴더에 바로 풀지 않고 임시 자리에 풀어 확인한 뒤 한 파일씩
+//   바꾸며, 중간에 실패하면 시작 전으로 되돌린다(placeOwnedFiles).
 //
 // mode:
 //   'slot'   그 폴더 전체가 이 부품이다 → 바꿔 놓기 전에 `<dest>.prev` 로 옮긴다
@@ -628,17 +629,13 @@ export async function run(ctx) {
       const target = path.join(dest, path.basename(source));
       if (fs.existsSync(target) && !sameBytes(fs, source, target)) moved = await setAside(target);
     }
-    // 섞여 사는 폴더의 파일 묶음: 압축을 풀면 같은 이름의 옛 파일이 덮인다. 풀기 전 내용을 쥐고 있다가,
-    // 풀린 것과 다르면 `<파일>.prev` 로 옆에 남긴다(같으면 아무것도 만들지 않는다 — "두 번 실행 변경 0").
-    const ownedBefore = new Map();
-    for (const f of owned ?? []) {
-      try { ownedBefore.set(f, fs.readFileSync(f)); } catch { /* 아직 없다 */ }
-    }
+    // 섞여 사는 폴더의 파일 묶음은 그 폴더에 바로 풀지 않는다(placeOwnedFiles): 임시 자리에 풀어 확인하고, 바뀔 옛 파일의
+    // 사본(`<파일>.prev`)을 먼저 만든 뒤에 한 파일씩 바꾸며, 중간에 실패하면 이미 바꾼 것을 되돌린다.
     let keptFiles = [];
 
     try {
-      await placePart(ctx, { partId, layout, source, dest, fs, log });
-      keptFiles = keepReplacedFiles(fs, ownedBefore);
+      if (owned) keptFiles = await placeOwnedFiles({ partId, layout, source, dest, fs, root });
+      else await placePart(ctx, { partId, layout, source, dest, fs, log });
 
       // MotW(다른 컴퓨터에서 받아 온 표식) 제거. 남아 있으면 첫 실행에서
       // SmartScreen 이 node.exe·electron.exe 를 막는다.
@@ -692,6 +689,7 @@ export async function run(ctx) {
       if (err instanceof StageError) throw err;
       // 쓸 만한 사본이 나오지도 못했다(압축이 깨졌거나 Face 모듈 설치기가
       // 거절했거나). 옛 사본을 제 이름으로 되돌려 두고 멈춘다.
+      // 섞여 사는 폴더('merge')는 폴더째 되돌릴 것이 없다. 그 가운데 파일 묶음(`files`)은 placeOwnedFiles 가 실패 때 스스로 되돌려 놓았다.
       // 'module' 은 installZip 이 실패 때 옛 사본을 스스로 되돌린다 — 여기서 restorePart 를 부르면(moved=null) 멀쩡한 옛 모듈을 지운다.
       const restore = (layout.mode === 'merge' || layout.kind === 'module') ? { restored: false } : restorePart(slot, moved);
       state.parts[partId] = {
@@ -721,20 +719,71 @@ function ownedFiles(layout, dest) {
   return layout.files.map((f) => path.join(dest, f));
 }
 
-// 풀기 전에 쥐어 둔 옛 내용(`before`: 경로 → Buffer) 가운데, 풀고 난 지금 내용이 달라진 것만 `<파일>.prev`
-// (이미 있으면 `.prev-2`, `.prev-3` …)로 남긴다. 남긴 경로 목록을 돌려준다.
-function keepReplacedFiles(fs, before) {
-  const kept = [];
-  for (const [file, old] of before) {
-    let now = null;
-    try { now = fs.readFileSync(file); } catch { /* 풀린 것이 없다 — 옛 파일이 그대로 있다는 뜻이라 남길 것도 없다 */ }
-    if (now === null || (now.length === old.length && now.equals(old))) continue;
-    let candidate = `${file}.prev`;
-    for (let n = 2; fs.existsSync(candidate); n += 1) candidate = `${file}.prev-${n}`;
-    fs.writeFileSync(candidate, old);
-    kept.push(candidate);
+// 섞여 사는 폴더의 파일 묶음을 놓는다. 그 폴더에는 그 사람 파일이 함께 살고, 우리 파일도 그 사람이 고쳐 썼을 수 있다 —
+// 그래서 **실제 폴더를 건드리기 전에 준비를 끝내고, 중간에 실패하면 시작 전으로 되돌린다**(2026-11-27 코드 검토 "막아야 함":
+// 그 전에는 폴더에 바로 푼 뒤에 옛 사본을 남겨서, 첫 파일을 바꾸고 둘째에서 실패하면 옛 사본 없이 첫 파일이 바뀐 채로 남았다).
+//   ① 임시 자리(`_agent\setup\staging\…`)에 풀고 확인한다 — 적어 둔 파일이 전부 있고 비어 있지 않은가.
+//   ② 바뀔 옛 파일의 사본을 **먼저** 만든다(`<파일>.prev`, 이미 있으면 `.prev-2` …). 하나라도 못 만들면 아무것도 바꾸지 않는다.
+//   ③ 한 파일씩 바꾼다. 실패하면 이미 바꾼 파일을 사본에서 되돌리고(없던 파일은 치우고), 이번에 만든 사본도 치운다.
+// 성공하면 남긴 사본의 경로 목록을 돌려준다(내용이 같은 파일은 건드리지도 사본을 만들지도 않는다 — "두 번 실행 변경 0").
+// 실패하면 까닭을 던진다. 그때 폴더는 시작 전과 같다(되돌리지 못한 파일이 있으면 그 사본은 지우지 않고 까닭에 적는다).
+async function placeOwnedFiles({ partId, layout, source, dest, fs, root }) {
+  ensureDir(dest, { fs });
+  const stagingBase = path.join(root, '_agent', 'setup', 'staging');
+  const staging = assertInside(root, path.join(stagingBase, `${partId}-${process.pid}`), { fs });
+  fs.rmSync(staging, { recursive: true, force: true }); // 이 프로세스가 지난번에 남긴 자기 임시 자리뿐이다
+  ensureDir(staging, { fs });
+  const backups = []; // { target, prev } — 이번에 만든 옛 사본
+  const touched = []; // { target, existed } — 바꾸기 시작한 파일(실패했더라도 되돌릴 대상)
+  try {
+    await extractZip(source, staging, { strip: layout.strip ?? 0 });
+    const plan = layout.files.map((name) => ({ name, from: path.join(staging, name), target: path.join(dest, name) }));
+    for (const p of plan) {
+      let size = 0;
+      try { size = fs.statSync(p.from).size; } catch { /* 압축 안에 없다 */ }
+      if (!(size > 0)) throw new Error(`압축 안에 ${p.name} 이(가) 없거나 비어 있습니다`);
+    }
+    const changing = plan.filter((p) => !(fs.existsSync(p.target) && sameBytes(fs, p.from, p.target)));
+
+    for (const p of changing) {
+      if (!fs.existsSync(p.target)) continue;
+      let prev = `${p.target}.prev`;
+      for (let n = 2; fs.existsSync(prev); n += 1) prev = `${p.target}.prev-${n}`;
+      backups.push({ target: p.target, prev }); // 만들다 실패해도 아래에서 치우도록 먼저 적는다
+      fs.copyFileSync(p.target, prev);
+    }
+
+    for (const p of changing) {
+      touched.push({ target: p.target, existed: fs.existsSync(p.target) });
+      fs.copyFileSync(p.from, p.target);
+    }
+    return backups.map((b) => b.prev);
+  } catch (err) {
+    const stuck = [];
+    const started = new Set(touched.map((t) => t.target));
+    for (const t of [...touched].reverse()) {
+      const b = backups.find((x) => x.target === t.target);
+      try {
+        if (b) { if (!sameBytes(fs, b.prev, t.target)) fs.copyFileSync(b.prev, t.target); }
+        else if (!t.existed) fs.rmSync(t.target, { force: true }); // 이번에 우리가 만든 파일
+      } catch (e) {
+        stuck.push(`${path.basename(t.target)}(${e?.code ?? e?.message ?? e})`);
+      }
+    }
+    // 이번에 만든 사본을 치운다 — 옛 파일이 제자리에 온전히 있는 것이 확인됐거나(되돌림 끝), 그 파일을 바꾸기 시작하지도 않았을 때만.
+    // 되돌리지 못한 파일의 사본은 남긴다 — 그것이 유일한 옛 내용이다.
+    for (const b of backups) {
+      if (started.has(b.target) && !sameBytes(fs, b.prev, b.target)) continue;
+      try { fs.rmSync(b.prev, { force: true }); } catch { /* 남아도 해롭지 않다 */ }
+    }
+    if (stuck.length) {
+      throw new Error(`${String(err?.message ?? err)} — 되돌리지 못한 파일: ${stuck.join(', ')} (옛 내용은 옆의 .prev 파일에 있습니다)`);
+    }
+    throw err;
+  } finally {
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* 임시 자리가 남아도 다음 실행이 치운다 */ }
+    try { fs.rmdirSync(stagingBase); } catch { /* 비어 있지 않으면(다른 설치가 쓰는 중) 그대로 둔다 */ }
   }
-  return kept;
 }
 
 function sameBytes(fs, a, b) {
