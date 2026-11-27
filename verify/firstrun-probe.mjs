@@ -34,6 +34,8 @@
 // 안전 규칙:
 //   · 쓰는 곳은 작업 폴더(기본 _build/firstrun-probe/, --work 로 바꿈) **아래에 실행마다 새로 만드는 폴더 하나**
 //     (run-XXXXXX)와 기록 폴더. 받은 폴더 자체는 지우지 않고, 정리도 자기가 만든 그 폴더만 한다.
+//     저장소 경로에 ASCII 가 아닌 글자가 있으면 기본 작업 폴더는 <시스템 임시 폴더>\iris-firstrun-probe 다(defaultWorkBase —
+//     추적 도우미의 컴파일러가 그런 경로 아래에 쓰지 못한다). 기록 폴더(_build/firstrun-probe-logs)는 그대로 저장소 안.
 //     CLAUDE_CONFIG_DIR · CODEX_HOME · HOME · USERPROFILE · APPDATA · LOCALAPPDATA · TEMP 를 전부 그 안으로 준다.
 //     자식 환경은 허용 목록으로 새로 짠다(이 PC 의 열쇠 · 주소 · 세션 표식을 넘기지 않는다).
 //   · **레지스트리를 읽지도 쓰지도 않는다.** 클로드는 `--chrome` 으로 뜰 때 HKCU 의 브라우저 연동 등록을 건드릴 수
@@ -1024,6 +1026,27 @@ export function decideLaunch(gate, { compare = false } = {}) {
 }
 
 /**
+ * `--work` 를 주지 않았을 때의 작업 폴더 뿌리.
+ * 평소에는 저장소의 `_build/firstrun-probe` 다. 다만 저장소 경로에 ASCII 가 아닌 글자가 있으면 시스템 임시 폴더 아래
+ * (`<임시 폴더>\iris-firstrun-probe`)로 간다. 까닭(2.0.66 내기 전 검사에서 실측): 프로세스 추적 도우미는 PowerShell 의
+ * `Add-Type` 으로 kernel32 를 부르는데, 그 컴파일러(csc)는 임시 폴더 — 실행 폴더 아래의 도우미 전용 폴더 — 에 결과 파일을
+ * 쓰고, 경로에 이 PC 의 ANSI 코드 페이지로 적을 수 없는 글자(이 저장소 폴더 이름의 반전각 괄호 등)가 있으면 쓰지 못한다
+ * ("출력 파일에 쓸 수 없습니다"). 그러면 추적을 쓸 수 없어 아무것도 띄우지 않고 종료 코드 2 로 끝난다 — 즉 진짜 저장소
+ * 폴더에서는 인수 없는 실행이 한 번도 관측까지 가지 못한다. 관측 대상(가짜 영혼 · 홈 · 받은 CLI)도 같은 뿌리 아래에
+ * 놓이므로, 실제 설치 폴더처럼 ASCII 경로에서 보는 쪽이 재현으로도 맞다. 어떤 글자가 코드 페이지에 있는지는 PC 마다
+ * 달라 묻지 않고, ASCII 가 아니면 옮긴다(임시 폴더 경로까지 ASCII 가 아닌 PC 에서는 그대로 그 폴더를 쓴다 — 추적을
+ * 쓸 수 없으면 지금처럼 까닭을 찍고 2 로 끝나며, 그때는 `--work` 로 ASCII 경로를 준다).
+ *   -> { base, moved: boolean }
+ */
+export function defaultWorkBase(repo = REPO, tmpDir = os.tmpdir()) {
+  const inRepo = path.join(repo, '_build', 'firstrun-probe');
+  let ascii = true;
+  for (let i = 0; i < inRepo.length; i++) if (inRepo.charCodeAt(i) > 127) { ascii = false; break; }
+  if (ascii) return { base: inRepo, moved: false };
+  return { base: path.join(tmpDir, 'iris-firstrun-probe'), moved: true };
+}
+
+/**
  * 실행마다 새 작업 폴더. 받은 경로(base) 자체는 만들기만 하고 **지우지 않는다** — 그 안에 이번 실행의 폴더를 새로 만들고,
  * 정리할 때도 그 폴더 하나만 지운다(base 에 있던 다른 자료 · 동시에 도는 다른 실행의 폴더는 건드리지 않는다).
  */
@@ -1125,7 +1148,8 @@ async function main(argv) {
   const opt = parseArgs(argv);
   const lock = readLock({ zipRoot: REPO });
   const lockVer = { claude: lock?.parts?.claude?.version ?? null, codex: lock?.parts?.codex?.version ?? null };
-  const workBase = path.resolve(opt.work ?? path.join(REPO, '_build', 'firstrun-probe'));
+  const fallback = opt.work ? null : defaultWorkBase();
+  const workBase = path.resolve(opt.work ?? fallback.base);
   const logDir = path.resolve(opt.logDir ?? path.join(REPO, '_build', 'firstrun-probe-logs'));
   const label = opt.label ?? (opt.compare ? 'compare' : 'lock');
   const want = opt.agent === 'both' ? ['claude', 'codex'] : [opt.agent];
@@ -1136,6 +1160,7 @@ async function main(argv) {
   console.log(opt.compare
     ? 'mode: 견주기(--compare) — 이 실행의 결과는 "잠금 판 검증 통과"가 아니다'
     : `mode: 잠금 판 검증 (claude ${lockVer.claude ?? '-'} · codex ${lockVer.codex ?? '-'})`);
+  if (fallback?.moved) console.log(`work folder: ${workBase} (저장소 경로에 ASCII 가 아닌 글자가 있어 임시 폴더 아래로 — defaultWorkBase)`);
 
   // 받은 경로는 지우지 않는다 — 그 아래에 이번 실행의 폴더를 새로 만들고 그 폴더만 정리한다.
   // 폴더를 만든 **바로 다음 줄부터** try/finally 다: 그 뒤 무엇이 던져도(기록 폴더 · 화면 규칙 · 죽은 주소 띄우기) 정리를 거친다.

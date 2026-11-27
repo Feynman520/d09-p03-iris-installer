@@ -18,7 +18,7 @@ import {
   BUILTIN_SCREEN_RE, SCREEN_RE_NAMES, parseScreenRegexes, loadFaceScreenRegexes, classifyScreen, findDialogs,
   judgeClaude, judgeCodex, startDeadServer, isolatedEnv, leakedKeys, seedSoul, writeFakeCodexAuth, FAKE_LOGIN_EMAIL,
   pipeDriver, watchFirstScreen, probeClaude, probeCodex, parseArgs, exitCodeOf, EXIT,
-  claudeArgs, parseCliVersion, checkLockVersion, decideLaunch, makeRunDir, removeRunDir, claudeProjectSlug, resolveFaceDir, loadPtyDriver,
+  claudeArgs, parseCliVersion, checkLockVersion, decideLaunch, makeRunDir, removeRunDir, defaultWorkBase, claudeProjectSlug, resolveFaceDir, loadPtyDriver,
   getJobTracker, closeJobTracker, startJobTracker, finalJobSweep, codexCmdArgs, prepareClaude,
 } from '../verify/firstrun-probe.mjs';
 import { spawn, spawnSync } from 'node:child_process';
@@ -274,6 +274,27 @@ test('makeRunDir / removeRunDir: 받은 폴더는 지우지 않고, 실행마다
   // 없는 폴더 아래에도 만든다(받은 경로는 만들기만 한다)
   const fresh = makeRunDir(path.join(tmp, 'not-yet', 'deep'));
   assert.ok(fs.existsSync(fresh));
+});
+
+// 2.0.66 내기 전 검사에서 실측: 진짜 저장소 폴더(이름에 한글과 반전각 괄호가 있다)에서 인수 없이 돌리면 추적 도우미의
+// 컴파일러가 실행 폴더 아래의 임시 폴더에 쓰지 못해 두 에이전트 모두 "못 봄"(종료 코드 2)으로 끝났다 — 만드는 동안에는
+// ASCII 경로의 작업 사본에서만 돌려 드러나지 않았다. 기본 작업 폴더가 그런 경로를 피하는지 묶는다.
+test('defaultWorkBase: 저장소 경로가 ASCII 면 _build 안, ASCII 가 아닌 글자가 있으면 임시 폴더 아래(추적 도우미의 컴파일러가 쓰지 못하는 경로를 피한다)', () => {
+  const tmpDir = 'T:\\scratch\\tmp';
+  assert.deepEqual(defaultWorkBase('C:\\work\\p02', tmpDir), { base: path.join('C:\\work\\p02', '_build', 'firstrun-probe'), moved: false });
+  for (const repo of ['C:\\work\\P02-설치 패키지(Installer)', 'C:\\work\\P02 〖Local App〗', 'C:\\work\\café']) {
+    const r = defaultWorkBase(repo, tmpDir);
+    assert.deepEqual(r, { base: path.join(tmpDir, 'iris-firstrun-probe'), moved: true }, repo);
+  }
+  // 이 저장소가 지금 놓인 자리에서 고른 기본값: 저장소 경로가 ASCII 가 아니면 저장소 밖(임시 폴더)이고, 고른 경로에는
+  // 저장소 경로의 ASCII 아닌 글자가 따라 들어가지 않는다(임시 폴더 자체가 ASCII 가 아닌 PC 는 그 폴더를 그대로 쓴다).
+  const here = defaultWorkBase();
+  const nonAscii = (s) => [...s].some((ch) => ch.codePointAt(0) > 127);
+  assert.equal(here.moved, nonAscii(path.join(REPO, '_build', 'firstrun-probe')));
+  if (here.moved) {
+    assert.equal(here.base, path.join(os.tmpdir(), 'iris-firstrun-probe'));
+    assert.ok(!here.base.startsWith(REPO), '작업 폴더가 저장소 밖이다');
+  } else assert.equal(here.base, path.join(REPO, '_build', 'firstrun-probe'));
 });
 
 test('parseArgs: 기본값 · 모르는 인수 · 값 없는 인수', () => {
