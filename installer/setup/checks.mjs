@@ -673,13 +673,24 @@ export async function checkDesktop(ctx, opts = {}) {
   };
   // 「IRIS Doctor」 바로가기(2.0.66)는 **정확한 두 경로**만: <이 사용자의 바탕화면>\<이름> 과 <시작 메뉴 프로그램 폴더>\<이름>.
   // 그 폴더의 하위 폴더 · 다른 사용자 · 이름만 같은 다른 자리는 여전히 "폴더 밖 쓰기"다.
-  // 바탕화면 폴더를 찾지 못한 PC(느린 파워셸)에서는 「IRIS」 바로가기와 같은 대비를 쓴다: 이 사용자 프로필 아래의 Desktop 폴더 바로 아래.
+  // 바탕화면 폴더를 찾지 못한 PC(느린 파워셸)에서의 대비도 **한 경로와의 완전 일치**다: <이 사용자 프로필>\Desktop 바로 아래.
+  // (프로필 아래 어느 깊이든 이름이 Desktop 인 폴더를 받아 주면 `…\backup\Desktop\IRIS Doctor.lnk` 도 통과한다 — 2026-11-28 코드 검토 지적.
+  //  「IRIS」 바로가기의 느슨한 규칙은 2.0.65 그대로 두고, Doctor 것만 좁게 둔다.)
   // 시작 메뉴 폴더는 그 이름의 기록을 실제로 만났을 때에만 윈도우에 묻는다(없으면 파워셸을 한 번 덜 띄운다).
+  // 다만 바탕화면이 옮겨진 PC(OneDrive 등)에서 조회까지 실패하면 그 한 경로로는 정상 설치가 멈춘다. 그래서 대비 경로를 하나 더 둔다:
+  // 실행기 단계가 **같은 물음으로** 만들어 기록한 「IRIS」 바로가기가 놓인 바로 그 폴더(그 기록이 2.0.65 의 규칙으로 허용될 때만).
+  // 두 바로가기는 같은 폴더에 놓이므로 이것도 "한 폴더와의 완전 일치"다 — 이름이 Desktop 인 아무 폴더가 아니다.
   let programsLower;
+  const fallbackDesktops = [];
+  if (homeLower) fallbackDesktops.push(path.join(homeLower, 'desktop'));
+  const irisLnkRecorded = ctx.receipt?.setup?.relay?.recorded?.desktopShortcut?.path;
+  if (typeof irisLnkRecorded === 'string' && path.isAbsolute(irisLnkRecorded) && isAllowedShortcut(path.resolve(irisLnkRecorded))) {
+    fallbackDesktops.push(path.dirname(path.resolve(irisLnkRecorded)).toLowerCase());
+  }
   const isDoctorShortcut = async (abs) => {
     if (!doctorNames.includes(path.basename(abs).toLowerCase())) return false;
     const parent = path.dirname(abs).toLowerCase();
-    if (dirLower ? parent === dirLower : Boolean(homeLower && parent.startsWith(`${homeLower}${path.sep}`) && /[\\/]desktop$/i.test(parent))) return true;
+    if (dirLower ? parent === dirLower : fallbackDesktops.includes(parent)) return true;
     if (programsLower === undefined) {
       let found = null;
       try { found = await resolveStartMenuDir(ctx, opts); } catch { found = null; }

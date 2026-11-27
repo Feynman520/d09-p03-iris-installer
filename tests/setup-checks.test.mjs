@@ -590,6 +590,56 @@ test('검사6 (2.0.66): 바로가기를 못 만든 설치도 통과한다 — �
   assert.deepEqual(c.strays.map((s) => s.name), ['IRIS Doctor 사본.lnk']);
 });
 
+// 2026-11-28 코드 검토(고치면 좋음): 바탕화면 조회에 실패했을 때의 대비가 프로필 아래 **어느 깊이든** 이름이 Desktop 인 폴더를 받아 줬다.
+test('검사6 (2.0.66): 바탕화면 폴더를 찾지 못했을 때의 대비도 한 경로뿐 — <이 사용자 프로필>\\Desktop 바로 아래만, 중첩된 Desktop 은 "폴더 밖 쓰기"', async () => {
+  const root = newRoot('doctor-fallback');
+  const home = path.join(tmp, `home-${seq}`);
+  const programs = path.join(tmp, `programs-${seq}`);
+  // 윈도우가 바탕화면 자리를 답하지 않는 PC(빈 답)를 흉내 낸다
+  const check = async (paths) => checkDesktop(ctxFor(root, {
+    desktopDir: null, startMenuDir: programs, run: async () => ({ code: 1, out: '', err: 'timeout' }),
+    env: { PATH: 'C:\\windows', USERPROFILE: home },
+    receipt: { schema: 2, setup: { relay: { startedAt: new Date().toISOString(), recorded: { files: { created: paths } } } } },
+  }));
+  let c = await check([path.join(home, 'Desktop', 'IRIS Doctor.lnk')]);
+  assert.equal(c.status, 'pass', c.detail);
+  c = await check([path.join(home.toUpperCase(), 'DESKTOP', 'iris doctor.lnk')]);
+  assert.equal(c.status, 'pass', `대소문자만 다른 같은 경로: ${c.detail}`);
+  for (const bad of [
+    path.join(home, 'backup', 'Desktop', 'IRIS Doctor.lnk'),          // 프로필 아래 더 깊은 Desktop
+    path.join(home, 'Desktop', 'sub', 'IRIS Doctor.lnk'),             // 바탕화면의 하위 폴더
+    path.join(home, 'Desktop', 'Desktop', 'IRIS Doctor.lnk'),
+    path.join(`${home}-other`, 'Desktop', 'IRIS Doctor.lnk'),         // 이름이 비슷한 다른 프로필
+    path.join(home, 'OneDrive', 'Desktop', 'IRIS Doctor.lnk'),        // 옮겨진 바탕화면은 윈도우가 답해 줄 때만 안다
+  ]) {
+    c = await check([bad]);
+    assert.equal(c.status, 'fail', `허용되면 안 된다: ${bad}`);
+    assert.equal(c.outside.length, 1, bad);
+  }
+  // 「IRIS」 바로가기의 대비 규칙은 2.0.65 그대로다(이 수정이 건드리지 않는다)
+  c = await check([path.join(home, 'Desktop', 'IRIS.lnk')]);
+  assert.equal(c.status, 'pass', c.detail);
+
+  // 바탕화면이 옮겨진 PC(OneDrive)에서 조회까지 실패한 때: 실행기 단계가 기록한 「IRIS」 바로가기와 **같은 폴더**의 Doctor 바로가기는
+  // 정상 설치의 것이다(둘은 같은 물음으로 같은 폴더에 만든다) — 이것까지 막으면 새 설치가 검사 6 에서 멈춘다.
+  const moved = path.join(home, 'OneDrive', 'Desktop');
+  const withIris = async (doctorLnk) => checkDesktop(ctxFor(root, {
+    desktopDir: null, startMenuDir: programs, run: async () => ({ code: 1, out: '', err: 'timeout' }),
+    env: { PATH: 'C:\\windows', USERPROFILE: home },
+    receipt: { schema: 2, setup: { relay: { startedAt: new Date().toISOString(), recorded: {
+      desktopShortcut: { status: 'created', path: path.join(moved, 'IRIS.lnk'), detail: null },
+      doctorShortcut: { status: 'created', desktop: { ok: true, path: doctorLnk }, startMenu: { ok: true, path: path.join(programs, 'IRIS Doctor.lnk') } },
+    } } } },
+  }));
+  c = await withIris(path.join(moved, 'IRIS Doctor.lnk'));
+  assert.equal(c.status, 'pass', c.detail);
+  // 그때에도 다른 폴더(더 깊은 Desktop · 하위 폴더)는 여전히 실패
+  for (const bad of [path.join(home, 'backup', 'Desktop', 'IRIS Doctor.lnk'), path.join(moved, 'sub', 'IRIS Doctor.lnk')]) {
+    c = await withIris(bad);
+    assert.equal(c.status, 'fail', `허용되면 안 된다: ${bad}`);
+  }
+});
+
 test('검사6 (2.0.66): 시작 메뉴 폴더는 Doctor 바로가기 기록을 만났을 때에만 윈도우에 묻는다 · 답을 못 받으면 기본 자리(%APPDATA% 아래)', async () => {
   const root = newRoot('doctor-ask');
   const desktop = path.join(tmp, `desk-${seq}`);
