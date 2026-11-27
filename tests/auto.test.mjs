@@ -1075,3 +1075,182 @@ test('auto (2.0.66): the last event carries doctorShortcut only when the receipt
     assert.equal('doctorShortcut' in last, false, `${label}: the key is absent, the event keeps its 2.0.65 shape`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// 2.0.66 — the update must start exactly once.
+//
+// beginAuto() used to look at "is an update running?" and only raise the flag
+// after it had waited for the process listing. A second entry that arrived in
+// between (two POSTs from the page, or a POST plus the 800 ms self-start) passed
+// the same look and a second runAuto started beside the first: two unpacks, two
+// receipt writers, two relay starts, two window reopens. The flag is now raised
+// before the first wait. These tests HOLD the process listing open on purpose
+// and enter a second time while it is held -- they do not switch the timer off
+// and do not depend on how fast this PC is.
+// ---------------------------------------------------------------------------
+
+function heldGate() {
+  let open;
+  const promise = new Promise((resolve) => { open = resolve; });
+  return { promise, open };
+}
+
+async function until(what, cond, { ms = 15000, every = 20 } = {}) {
+  const end = Date.now() + ms;
+  for (;;) {
+    if (await cond()) return;
+    if (Date.now() > end) assert.fail(`timed out waiting for: ${what}`);
+    await new Promise((r) => setTimeout(r, every));
+  }
+}
+
+async function startRaceServer(label, { selfStart, list, stop }) {
+  const zipRoot = makeZipRoot(`zip-race-${label}`);
+  const store = receiptStore(priorReceipt({ version: '1.9.0' }));
+  const engine = fakeSetupRunner();
+  const counts = { list: 0, stop: 0, relay: 0, relaunch: 0, finish: 0 };
+  const stateFile = path.join(tmp, `state-race-${label}.json`);
+  const logDir = path.join(tmp, `logs-race-${label}`);
+  const srv = await startServer({
+    onlineRunner: { startRelay: async () => { counts.relay += 1; return { ok: true, state: 'done', accounts: 1 }; } },
+    relayRecheckFn: async () => ({ at: 't', items: [] }),
+    autoSelfStart: selfStart,
+    holdersFn: {
+      list: async (root) => { counts.list += 1; return list(root, counts); },
+      stop: async (root, hs) => { counts.stop += 1; return stop ? stop(root, hs) : { ok: true, stopped: hs.map((h) => h.pid) }; },
+    },
+    doctorPrepareFn: async () => ({ called: false, why: 'no-doctor' }),
+    port: 0, precheckFn: async () => OK_PRECHECK, zipRoot, nodeDir: path.join(tmp, 'node'),
+    stateFile, soulName: SOUL, soulRoot: SOUL_ROOT, auto: true, workDir: logDir,
+    readReceiptFn: store.readReceiptFn, writeReceiptFn: store.writeReceiptFn, setupRunner: engine.runner,
+    relaunchFaceFn: () => { counts.relaunch += 1; return { ok: true, how: 'wscript', pid: 9 }; },
+    finishFn: () => { counts.finish += 1; return { ok: true }; }, onQuit: () => {},
+  });
+  const posts = [];
+  const post = () => {
+    const p = (async () => {
+      const res = await fetch(`${srv.url}/api/auto`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      return { status: res.status, body: await res.json() };
+    })();
+    posts.push(p);
+    return p;
+  };
+  const serverLog = () => { try { return fs.readFileSync(path.join(logDir, 'server.log'), 'utf8'); } catch { return ''; } };
+  // close only after every request of this test has been answered: a request still in flight keeps its socket
+  // past server.close() for the whole keep-alive time, and a failing test would look like a hanging one.
+  const close = async () => { await Promise.allSettled(posts); await srv.close(); };
+  return { ...srv, close, post, counts, engine, store, stateFile, serverLog };
+}
+
+// a made-up program entry: the stop function is a fake too, nothing on this PC is looked up or closed
+const FAKE_HOLDER = [{ name: 'iris-made-up', pid: 1 }];
+
+test('auto (2.0.66, entry race): two requests while the process listing is still pending -> listing, closing, the run and the relay start happen exactly once; the second request is told "already running"', async () => {
+  const hold = heldGate();
+  const s = await startRaceServer('two-posts', { selfStart: false, list: async () => { await hold.promise; return FAKE_HOLDER; } });
+  try {
+    const first = s.post(); // stays inside beginAuto, waiting for the listing
+    await until('the first entry reaches the process listing', () => s.counts.list === 1);
+
+    // enters while the first is still held. It must be answered at once; if it (wrongly) goes on to the listing
+    // as well, this fails here instead of hanging on a request that never returns.
+    const secondPending = s.post();
+    let second = null;
+    await until('the second entry is answered', async () => {
+      if (s.counts.list > 1) return true;
+      second = await Promise.race([secondPending, new Promise((r) => setTimeout(() => r(null), 5))]);
+      return second !== null;
+    });
+    assert.equal(s.counts.list, 1, 'the second entry must not get past "is an update running?"');
+    assert.equal(second.status, 202);
+    assert.deepEqual(second.body, { ok: true, running: true }, 'the second entry is told an update is already running');
+    assert.equal(s.counts.list, 1, 'the second entry did not list processes again');
+    assert.equal(s.engine.calls.length, 0, 'nothing has run yet -- the first entry is still held');
+
+    hold.open();
+    const one = await first;
+    assert.equal(one.status, 202);
+    assert.equal(one.body.running, undefined);
+    assert.equal(one.body.from, '1.9.0');
+    await waitForStep(s.url, 'done', 400);
+
+    assert.deepEqual(s.counts, { list: 1, stop: 1, relay: 1, relaunch: 1, finish: 1 });
+    assert.equal(s.engine.calls.length, 1, 'the setup engine ran once');
+    assert.equal(s.store.state.receipt.package.version, '2.0.0');
+    assert.equal((await readBufferedEvents(s.url)).filter((f) => f.done).length, 1, 'exactly one terminal frame');
+  } finally {
+    hold.open();
+    await s.close();
+  }
+});
+
+test('auto (2.0.66, entry race): a request and the --auto self-start (timer left ON) while the listing is pending -> still exactly one run', async () => {
+  const hold = heldGate();
+  const s = await startRaceServer('post-and-selfstart', { selfStart: true, list: async () => { await hold.promise; return FAKE_HOLDER; } });
+  const selfStartLine = () => /auto self-start: (\d+) (\{.*\})/.exec(s.serverLog());
+  try {
+    const posted = s.post();
+    await until('one entry reaches the process listing', () => s.counts.list === 1);
+    // Whichever of the two got in first is held. The other one is answered at once: the POST by its response,
+    // the self-start by its log line. Wait for the one that is NOT held -- never for a fixed time.
+    let early = null;
+    await until('the entry that is not held is answered', async () => {
+      if (s.counts.list > 1) return true; // both got in: the assertion below reports it
+      const line = selfStartLine();
+      if (line) { early = { who: 'self-start', status: Number(line[1]), body: JSON.parse(line[2]) }; return true; }
+      const settled = await Promise.race([posted, new Promise((r) => setTimeout(() => r(null), 5))]);
+      if (settled) { early = { who: 'post', ...settled }; return true; }
+      return false;
+    });
+    assert.equal(s.counts.list, 1, 'the second entry must not get past "is an update running?"');
+    assert.equal(early.status, 202);
+    assert.deepEqual(early.body, { ok: true, running: true }, `${early.who} came second and is told an update is already running`);
+    assert.equal(s.engine.calls.length, 0);
+
+    hold.open();
+    await waitForStep(s.url, 'done', 400);
+    const viaPost = await posted;
+    await until('the self-start has been answered too', () => selfStartLine() !== null);
+    const line = selfStartLine();
+    const answers = [viaPost.body, JSON.parse(line[2])];
+    assert.equal(answers.filter((b) => b.running === true).length, 1, 'one of the two was "already running"');
+    assert.equal(answers.filter((b) => b.from === '1.9.0').length, 1, 'the other one started the update');
+
+    assert.deepEqual(s.counts, { list: 1, stop: 1, relay: 1, relaunch: 1, finish: 1 });
+    assert.equal(s.engine.calls.length, 1);
+  } finally {
+    hold.open();
+    await s.close();
+  }
+});
+
+test('auto (2.0.66, entry race): when the first entry fails BEFORE the run is handed over, the claim is released -- the next entry starts the update', async () => {
+  // The failure: the progress file cannot be written at the moment beginAuto saves "step = auto"
+  // (its temp name is occupied by a folder). Before 2.0.66 that left "running" raised for good.
+  let trap = null;
+  const s = await startRaceServer('released', {
+    selfStart: false,
+    list: async (root, counts) => {
+      if (counts.list === 1) { trap = `${s.stateFile}.tmp`; fs.mkdirSync(trap, { recursive: true }); }
+      return [];
+    },
+  });
+  try {
+    const failed = await s.post();
+    assert.equal(failed.status, 500, 'the first entry fails before the run starts');
+    assert.equal(s.engine.calls.length, 0);
+    assert.equal(s.counts.relay, 0);
+
+    fs.rmSync(trap, { recursive: true, force: true }); // the cause is gone
+    const again = await s.post();
+    assert.equal(again.status, 202);
+    assert.equal(again.body.running, undefined, 'not "already running": the failed entry released its claim');
+    assert.equal(again.body.from, '1.9.0');
+    await waitForStep(s.url, 'done', 400);
+    assert.equal(s.engine.calls.length, 1);
+    assert.deepEqual(s.counts, { list: 2, stop: 0, relay: 1, relaunch: 1, finish: 1 });
+  } finally {
+    if (trap) fs.rmSync(trap, { recursive: true, force: true });
+    await s.close();
+  }
+});

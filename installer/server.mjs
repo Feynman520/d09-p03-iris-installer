@@ -1697,31 +1697,43 @@ export function startServer({
     const lock = readLock(state.zipRoot);
     if (!manifest || !lock) return { status: 500, body: { ok: false, reason: 'payload_unreadable' } };
 
-    // 업데이트는 설치 폴더의 IRIS 프로그램(창·데몬·중계기·대시보드·메신저 모듈)이 부품을 쥐고 있으면 풀기에서 멈춘다
-    // (2026-09-19 데스크탑 실측: E-UNPACK "IRIS 프로그램 8개가 아직 실행 중", 2.0.26). 창 「업데이트」 길은 적용기가
-    // 데몬만 끄고 나머지는 두며, 손 실행 길은 아무것도 끄지 않았다. 여기서 **우리 프로그램만 PID 로** 닫고 시작한다
-    // (⑥ 의 「IRIS 프로그램 닫고 다시 시도」와 같은 holdersFn — 이름·포트 일괄 종료 없음). 끝나면 relaunch 가 창을 다시 연다.
-    try {
-      const hs = await holdersFn.list(info.root ?? soulRoot);
-      if (Array.isArray(hs) && hs.length) {
-        const r = await holdersFn.stop(info.root ?? soulRoot, hs);
-        log(`auto: closed ${hs.length} IRIS program(s) before unpack (${hs.map((h) => `${h.name}:${h.pid}`).join(',')}) -> ${JSON.stringify(r?.stopped ?? r ?? null).slice(0, 200)}`);
-      }
-    } catch (err) {
-      log(`auto: closing IRIS programs failed (continuing, unpack will report holders): ${String(err?.message ?? err)}`);
-    }
-
+    // 2.0.66 — 자리 선점: **첫 기다림(await) 앞에서** "진행 중"을 세운다. 전에는 아래의 프로그램 조회를 기다린 뒤에야
+    // 세웠기 때문에, 그 사이에 들어온 둘째 진입(화면의 POST 가 둘 · POST + 800ms 자가 시작)이 같은 확인을 통과해
+    // runAuto 가 둘 돌 수 있었다(풀기 · 영수증 · 중계기 시작 · 창 다시 열기가 겹친다). 위의 확인들은 전부 기다림 없는
+    // 동기 코드라, 여기까지 온 진입은 한 번에 하나뿐이다.
+    // 푸는 자리: runAuto 에 넘기기 전에 여기서 나가는 모든 길(아래 save() 가 던지는 것 포함 — 전에는 그 길에서
+    // "진행 중"이 영영 남았다)은 finally 가 풀고, 넘긴 뒤에는 runAuto 의 finally 가 푼다.
     autoRunning = true;
-    soulConfirmed = true; // a v2 receipt is proof the folder is ours
-    installEvents.length = 0;
-    state.step = 'auto';
-    state.install = { parts: {} };
-    state.installError = null;
-    state.autoResult = null;
-    state.userEnvSkipped = userEnvSkipped;
-    save();
-    runAuto(info, manifest, lock);
-    return { status: 202, body: { ok: true, from: info.from, to: info.to } };
+    let handedOver = false;
+    try {
+      // 업데이트는 설치 폴더의 IRIS 프로그램(창·데몬·중계기·대시보드·메신저 모듈)이 부품을 쥐고 있으면 풀기에서 멈춘다
+      // (2026-09-19 데스크탑 실측: E-UNPACK "IRIS 프로그램 8개가 아직 실행 중", 2.0.26). 창 「업데이트」 길은 적용기가
+      // 데몬만 끄고 나머지는 두며, 손 실행 길은 아무것도 끄지 않았다. 여기서 **우리 프로그램만 PID 로** 닫고 시작한다
+      // (⑥ 의 「IRIS 프로그램 닫고 다시 시도」와 같은 holdersFn — 이름·포트 일괄 종료 없음). 끝나면 relaunch 가 창을 다시 연다.
+      try {
+        const hs = await holdersFn.list(info.root ?? soulRoot);
+        if (Array.isArray(hs) && hs.length) {
+          const r = await holdersFn.stop(info.root ?? soulRoot, hs);
+          log(`auto: closed ${hs.length} IRIS program(s) before unpack (${hs.map((h) => `${h.name}:${h.pid}`).join(',')}) -> ${JSON.stringify(r?.stopped ?? r ?? null).slice(0, 200)}`);
+        }
+      } catch (err) {
+        log(`auto: closing IRIS programs failed (continuing, unpack will report holders): ${String(err?.message ?? err)}`);
+      }
+
+      soulConfirmed = true; // a v2 receipt is proof the folder is ours
+      installEvents.length = 0;
+      state.step = 'auto';
+      state.install = { parts: {} };
+      state.installError = null;
+      state.autoResult = null;
+      state.userEnvSkipped = userEnvSkipped;
+      save();
+      handedOver = true;
+      runAuto(info, manifest, lock);
+      return { status: 202, body: { ok: true, from: info.from, to: info.to } };
+    } finally {
+      if (!handedOver) autoRunning = false;
+    }
   }
 
   routes.set('POST /api/auto', withBody(async (body, req, res) => {
