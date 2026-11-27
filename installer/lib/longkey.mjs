@@ -26,13 +26,13 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// 도구가 브라우저 승인을 기다리는 시간(초)과, 그보다 조금 긴 이쪽의 한도(도구가 스스로 끝나지 못했을 때만 쓰인다).
+// 도구가 브라우저 승인을 기다리는 시간(초)과, 그보다 조금 긴 이쪽의 한도. 이 한도는 두 경우의 상한이다:
+// 도구가 스스로 끝나지 못했을 때, 그리고 끝났다는 신호(exit)는 왔는데 출력이 닫혔다는 신호(close)가 끝내 오지 않을 때.
+// (exit 뒤에 따로 짧은 여유를 두고 실패를 확정하지 않는다 — 그 뒤에 늦게 온 RESULT 를 버리게 된다.)
 export const LONGKEY_APPROVE_SEC = 300;
 export const LONGKEY_HARD_LIMIT_MS = (LONGKEY_APPROVE_SEC + 45) * 1000;
 // RESULT 를 낸 뒤에도 프로그램이 남아 있으면 이만큼 기다렸다가 그 PID 를 끝낸다.
 export const LONGKEY_LINGER_MS = 8000;
-// 끝났다는 신호(exit) 뒤 출력이 닫혔다는 신호(close)가 끝내 오지 않을 때를 위한 여유.
-export const LONGKEY_EXIT_GRACE_MS = 3000;
 
 const AUTHORIZE_RE = /https:\/\/claude\.ai\/oauth\/authorize\?[^\s"'<>]+/;
 const RESULT_RE = /(?:^|\n)RESULT (\{[^\n]*\})\r?\n/;
@@ -121,7 +121,7 @@ export function parseLongKeyResult(text) {
 const jobs = new Map(); // 영혼 루트(소문자) → 일 하나
 const jobKey = (root) => String(root ?? '').toLowerCase();
 /** 시험용: 기억을 비운다(프로그램을 끝내지는 않는다). */
-export function resetLongKey() { for (const j of jobs.values()) { clearTimeout(j.timer); clearTimeout(j.linger); clearTimeout(j.grace); } jobs.clear(); }
+export function resetLongKey() { for (const j of jobs.values()) { clearTimeout(j.timer); clearTimeout(j.linger); } jobs.clear(); }
 
 function publicResult(job) {
   return { state: job.state, expiresAt: job.expiresAt, reason: job.reason };
@@ -135,7 +135,7 @@ function publicResult(job) {
 export function startLongKey({
   root, nodeDir,
   spawnFn = spawn, killFn = defaultKillTree, existsFn = fs.existsSync,
-  approveSec = LONGKEY_APPROVE_SEC, hardLimitMs = LONGKEY_HARD_LIMIT_MS, lingerMs = LONGKEY_LINGER_MS, exitGraceMs = LONGKEY_EXIT_GRACE_MS,
+  approveSec = LONGKEY_APPROVE_SEC, hardLimitMs = LONGKEY_HARD_LIMIT_MS, lingerMs = LONGKEY_LINGER_MS,
   env = process.env, now = () => Date.now(), log = () => {}, onFinish = null,
 } = {}) {
   const key = jobKey(root);
@@ -161,14 +161,13 @@ export function startLongKey({
   const job = {
     key, pid: null, startedAt: now(), finishedAt: null,
     state: 'starting', url: null, expiresAt: null, reason: null,
-    finished: false, exited: false, buf: '', timer: null, linger: null, grace: null,
+    finished: false, exited: false, buf: '', timer: null, linger: null,
   };
   const settle = (outcome, { silent = false } = {}) => {
     if (job.finished) return;
     job.finished = true;
     job.finishedAt = now();
     clearTimeout(job.timer);
-    clearTimeout(job.grace);
     Object.assign(job, { state: outcome.state, expiresAt: outcome.expiresAt ?? null, reason: outcome.reason ?? null });
     job.buf = '';
     log(`longkey ${job.state}${job.reason ? ` reason=${job.reason}` : ''}`);
@@ -208,15 +207,13 @@ export function startLongKey({
   };
   child?.stdout?.on?.('data', onData);
   child?.stderr?.on?.('data', () => { /* 읽고 버린다 — 파이프가 차서 멈추지 않게 */ });
-  // exit = 프로그램이 끝났다는 사실만 적는다. 마지막 출력(RESULT)이 그 뒤에 올 수 있으므로 여기서 실패를 확정하지 않는다.
+  // exit = 프로그램이 끝났다는 사실만 적는다. 마지막 출력(RESULT)이 그 뒤에 — 얼마나 늦게든 — 올 수 있으므로
+  // 여기서도, 여기서 건 타이머로도 실패를 확정하지 않는다. 결과 없는 실패는 아래 close 만 확정한다
+  // (close 가 끝내 오지 않으면 맨 아래의 한도 시간이 상한이다).
   child?.on?.('exit', (code) => {
     job.exited = true;
     clearTimeout(job.linger);
     log(`longkey process exited code=${code ?? '?'}`);
-    if (job.finished) return;
-    // close 가 끝내 오지 않는 드문 경우를 위한 여유(보통은 아래 close 가 먼저 온다).
-    job.grace = setTimeout(() => settle({ state: 'failed', reason: 'exited' }), exitGraceMs);
-    job.grace.unref?.();
   });
   // close = 출력까지 다 닫혔다. 여기까지 결과 줄이 없었으면 그때 실패다.
   child?.on?.('close', () => {
@@ -230,9 +227,11 @@ export function startLongKey({
   });
   job.timer = setTimeout(() => {
     if (job.finished) return;
-    log(`longkey limit reached -- stopping own process pid=${job.pid ?? '?'}`);
+    // 프로그램이 아직 돌고 있으면 그 PID 만 끝내고 시간 초과로, 이미 끝났는데(exit) 출력이 닫히지 않은 채였으면 "결과 없이 끝남"으로.
+    const gone = job.exited;
+    log(gone ? 'longkey limit reached -- process had exited without a result' : `longkey limit reached -- stopping own process pid=${job.pid ?? '?'}`);
     killOwn();
-    settle({ state: 'failed', reason: 'timeout' });
+    settle({ state: 'failed', reason: gone ? 'exited' : 'timeout' });
   }, hardLimitMs);
   job.timer.unref?.();
   return { ok: true, state: 'starting', already: false };
@@ -260,7 +259,6 @@ export function stopLongKey({ root } = {}) {
   const job = jobs.get(jobKey(root));
   if (!job) return { stopped: false };
   clearTimeout(job.linger);
-  clearTimeout(job.grace);
   const running = !job.exited && job.pid != null;
   if (running) job.killOwn();
   if (!job.finished) job.settle({ state: 'failed', reason: 'stopped' }, { silent: true });

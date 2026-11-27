@@ -17,6 +17,7 @@ const code = [
   grab(/const esc = \(s\) => [^\n]+/),
   grab(/const LONGKEY_TITLE = '[^']*';/),
   grab(/const LONGKEY_BODY = '[^']*';/),
+  grab(/const LONGKEY_ACCOUNT_NOTE = '[^']*';/),
   grab(/const LONGKEY_SKIP_NOTE = '[^']*';/),
   grab(/const LONGKEY_LATER_TEXT = '[^']*';/),
   grab(/const LONGKEY_WAIT_NOTE = '[^']*';/),
@@ -26,7 +27,7 @@ const code = [
   grab(/function longKeyDay\(v\) \{[\s\S]*?\n\}/),
   grab(/function longKeyCardHtml\(lk\) \{[\s\S]*?\n\}/),
   grab(/function longKeyReportLine\(lk, hk, subs\) \{[\s\S]*?\n\}/),
-  'Object.assign(this, { longKeyShown, longKeyBusy, longKeyDay, longKeyCardHtml, longKeyReportLine, LONGKEY_TITLE, LONGKEY_BODY, LONGKEY_SKIP_NOTE, LONGKEY_LATER_TEXT, LONGKEY_WAIT_NOTE });',
+  'Object.assign(this, { longKeyShown, longKeyBusy, longKeyDay, longKeyCardHtml, longKeyReportLine, LONGKEY_TITLE, LONGKEY_BODY, LONGKEY_ACCOUNT_NOTE, LONGKEY_SKIP_NOTE, LONGKEY_LATER_TEXT, LONGKEY_WAIT_NOTE });',
 ].join('\n');
 const ctx = {}; vm.createContext(ctx); vm.runInContext(code, ctx);
 
@@ -56,17 +57,27 @@ test('처음 모습: 제목 "1년 열쇠 받기(권장)" · 정해진 글 · 「
 const EVERY_CARD = [idle, { ...idle, skipped: true }, { offered: true, state: 'starting' }, { offered: true, state: 'approve', url: APPROVE_URL }, { offered: true, state: 'done' }, { offered: true, state: 'failed' }];
 
 test('글은 장담하지 않는다 — "1년 동안 … 나오지 않습니다" 같은 말이 화면 글 어디에도 없다', () => {
-  const all = [ctx.LONGKEY_TITLE, ctx.LONGKEY_BODY, ctx.LONGKEY_SKIP_NOTE, ctx.LONGKEY_LATER_TEXT, ctx.LONGKEY_WAIT_NOTE, ...EVERY_CARD.map((x) => ctx.longKeyCardHtml(x))].join('\n');
+  const all = [ctx.LONGKEY_TITLE, ctx.LONGKEY_BODY, ctx.LONGKEY_ACCOUNT_NOTE, ctx.LONGKEY_SKIP_NOTE, ctx.LONGKEY_LATER_TEXT, ctx.LONGKEY_WAIT_NOTE, ...EVERY_CARD.map((x) => ctx.longKeyCardHtml(x))].join('\n');
   for (const promise of [/1년 동안/, /나오지 않습니다/, /다시 로그인하지 않/, /로그인이 필요 없/, /절대/, /영구/]) assert.doesNotMatch(all, promise);
   assert.match(all, /줄입니다/, '"줄인다"고만 말한다');
 });
 
 test('글의 범위: 받는 것은 IRIS 창의 대화가 쓰는 열쇠라고만 말한다 — 계정 연결(중계기)의 계정이 바뀐다는 말이 없다', () => {
-  const all = [ctx.LONGKEY_TITLE, ctx.LONGKEY_BODY, ctx.LONGKEY_SKIP_NOTE, ctx.LONGKEY_LATER_TEXT, ctx.LONGKEY_WAIT_NOTE, ...EVERY_CARD.map((x) => ctx.longKeyCardHtml(x)),
+  const all = [ctx.LONGKEY_TITLE, ctx.LONGKEY_BODY, ctx.LONGKEY_ACCOUNT_NOTE, ctx.LONGKEY_SKIP_NOTE, ctx.LONGKEY_LATER_TEXT, ctx.LONGKEY_WAIT_NOTE, ...EVERY_CARD.map((x) => ctx.longKeyCardHtml(x)),
     ctx.longKeyReportLine({ offered: true, state: 'done', expiresAt: 1 }, null, ['claude']), ctx.longKeyReportLine(null, null, ['claude'])].join('\n');
   assert.doesNotMatch(all, /중계기|계정 연결|TeamClaude|두 자리|한 자리/);
   assert.match(ctx.LONGKEY_BODY, /IRIS 창의 대화가 다시 로그인을 요구하는 일을 줄입니다/);
   assert.match(ctx.LONGKEY_BODY, /IRIS 창의 설정 → 계정 · 보안에서도 받을 수 있습니다/);
+});
+
+test('어느 계정의 열쇠인가를 알린다: "브라우저에서 승인한 계정의 열쇠가 IRIS 창에 저장됩니다" — 누르기 전과 승인 대기 중에 보인다', () => {
+  // 도구는 승인한 계정을 방금 로그인한 계정과 견주지 않는다(원래 동작 — 고치지 않는다). 다른 계정으로 승인하면 그 계정의 열쇠가
+  // 저장되고 이미 있던 열쇠는 바뀌므로, 사람이 누르기 전에 그 사실을 읽을 수 있어야 한다.
+  assert.equal(ctx.LONGKEY_ACCOUNT_NOTE, '브라우저에서 승인한 계정의 열쇠가 IRIS 창에 저장됩니다.');
+  assert.ok(ctx.longKeyCardHtml(idle).includes(ctx.LONGKEY_ACCOUNT_NOTE), '처음 모습(받기 · 나중에)');
+  assert.ok(ctx.longKeyCardHtml({ offered: true, state: 'approve', url: APPROVE_URL }).includes(ctx.LONGKEY_ACCOUNT_NOTE), '승인 대기');
+  assert.ok(ctx.longKeyCardHtml({ offered: true, state: 'starting' }).includes(ctx.LONGKEY_ACCOUNT_NOTE), '띄우는 중');
+  for (const done of [{ offered: true, state: 'done' }, { offered: true, state: 'failed' }]) assert.ok(!ctx.longKeyCardHtml(done).includes(ctx.LONGKEY_ACCOUNT_NOTE), '끝난 뒤에는 되풀이하지 않는다');
 });
 
 test('「나중에」를 누른 뒤: 접힌 한 줄 + 「지금 받기」 — 어디서 받는지 알려 준다', () => {

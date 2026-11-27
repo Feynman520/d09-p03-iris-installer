@@ -1383,6 +1383,9 @@ let relayNoteShown = false;
 // ---------------------------------------------------------------------------
 const LONGKEY_TITLE = '1년 열쇠 받기(권장)';
 const LONGKEY_BODY = '유효 기간이 긴 열쇠를 받아 IRIS 창의 대화가 다시 로그인을 요구하는 일을 줄입니다. 브라우저 승인을 한 번 더 합니다. 나중에 IRIS 창의 설정 → 계정 · 보안에서도 받을 수 있습니다.';
+// 어느 계정의 열쇠인가: 방금 로그인한 계정이 아니라 **브라우저에서 승인한 계정**의 것이 저장된다(이미 받아 둔 열쇠가 있으면 바뀐다).
+// 도구의 원래 동작이라 고치지 않고 알린다 — 누르기 전과 승인을 기다리는 동안 둘 다 보인다.
+const LONGKEY_ACCOUNT_NOTE = '브라우저에서 승인한 계정의 열쇠가 IRIS 창에 저장됩니다.';
 const LONGKEY_SKIP_NOTE = '받지 않아도 설치는 그대로 끝납니다.';
 const LONGKEY_LATER_TEXT = '1년 열쇠는 나중에 받기로 했습니다. IRIS 창의 설정 → 계정 · 보안에서 받을 수 있습니다.';
 const LONGKEY_WAIT_NOTE = '이 승인을 하지 않아도 지금 로그인과 설치는 그대로입니다.';
@@ -1409,14 +1412,14 @@ function longKeyCardHtml(lk) {
     const link = typeof lk.url === 'string' && /^https:\/\/claude\.ai\/oauth\/authorize\?/.test(lk.url)
       ? '<a class="open-link" target="_blank" rel="noopener" href="' + esc(lk.url) + '">브라우저가 열리지 않았으면 여기를 누르세요 ↗</a>' : '';
     inner = '<p class="sub"><span class="warn">…</span> ' + esc(lk.message || '브라우저에 뜬 화면에서 「승인(Authorize)」을 한 번 눌러 주세요.') + '</p>' + link +
-      '<p class="sub">' + esc(LONGKEY_WAIT_NOTE) + '</p>';
+      '<p class="sub">' + esc(LONGKEY_ACCOUNT_NOTE) + '</p><p class="sub">' + esc(LONGKEY_WAIT_NOTE) + '</p>';
   } else if (lk.state === 'failed') {
     inner = '<p class="sub"><span class="bad">✗</span> ' + esc(lk.message || '1년 열쇠 받기를 끝내지 못했습니다. 지금 로그인은 그대로 쓸 수 있습니다.') + '</p>' +
       '<div class="acts">' + btn('get', '다시 받기', 'ghost') + '</div>';
   } else if (lk.skipped) {
     inner = '<p class="sub">' + esc(LONGKEY_LATER_TEXT) + '</p><div class="acts">' + btn('get', '지금 받기', 'ghost') + '</div>';
   } else {
-    inner = '<p class="sub">' + esc(LONGKEY_BODY) + '</p><p class="sub">' + esc(LONGKEY_SKIP_NOTE) + '</p>' +
+    inner = '<p class="sub">' + esc(LONGKEY_BODY) + '</p><p class="sub">' + esc(LONGKEY_ACCOUNT_NOTE) + '</p><p class="sub">' + esc(LONGKEY_SKIP_NOTE) + '</p>' +
       '<div class="acts">' + btn('get', '받기', 'go') + btn('later', '나중에', 'ghost') + '</div>';
   }
   return '<div class="longkey"><h4>' + esc(LONGKEY_TITLE) + '</h4>' + inner + '</div>';

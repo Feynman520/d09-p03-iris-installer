@@ -196,7 +196,7 @@ test('상태 흐름: 띄움 → 승인 대기(주소) → 끝남. 끝나면 주�
 test('끝났다는 신호(exit)가 마지막 출력보다 먼저 와도 결과를 놓치지 않는다 — 실패 확정은 출력이 닫힌 뒤(close)', async () => {
   // exit → RESULT → close: 성공으로 읽는다.
   const a = makeSoul('exit-first');
-  const one = launch(a, { exitGraceMs: 5000 });
+  const one = launch(a);
   const expiresAt = Date.now() + YEAR_MS;
   one.child.emit('exit', 0);
   assert.equal(longKeyStatus({ root: a.root }).state, 'starting', 'exit 만으로는 실패로 치지 않는다');
@@ -210,18 +210,45 @@ test('끝났다는 신호(exit)가 마지막 출력보다 먼저 와도 결과�
 
   // exit → close(결과 줄 없음): 그때 실패.
   const b = makeSoul('exit-close');
-  const two = launch(b, { exitGraceMs: 5000 });
+  const two = launch(b);
   two.child.emit('exit', 1);
   assert.deepEqual(two.finishes, []);
   two.child.emit('close', 1);
   assert.deepEqual(two.finishes, [{ state: 'failed', expiresAt: null, reason: 'exited' }]);
+});
 
-  // exit 뒤 close 가 끝내 오지 않으면 여유 시간이 지난 뒤 실패로 돌린다(영영 "띄우는 중"으로 남지 않는다).
-  const c = makeSoul('exit-only');
-  const three = launch(c, { exitGraceMs: 30 });
-  three.child.emit('exit', 1);
-  await tick(90);
-  assert.deepEqual(three.finishes, [{ state: 'failed', expiresAt: null, reason: 'exited' }]);
+test('exit 뒤 5초가 지나서 온 RESULT 도 받는다 — exit 뒤의 짧은 타이머로 실패를 확정하지 않는다(exit → 5초 뒤 RESULT → close)', async () => {
+  // 2026-11-28 재검토: exit 뒤 3초 타이머가 실패를 확정하면, 출력 전달이 그보다 늦을 때 실제 성공을 실패로 적고 RESULT 를 버린다.
+  const s = makeSoul('exit-late-result');
+  const { child, finishes, kills } = launch(s);
+  const expiresAt = Date.now() + YEAR_MS;
+  child.stdout.emit('data', `${APPROVE_URL}\n`);
+  child.emit('exit', 0);
+  await tick(5200);
+  const waiting = longKeyStatus({ root: s.root });
+  assert.equal(waiting.state, 'approve', 'exit 뒤 5초가 지나도 아직 판정하지 않았다');
+  assert.deepEqual(finishes, [], '실패로 적지 않았다');
+  child.stdout.emit('data', okResult(expiresAt));
+  child.emit('close', 0);
+  assert.equal(longKeyStatus({ root: s.root }).state, 'done');
+  assert.deepEqual(finishes, [{ state: 'done', expiresAt, reason: null }], '늦게 온 성공을 성공으로 적는다(한 번)');
+  assert.deepEqual(kills, []);
+});
+
+test('exit 는 왔는데 출력이 끝내 닫히지 않으면(close 없음) 한도 시간이 상한이다 — 그때 "결과 없이 끝남"으로, 끝난 프로그램은 건드리지 않는다', async () => {
+  const s = makeSoul('exit-no-close');
+  const { child, finishes, kills, logs } = launch(s, { child: fakeChild(8181), hardLimitMs: 120 });
+  child.emit('exit', 1);
+  await tick(40);
+  assert.deepEqual(finishes, [], '한도 전에는 판정하지 않는다');
+  assert.equal(longKeyStatus({ root: s.root }).state, 'starting');
+  await tick(160);
+  assert.deepEqual(finishes, [{ state: 'failed', expiresAt: null, reason: 'exited' }]);
+  assert.deepEqual(kills, [], '이미 끝난 프로그램을 끝내려 하지 않는다');
+  assert.ok(logs.some((l) => /process had exited without a result/.test(l)));
+  // 한도가 지난 뒤의 뒤늦은 줄은 결과를 뒤집지 않는다(이미 사람에게 실패로 보였다 — 다시 받기를 누르면 된다).
+  child.stdout.emit('data', okResult(Date.now() + YEAR_MS));
+  assert.equal(finishes.length, 1);
 });
 
 test('끝난 뒤에도 프로그램이 남아 있으면 자기가 띄운 그 PID 만 끝낸다', async () => {
