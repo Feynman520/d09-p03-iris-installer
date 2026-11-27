@@ -72,8 +72,16 @@ export const HANCOM_KEYS = Object.freeze([
 // 아니라 root 이름에서 매번 도출한다(기본값 "IRIS.lnk"도 함께 허용해
 // 실제 설치본과의 회귀를 막는다). T09b.
 export function allowedDesktopFiles(root) {
-  const names = [`${path.basename(root)}.lnk`, 'IRIS.lnk', 'desktop.ini'];
+  const names = [`${path.basename(root)}.lnk`, 'IRIS.lnk', 'desktop.ini', ...allowedDoctorShortcuts(root)];
   return Object.freeze([...new Set(names)]);
+}
+
+// 2.0.66: 「IRIS Doctor」 바로가기 — IRIS 가 먹통일 때 여는 복구 도구의 입구라 바깥에 둔다(실행기 단계 ③-2,
+// installer/lib/handoff.mjs writeDoctorShortcut). 이름은 「IRIS」 바로가기와 같은 규칙(`<영혼 이름> Doctor.lnk`)이고,
+// 놓이는 자리는 **둘뿐**이다: 이 사용자의 바탕화면 바로 아래와 시작 메뉴 프로그램 폴더 바로 아래.
+// "폴더 밖 쓰기" 감사는 그 **정확한 두 경로**만 허용한다 — 시작 메뉴 폴더 전체나, 이름만 같은 다른 자리의 파일은 허용하지 않는다.
+export function allowedDoctorShortcuts(root) {
+  return Object.freeze([...new Set([`${path.basename(root)} Doctor.lnk`, 'IRIS Doctor.lnk'])]);
 }
 
 // 훅으로 등록되는 스크립트(설계-v2 6-3 검사 4 "훅 스크립트 3개" + 2.0.65 로그인 열쇠 알림 `status.mjs`).
@@ -549,6 +557,18 @@ export async function resolveDesktopDir(ctx, { desktopDir = null } = {}) {
   return line || null;
 }
 
+// 시작 메뉴의 프로그램 폴더(2.0.66 — 「IRIS Doctor」 바로가기가 놓이는 둘째 자리). 실행기 단계가 바로가기를 만들 때 묻는 것과
+// 같은 물음을 윈도우에 한다. 답을 못 받으면 그 폴더의 기본 자리(%APPDATA% 아래)로 본다.
+export async function resolveStartMenuDir(ctx, { startMenuDir = null } = {}) {
+  if (startMenuDir) return startMenuDir;
+  if (ctx.startMenuDir) return ctx.startMenuDir;
+  const res = await runExe(ctx, 'powershell', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Programs')"], { timeoutMs: SYNTAX_TIMEOUT_MS });
+  const line = String(res.out ?? '').trim().split(/\r?\n/)[0] ?? '';
+  if (line && path.isAbsolute(line)) return line;
+  const appData = ctx.env?.APPDATA ?? process.env.APPDATA ?? '';
+  return appData ? path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs') : null;
+}
+
 // 설치가 시작된 시각. 이 시각보다 **새로운** 바탕화면 파일만 우리가 만들었을
 // 수 있는 것이다(그 전 파일은 원래 그 사람 것).
 export function installStartedAt(receipt) {
@@ -642,17 +662,53 @@ export async function checkDesktop(ctx, opts = {}) {
     return h ? path.resolve(h).toLowerCase() : null;
   })();
   const dirLower = dir ? path.resolve(dir).toLowerCase() : null;
+  // 「IRIS」 바로가기(와 desktop.ini)의 규칙은 2.0.65 그대로다 — Doctor 바로가기 이름은 이 느슨한 규칙에 넣지 않는다.
+  const doctorNames = allowedDoctorShortcuts(root).map((n) => n.toLowerCase());
+  const launcherNames = allowed.map((a) => a.toLowerCase()).filter((a) => !doctorNames.includes(a));
   const isAllowedShortcut = (abs) => {
     const lower = abs.toLowerCase();
-    if (!allowed.some((a) => a.toLowerCase() === path.basename(abs).toLowerCase())) return false;
+    if (!launcherNames.includes(path.basename(abs).toLowerCase())) return false;
     if (dirLower && lower.startsWith(dirLower)) return true;
     return Boolean(homeLower && lower.startsWith(homeLower) && /[\\/]desktop[\\/]/i.test(abs));
+  };
+  // 「IRIS Doctor」 바로가기(2.0.66)는 **정확한 두 경로**만: <이 사용자의 바탕화면>\<이름> 과 <시작 메뉴 프로그램 폴더>\<이름>.
+  // 그 폴더의 하위 폴더 · 다른 사용자 · 이름만 같은 다른 자리는 여전히 "폴더 밖 쓰기"다.
+  // 바탕화면 폴더를 찾지 못한 PC(느린 파워셸)에서의 대비도 **한 경로와의 완전 일치**다: <이 사용자 프로필>\Desktop 바로 아래.
+  // (프로필 아래 어느 깊이든 이름이 Desktop 인 폴더를 받아 주면 `…\backup\Desktop\IRIS Doctor.lnk` 도 통과한다 — 2026-11-28 코드 검토 지적.
+  //  「IRIS」 바로가기의 느슨한 규칙은 2.0.65 그대로 두고, Doctor 것만 좁게 둔다.)
+  // 시작 메뉴 폴더는 그 이름의 기록을 실제로 만났을 때에만 윈도우에 묻는다(없으면 파워셸을 한 번 덜 띄운다).
+  // 다만 바탕화면이 옮겨진 PC(OneDrive 등)에서 조회까지 실패하면 그 한 경로로는 정상 설치가 멈춘다. 그래서 대비 경로를 하나 더 둔다:
+  // 실행기 단계가 **같은 물음으로** 만들어 기록한 「IRIS」 바로가기가 놓인 바로 그 폴더(그 기록이 2.0.65 의 규칙으로 허용될 때만).
+  // 두 바로가기는 같은 폴더에 놓이므로 이것도 "한 폴더와의 완전 일치"다 — 이름이 Desktop 인 아무 폴더가 아니다.
+  // 허용은 둘을 구별해 읽는다(2026-11-28 두 번째 코드 검토 1-3):
+  //   ⓐ 윈도우가 알려 준 자리 — 바탕화면 조회(dirLower) · 시작 메뉴 조회(programsLower)의 답과 완전 일치. 평소의 허용은 이것뿐이다.
+  //   ⓑ 기록을 믿는 대비 자리 — 바탕화면 조회가 실패했을 때만: <프로필>\Desktop 과, 기록된 「IRIS」 바로가기의 폴더.
+  //      ⓑ의 둘째는 2.0.65 의 느슨한 규칙(isAllowedShortcut)이 받아 준 기록에 기댄다: 기록 자체가 `…\backup\Desktop\IRIS.lnk` 였다면
+  //      그 옆의 Doctor 바로가기도 허용된다. "윈도우가 확인한 자리"가 아니라 "설치기가 전에 적은 자리"다.
+  let programsLower;
+  const fallbackDesktops = [];
+  if (homeLower) fallbackDesktops.push(path.join(homeLower, 'desktop'));
+  const irisLnkRecorded = ctx.receipt?.setup?.relay?.recorded?.desktopShortcut?.path;
+  if (typeof irisLnkRecorded === 'string' && path.isAbsolute(irisLnkRecorded) && isAllowedShortcut(path.resolve(irisLnkRecorded))) {
+    fallbackDesktops.push(path.dirname(path.resolve(irisLnkRecorded)).toLowerCase());
+  }
+  const isDoctorShortcut = async (abs) => {
+    if (!doctorNames.includes(path.basename(abs).toLowerCase())) return false;
+    const parent = path.dirname(abs).toLowerCase();
+    if (dirLower ? parent === dirLower : fallbackDesktops.includes(parent)) return true;
+    if (programsLower === undefined) {
+      let found = null;
+      try { found = await resolveStartMenuDir(ctx, opts); } catch { found = null; }
+      programsLower = found ? path.resolve(found).toLowerCase() : null;
+    }
+    return programsLower !== null && parent === programsLower;
   };
   const seenOutside = new Set();
   for (const stageId of SETUP_STAGE_IDS) {
     for (const p of recordedPaths(ctx.receipt?.setup?.[stageId]?.recorded)) {
       const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(root, p);
       if (abs.toLowerCase().startsWith(rootLower) || fromPackage(abs) || isAllowedShortcut(abs)) continue;
+      if (await isDoctorShortcut(abs)) continue;
       const key = `${stageId}:${abs.toLowerCase()}`;
       if (seenOutside.has(key)) continue;
       seenOutside.add(key);

@@ -9,6 +9,7 @@ import { extractZip } from '../lib/zip.mjs';
 import { sanitize } from '../build/sanitize.mjs';
 import { loadRules, splitRepoStackPointers } from '../build/rules.mjs';
 import { agentShim } from '../installer/lib/shims.mjs';
+import { doctorBundleProblems, doctorTrustProblems, DOCTOR_PART_ZIP } from './doctor-bundle.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -197,6 +198,7 @@ async function main() {
   console.log(`checking: ${zipPath}`);
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-static-'));
+  const extraTmpDirs = []; // further unpack folders made by single checks (removed in the finally below)
   try {
     await extractZip(zipPath, tmpDir);
     const payloadDir = path.join(tmpDir, 'payload');
@@ -707,6 +709,17 @@ async function main() {
       );
     }
 
+    // The IRIS Doctor part, unpacked once for ㉒ (its Windows-certificate wiring)
+    // and ㉓ (the bundle is whole). Unpacked beside the checked tree, not into
+    // it; removed in the finally below. null = the zip carries no such part.
+    const doctorZip = path.join(payloadDir, ...DOCTOR_PART_ZIP.split('/'));
+    let doctorDir = null;
+    if (fs.existsSync(doctorZip)) {
+      doctorDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-verify-doctor-'));
+      extraTmpDirs.push(doctorDir);
+      await extractZip(doctorZip, doctorDir);
+    }
+
     // ㉒ (2.0.62, 2026-11-12 school network report) every Node that IRIS itself
     // starts trusts the Windows certificate store in addition to its bundled
     // roots -- security gear re-signing claude.ai with an agency certificate
@@ -758,14 +771,52 @@ async function main() {
           fs.rmSync(updTmp, { recursive: true, force: true });
         }
       }
+      // Launch points added after the first five. Each one appends its own block
+      // here and pushes its name; the label and the count below are built from
+      // this list, so a new point never edits a number by hand.
+      const laterLaunchPoints = [];
+      // (2.0.66) the one-year-key helper: its check is the lib/longkey.mjs line above.
+      laterLaunchPoints.push('one-year-key helper');
+      // (2.0.66) IRIS Doctor: its start file launches the bundled node, and that
+      // Node probes the vendor servers itself (the "internet" group of a
+      // check-up). Read from the part zip that was packed: lib\trust.mjs adds the
+      // Windows roots, the entry file and the check-up worker call it, the start
+      // file fills NODE_USE_SYSTEM_CA only when it is empty, and neither the
+      // --use-system-ca flag nor NODE_OPTIONS is used (verify/doctor-bundle.mjs).
+      {
+        if (!doctorDir) problems.push(`missing payload/${DOCTOR_PART_ZIP}`);
+        else for (const p of doctorTrustProblems(doctorDir)) problems.push(`iris-doctor: ${p}`);
+        laterLaunchPoints.push('IRIS Doctor');
+      }
       record(
-        '㉒ IRIS-started Node trusts the Windows certificate store too (installer, relay, updater, session-start hook, one-year-key helper)',
+        `㉒ IRIS-started Node trusts the Windows certificate store too (installer, relay, updater, session-start hook${laterLaunchPoints.map((n) => `, ${n}`).join('')})`,
         problems.length === 0,
-        problems.length === 0 ? '6 launch point(s) wired' : problems.join('; '),
+        problems.length === 0 ? `${5 + laterLaunchPoints.length} launch point(s) wired` : problems.join('; '),
+      );
+    }
+
+    // ㉓ (2.0.66) the IRIS Doctor part ships whole. Doctor compares its own
+    // files with the manifest.json inside its folder every time it starts and
+    // refuses to treat when one byte differs, and the installer's part
+    // verifier does the same comparison when it places the part -- so a
+    // bundle that is not exactly its manifest would fail every install. Checked
+    // on the zip that was packed: every listed file present with its sha256,
+    // nothing unlisted, no link, nothing that must not ship (AGENTS.md, tests,
+    // the pack tool and fault lab, local.json, iris-keys.json), the start
+    // file and both .ps1 helpers ASCII with CRLF line endings.
+    {
+      const problems = doctorDir ? doctorBundleProblems(doctorDir) : [`missing payload/${DOCTOR_PART_ZIP}`];
+      let count = 0;
+      try { count = JSON.parse(fs.readFileSync(path.join(doctorDir, 'manifest.json'), 'utf8')).files.length; } catch { /* reported above */ }
+      record(
+        '㉓ IRIS Doctor bundle is whole (manifest sha256 for every file, nothing unlisted, no tests or instruction files, start file ASCII + CRLF)',
+        problems.length === 0,
+        problems.length === 0 ? `${count} file(s) match the bundle manifest` : problems.slice(0, 8).join('; '),
       );
     }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    for (const d of extraTmpDirs) fs.rmSync(d, { recursive: true, force: true });
   }
 
   console.log('');

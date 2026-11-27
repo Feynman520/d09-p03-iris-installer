@@ -19,6 +19,9 @@
 // 바탕화면 바로가기 하나가 이 설치기가 `C:\IRIS` 밖에 만드는 유일한 물건이다
 // (계약 v2 "예외 허용"). 연습 실행(`IRIS_INSTALLER_NO_USER_ENV=1`)에서는 그것도
 // 만들지 않고 기록만 남긴다.
+// 2.0.66 부터 바깥의 물건은 셋이다: 위의 「IRIS」 바로가기에 더해 「IRIS Doctor」 바로가기 둘(바탕화면 · 시작 메뉴
+// 프로그램 폴더 — IRIS 가 먹통일 때 여는 복구 도구의 입구, ③-2). 같은 규칙을 따른다: 연습 실행에서는 만들지 않고,
+// 만든 경로는 기록에 남겨 설치 검사 6 이 그 정확한 둘만 허용한다.
 //
 // ── 덮어쓰지 않는다 ──────────────────────────────────────────────────────
 // 이미 있는 `.cmd` 의 내용이 우리가 쓰려는 것과 **다르면** 덮지 않고 옆에
@@ -30,7 +33,7 @@ import { StageError } from '../lib/errors.mjs';
 import { assertInside, ensureDir } from '../lib/paths.mjs';
 import { manageScriptPath } from '../lib/proxy.mjs';
 import { portableTeamclaudeConfigPath, defaultRelayConfig, ensureRelayConfigDefaults } from '../lib/login.mjs';
-import { writeFaceLauncher, faceLauncherPath, faceLauncherContent } from '../lib/handoff.mjs';
+import { writeFaceLauncher, faceLauncherPath, faceLauncherContent, writeDoctorShortcut, doctorStartFile } from '../lib/handoff.mjs';
 
 export const id = 'relay';
 
@@ -252,6 +255,66 @@ export async function run(ctx) {
       : { status: r.shortcut?.ok ? 'created' : 'failed', path: r.lnkPath ?? null, detail: r.shortcut?.detail ?? null };
     if (!noUserEnv && !r.shortcut?.ok) {
       pending.push({ capability: '바탕화면 IRIS 바로가기', reason: '바로가기를 만들지 못했습니다(영혼 폴더의 실행기는 그대로 씁니다)' });
+    }
+  }
+
+  // ── ③-2 「IRIS Doctor」 바로가기(2.0.66) ───────────────────────────────
+  // IRIS 가 먹통일 때 여는 복구 도구라 입구가 IRIS 창에 기대면 안 된다 — 바탕화면과 시작 메뉴에 바로가기를 둔다
+  // (`<이름> Doctor.lnk`, 대상 = cmd.exe · 인자 = /d /c ""<시작 파일>"" · 시작 위치 = 설치 폴더 밖).
+  // 실행기를 만들지 않는다: 시작 파일은 Doctor 부품 안에 있다(⑤-1 풀기가 놓았다). 여기서 Doctor 를 **실행하지도 않는다**.
+  //   · 부품이 없으면(시작 파일 없음) 만들지 않는다 — 이번 판 잠금표에 있는 부품인데 없을 때만 「대기 기능」에 한 줄.
+  //   · 연습 실행(IRIS_INSTALLER_NO_USER_ENV=1)에서는 건너뛴다(바탕화면 · 시작 메뉴 무접촉).
+  //   · 만들지 못해도 설치는 계속한다(「IRIS」 바로가기와 같은 처리).
+  const doctorStart = doctorStartFile(root);
+  const doctorInLock = Boolean(ctx?.lock?.parts?.['iris-doctor'] ?? ctx?.manifest?.parts?.['iris-doctor']);
+  if (!fs.existsSync(doctorStart)) {
+    recorded.doctorShortcut = { status: 'absent', reason: `${rel(doctorStart)} 없음` };
+    if (doctorInLock) {
+      pending.push({ capability: 'IRIS Doctor(IRIS 가 열리지 않을 때 쓰는 복구 도구)', reason: 'IRIS Doctor 부품이 설치되지 않았습니다' });
+      log(`[relay] IRIS Doctor 부품이 없어 바로가기를 건너뜀(${rel(doctorStart)})`);
+    }
+  } else if (noUserEnv) {
+    recorded.doctorShortcut = { status: 'skipped', reason: 'IRIS_INSTALLER_NO_USER_ENV=1' };
+  } else {
+    let d;
+    try {
+      d = await writeDoctorShortcut(root, name, {
+        ...(ctx.desktopDir ? { desktopDir: ctx.desktopDir } : {}),
+        ...(ctx.startMenuDir ? { startMenuDir: ctx.startMenuDir } : {}),
+        ...(typeof ctx.runPs === 'function' ? { runPs: ctx.runPs } : {}),
+      });
+    } catch (err) {
+      d = { present: true, ok: false, shortcuts: [], error: String(err?.message ?? err) };
+    }
+    const by = (where) => (d.shortcuts ?? []).find((s) => s.where === where) ?? { ok: false, path: null, detail: d.error ?? null };
+    const made = (d.shortcuts ?? []).filter((s) => s.ok).length;
+    // 실패한 까닭(윈도우의 오류 글 — 경로가 섞일 수 있다)은 `cause` 칸에 둔다: 설치 검사 6 의 "폴더 밖 쓰기" 감사는
+    // 기록 속 경로처럼 보이는 글을 모두 보는데, `cause` 는 읽은 것 · 까닭이라 감사 대상이 아니다(checks.mjs recordedPaths).
+    // `path` 에는 실제로 만든 바로가기의 경로만 들어간다 — 검사 6 이 그 둘(바탕화면 · 시작 메뉴의 그 이름)만 허용한다.
+    // 자리마다 넷 가운데 하나다(handoff.mjs writeDoctorShortcut): created 새로 만듦 · kept 이미 이 설치의 것이라 쓰지 않음 ·
+    // foreign 같은 이름의 **다른 것**(사용자가 만든 것 · 다른 설치본)이 있어 그대로 둠 · failed 만들지 못함.
+    // foreign 의 경로는 기록하지 않는다 — 거기 있는 것은 우리 것이 아니다(삭제기도 지우지 않는다).
+    const one = (where) => {
+      const s = by(where);
+      if (s.ok) return { ok: true, path: s.path, ...(s.status === 'kept' ? { kept: true } : {}) };
+      return { ok: false, path: null, ...(s.status === 'foreign' ? { foreign: true } : {}), cause: s.detail ?? null };
+    };
+    const allKept = d.ok && (d.shortcuts ?? []).every((s) => s.status === 'kept');
+    recorded.doctorShortcut = {
+      status: d.ok ? (allKept ? 'kept' : 'created') : (made > 0 ? 'partial' : 'failed'),
+      desktop: one('desktop'),
+      startMenu: one('startmenu'),
+    };
+    if (!d.ok) {
+      const foreign = (d.shortcuts ?? []).some((s) => s.status === 'foreign');
+      pending.push({
+        capability: '「IRIS Doctor」 바로가기',
+        reason: foreign
+          ? '같은 이름의 다른 바로가기가 이미 있어 그대로 두었습니다(덮어쓰지 않습니다 — 설치 폴더의 IRIS Doctor 시작 파일은 그대로 씁니다)'
+          : '바로가기를 만들지 못했습니다(설치 폴더의 IRIS Doctor 시작 파일은 그대로 씁니다)',
+      });
+      const say = (where) => { const s = by(where); return s.ok ? (s.status ?? 'ok') : (s.status === 'foreign' ? 'foreign(left as it is)' : s.detail); };
+      log(`[relay] IRIS Doctor 바로가기 ${made}/2 — 바탕화면: ${say('desktop')} · 시작 메뉴: ${say('startmenu')}`);
     }
   }
 

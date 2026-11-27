@@ -52,6 +52,7 @@ import { run as defaultRun } from '../lib/run.mjs';
 import { listHolders, stopHolders } from './lib/holders.mjs';
 import { trustSystemRoots } from './lib/systemca.mjs';
 import { buildReportPayload, sendReport, saveReportCopy } from './lib/report-send.mjs';
+import { prepareDoctorAccounts, doctorPrepareLine } from './lib/doctor-prepare.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BODY_LIMIT = 1024 * 1024; // 1 MB
@@ -374,6 +375,8 @@ export function startServer({
   claudePresentFn = (root) => fs.existsSync(path.join(root, '_agent', 'shared', 'tools', 'claude', 'claude.cmd')),
   // 2.0.39: 업데이트가 설치기 사본(_agent\setup\installer)을 새 판으로 바꿔 끼우는 함수(ctx → 결과) — 시험은 가짜를 넣는다.
   copyInstallerFn = null,
+  // 2.0.66: 손 안 가는 IRIS Doctor 계정 준비(lib/doctor-prepare.mjs — 설치본의 Doctor 에게 `link auto` 를 한 번) — 시험은 가짜를 넣는다.
+  doctorPrepareFn = null,
   faceDir,
   faceNodeExe,
   workDir,
@@ -1231,6 +1234,43 @@ export function startServer({
     sendJson(res, 200, { ok: true, subscriptions: subs, leadAgent, restarted });
   }));
 
+  // --- IRIS Doctor: 손 안 가는 계정 준비(2.0.66) ---------------------------------
+  // 온라인 묶음이 끝났을 때와 업데이트가 끝났을 때 한 번씩, 설치본의 Doctor 에게 `link auto` 를 부른다(통신 0 · 브라우저 0 ·
+  // 만들 것이 없으면 Doctor 가 아무것도 쓰지 않는다 — lib/doctor-prepare.mjs 머리말). Doctor 부품이 없거나 연습 실행 ·
+  // 오프라인이면 부르지 않는다.
+  // **결과는 기록 한 줄뿐이다.** 상태(state) · 영수증 · 인수 문서 · 응답 어디에도 싣지 않는다 — Doctor 의 준비 여부가
+  // 설치 완료 판정(resumeVerdict · setupAllDone · onlineDone)에 섞이면 준비 실패가 "설치 미완료"로 읽혀 재로그인을 되풀이하게 된다.
+  // 이 호출은 기다린다 — 그래서 **뒤따르는 일(온라인 묶음의 응답 · 업데이트 끝의 IRIS 창 다시 열기)을 그만큼 늦출 수 있다:
+  // 진입부터 통상 20초 안에 돌아온다(시스템이 멈춘 시간은 제외)** (DOCTOR_PREPARE_TIMEOUT_MS = 그 함수에 들어온 때부터 돌려줄
+  // 때까지의 전체 마감 · 파일 확인 · 끝내기와 그 확인까지 그 안 · 끝내기는 비동기라 그동안에도 서버는 요청을 받는다. 마감은
+  // 타이머로 재므로 PC 가 절전에 들었거나 프로세스가 멈춰 있던 시간은 빠진다). 보통은 node 하나가 떴다 끝나는 시간이다.
+  // 무슨 일이 있어도 던지지 않는다.
+  async function prepareDoctor(root, where) {
+    try {
+      const r = await (doctorPrepareFn ?? prepareDoctorAccounts)({ root, noUserEnv: userEnvSkipped });
+      log(`doctor prepare (${where}): ${doctorPrepareLine(r)}`);
+    } catch (err) {
+      log(`doctor prepare (${where}) failed: ${String(err?.name ?? 'Error')}`);
+    }
+  }
+  // 「IRIS Doctor」 바로가기가 **지금** 있는가 — 바탕화면과 시작 메뉴를 **각각** 답한다.
+  // 참 = 실행기 단계가 그 자리를 "만들었다 / 이 설치의 것이 이미 있어 그대로 뒀다"고 적었고(ok) **그 기록의 파일이 지금도 있다**.
+  // 기록만 믿지 않는다: 설치 뒤에 사람이 지웠거나 옮겼으면 "바탕화면의 「IRIS Doctor」를 여세요"는 거짓말이 된다.
+  // 못 만들었거나(실패 · 남의 바로가기를 그대로 둠) 연습 실행이면 거짓. 완료 화면 · 업데이트 완료 글이 이 답대로만 말한다.
+  function doctorShortcutsNow(root) {
+    const out = { desktop: false, startMenu: false };
+    try {
+      const rec = readReceiptFn(root)?.setup?.relay?.recorded?.doctorShortcut;
+      for (const where of ['desktop', 'startMenu']) {
+        const one = rec?.[where];
+        if (one?.ok !== true || typeof one.path !== 'string' || !one.path) continue;
+        try { out[where] = fs.lstatSync(one.path).isFile(); } catch { out[where] = false; }
+      }
+    } catch { /* 읽지 못하면 둘 다 "없다" */ }
+    return out;
+  }
+  const doctorShortcutMade = (root) => doctorShortcutsNow(root).desktop;
+
   routes.set('POST /api/online/relay', withBody(async (body, req, res) => {
     if (!requireLocated(res)) return;
     const root = state.soul.root;
@@ -1300,6 +1340,8 @@ export function startServer({
         log(`handoff refresh failed: ${String(err?.message ?? err)}`);
       }
       log('online relay ok -> done');
+      // 온라인 묶음의 끝: 영수증 · 인수 문서를 다 쓴 **뒤에** Doctor 계정을 손 없이 준비한다(결과는 위 기록에 섞이지 않는다).
+      await prepareDoctor(root, 'online');
     }
     save();
     sendJson(res, 200, {
@@ -1457,7 +1499,10 @@ export function startServer({
     const pendingCapabilities = handoff?.pendingCapabilities ?? state.setup?.pending ?? [];
     state.report = { markdownPath, handoffPath: handoff ? path.join(setupDir, 'handoff.json') : null, pendingCapabilities };
     save();
-    sendJson(res, 200, { ok: true, markdown, handoff, pendingCapabilities });
+    // 2.0.66: 완료 화면이 "IRIS 가 열리지 않을 때는 바탕화면의 「IRIS Doctor」"를 안내해도 되는가(바로가기가 실제로 있을 때만 참).
+    // 인수 문서(handoff.json)에는 싣지 않는다 — 화면 안내용 칸이다. 바탕화면과 시작 메뉴를 각각 답한다(지금 있는 것만 참).
+    const doctorLnk = doctorShortcutsNow(root);
+    sendJson(res, 200, { ok: true, markdown, handoff, pendingCapabilities, doctor: { desktopShortcut: doctorLnk.desktop, startMenuShortcut: doctorLnk.startMenu } });
   });
 
   routes.set('POST /api/open-face', withBody(async (body, req, res) => {
@@ -1747,6 +1792,10 @@ export function startServer({
         log(`auto receipt version refresh failed: ${String(err?.message ?? err)}`);
       }
 
+      // 2.0.66: 업데이트의 끝에서도 Doctor 계정을 손 없이 준비한다(이미 설치된 PC 가 이 판으로 올라올 때 1년 열쇠가 있으면 사본).
+      // 영수증을 다 쓴 뒤 · IRIS 창을 다시 열기 전. 결과는 기록 한 줄뿐 — 업데이트의 성공 · 실패에 섞지 않는다.
+      await prepareDoctor(root, 'update');
+
       forward({ part: 'login', pct: 96, status: 'skipped', skipped: true });
 
       const relaunch = relaunchFace();
@@ -1768,7 +1817,8 @@ export function startServer({
       };
       state.step = 'done';
       save();
-      pushEvent({ part: null, pct: 100, skipped: false, status: 'done', error: null, done: true });
+      // 마지막 방송에 한 칸(참일 때만): 「IRIS Doctor」 바탕화면 바로가기가 있으면 화면이 그 안내 한 줄을 덧붙인다.
+      pushEvent({ part: null, pct: 100, skipped: false, status: 'done', error: null, done: true, ...(doctorShortcutMade(root) ? { doctorShortcut: true } : {}) });
     } catch (err) {
       failAuto('setup', err?.code ?? 'install_failed', String(err?.message ?? err));
     } finally {
@@ -1786,31 +1836,43 @@ export function startServer({
     const lock = readLock(state.zipRoot);
     if (!manifest || !lock) return { status: 500, body: { ok: false, reason: 'payload_unreadable' } };
 
-    // 업데이트는 설치 폴더의 IRIS 프로그램(창·데몬·중계기·대시보드·메신저 모듈)이 부품을 쥐고 있으면 풀기에서 멈춘다
-    // (2026-09-19 데스크탑 실측: E-UNPACK "IRIS 프로그램 8개가 아직 실행 중", 2.0.26). 창 「업데이트」 길은 적용기가
-    // 데몬만 끄고 나머지는 두며, 손 실행 길은 아무것도 끄지 않았다. 여기서 **우리 프로그램만 PID 로** 닫고 시작한다
-    // (⑥ 의 「IRIS 프로그램 닫고 다시 시도」와 같은 holdersFn — 이름·포트 일괄 종료 없음). 끝나면 relaunch 가 창을 다시 연다.
-    try {
-      const hs = await holdersFn.list(info.root ?? soulRoot);
-      if (Array.isArray(hs) && hs.length) {
-        const r = await holdersFn.stop(info.root ?? soulRoot, hs);
-        log(`auto: closed ${hs.length} IRIS program(s) before unpack (${hs.map((h) => `${h.name}:${h.pid}`).join(',')}) -> ${JSON.stringify(r?.stopped ?? r ?? null).slice(0, 200)}`);
-      }
-    } catch (err) {
-      log(`auto: closing IRIS programs failed (continuing, unpack will report holders): ${String(err?.message ?? err)}`);
-    }
-
+    // 2.0.66 — 자리 선점: **첫 기다림(await) 앞에서** "진행 중"을 세운다. 전에는 아래의 프로그램 조회를 기다린 뒤에야
+    // 세웠기 때문에, 그 사이에 들어온 둘째 진입(화면의 POST 가 둘 · POST + 800ms 자가 시작)이 같은 확인을 통과해
+    // runAuto 가 둘 돌 수 있었다(풀기 · 영수증 · 중계기 시작 · 창 다시 열기가 겹친다). 위의 확인들은 전부 기다림 없는
+    // 동기 코드라, 여기까지 온 진입은 한 번에 하나뿐이다.
+    // 푸는 자리: runAuto 에 넘기기 전에 여기서 나가는 모든 길(아래 save() 가 던지는 것 포함 — 전에는 그 길에서
+    // "진행 중"이 영영 남았다)은 finally 가 풀고, 넘긴 뒤에는 runAuto 의 finally 가 푼다.
     autoRunning = true;
-    soulConfirmed = true; // a v2 receipt is proof the folder is ours
-    installEvents.length = 0;
-    state.step = 'auto';
-    state.install = { parts: {} };
-    state.installError = null;
-    state.autoResult = null;
-    state.userEnvSkipped = userEnvSkipped;
-    save();
-    runAuto(info, manifest, lock);
-    return { status: 202, body: { ok: true, from: info.from, to: info.to } };
+    let handedOver = false;
+    try {
+      // 업데이트는 설치 폴더의 IRIS 프로그램(창·데몬·중계기·대시보드·메신저 모듈)이 부품을 쥐고 있으면 풀기에서 멈춘다
+      // (2026-09-19 데스크탑 실측: E-UNPACK "IRIS 프로그램 8개가 아직 실행 중", 2.0.26). 창 「업데이트」 길은 적용기가
+      // 데몬만 끄고 나머지는 두며, 손 실행 길은 아무것도 끄지 않았다. 여기서 **우리 프로그램만 PID 로** 닫고 시작한다
+      // (⑥ 의 「IRIS 프로그램 닫고 다시 시도」와 같은 holdersFn — 이름·포트 일괄 종료 없음). 끝나면 relaunch 가 창을 다시 연다.
+      try {
+        const hs = await holdersFn.list(info.root ?? soulRoot);
+        if (Array.isArray(hs) && hs.length) {
+          const r = await holdersFn.stop(info.root ?? soulRoot, hs);
+          log(`auto: closed ${hs.length} IRIS program(s) before unpack (${hs.map((h) => `${h.name}:${h.pid}`).join(',')}) -> ${JSON.stringify(r?.stopped ?? r ?? null).slice(0, 200)}`);
+        }
+      } catch (err) {
+        log(`auto: closing IRIS programs failed (continuing, unpack will report holders): ${String(err?.message ?? err)}`);
+      }
+
+      soulConfirmed = true; // a v2 receipt is proof the folder is ours
+      installEvents.length = 0;
+      state.step = 'auto';
+      state.install = { parts: {} };
+      state.installError = null;
+      state.autoResult = null;
+      state.userEnvSkipped = userEnvSkipped;
+      save();
+      handedOver = true;
+      runAuto(info, manifest, lock);
+      return { status: 202, body: { ok: true, from: info.from, to: info.to } };
+    } finally {
+      if (!handedOver) autoRunning = false;
+    }
   }
 
   routes.set('POST /api/auto', withBody(async (body, req, res) => {

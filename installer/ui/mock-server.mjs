@@ -12,6 +12,8 @@
 //   --longkey ok|fail|wait|none   「1년 열쇠 받기(권장)」 카드에서 「받기」를 누른 뒤의 모습(2.0.66)
 //             ok = 승인 대기 → 받음(기본) · fail = 시간 초과 · wait = 승인 대기에서 멈춤 · none = 카드 없음
 //             카드는 Claude 로그인이 끝난 뒤에만 보인다(ChatGPT 만 고르면 없다). 가짜라 아무것도 받지 않고 쓰지 않는다.
+//   --no-doctor-shortcut   「IRIS Doctor」 바로가기를 만들지 못한 설치의 완료 화면
+//   --no-doctor-startmenu  「IRIS Doctor」 바로가기가 바탕화면에만 있는 설치의 완료 화면
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -317,6 +319,10 @@ const server = createServer(async (req, res) => {
               : { state: 'not-received', expiresAt: null, howTo: '설정 → 계정 · 보안 → 1년 열쇠 받기' },
         },
         pendingCapabilities: ['edge', 'office'],
+        // 2.0.66: 「IRIS Doctor」 바탕화면 바로가기가 만들어졌는가 — 참이면 완료 화면에 "IRIS가 열리지 않을 때는…" 한 줄이 보인다.
+        // --no-doctor-shortcut 으로 못 만든 경우(그 줄이 없고 "바로가기 하나뿐"으로 나오는 화면)를 본다.
+        // --no-doctor-startmenu 는 시작 메뉴 것만 없는 경우("시작 메뉴에도 있습니다"가 빠진 화면).
+        doctor: { desktopShortcut: !flag('no-doctor-shortcut'), startMenuShortcut: !flag('no-doctor-shortcut') && !flag('no-doctor-startmenu') },
       });
     }
 

@@ -258,6 +258,138 @@ test('relay: 연습이 아니면 바탕화면 바로가기를 만든다(주입�
   assert.equal(recorded.desktopShortcut.status, 'created');
 });
 
+// ---------------------------------------------------------------------------
+// 2.0.66 — 「IRIS Doctor」 바로가기(바탕화면 + 시작 메뉴). Doctor 는 띄우지 않는다.
+// ---------------------------------------------------------------------------
+
+const DOCTOR_LOCK = { ...LOCK, parts: { ...LOCK.parts, 'iris-doctor': { kind: 'dir', file: 'tools/iris-doctor.zip', dest: '_agent/shared/tools/iris-doctor' } } };
+function putDoctor(root) {
+  const start = path.join(root, '_agent', 'shared', 'tools', 'iris-doctor', 'IRIS Doctor.cmd');
+  fs.mkdirSync(path.dirname(start), { recursive: true });
+  fs.writeFileSync(start, '@echo off\r\n');
+  return start;
+}
+// 진짜 PowerShell 대신: 「IRIS」 바로가기 호출에는 그냥 ok, Doctor 호출에는 만든 두 경로를 답한다.
+function doctorPs(calls, { desk, programs, name = 'IRIS', fail = [], words = {} }) {
+  return async (script) => {
+    calls.push(script);
+    if (!script.includes('Doctor.lnk')) return { code: 0, out: 'ok', err: '' };
+    const line = (where, dir) => (fail.includes(where) ? `FAIL|${where}|access denied` : `${words[where] ?? 'OK'}|${where}|${path.join(dir, `${name} Doctor.lnk`)}`);
+    return { code: 0, out: `${line('desktop', desk)}\r\n${line('startmenu', programs)}\r\n`, err: '' };
+  };
+}
+
+test('relay (2.0.66): Doctor 부품이 놓여 있으면 바탕화면과 시작 메뉴에 「IRIS Doctor」 바로가기를 만들고, 만든 두 경로만 기록한다', async () => {
+  const root = makeSoul('doctor-lnk');
+  const start = putDoctor(root);
+  const desk = path.join(tmp, 'doctor-lnk', 'Desktop'); const programs = path.join(tmp, 'doctor-lnk', 'Programs');
+  const calls = [];
+  const ctx = makeCtx(root, { lock: DOCTOR_LOCK, env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: desk, startMenuDir: programs, runPs: doctorPs(calls, { desk, programs }) });
+  const { recorded, pending } = await relay.run(ctx);
+
+  const doctorCalls = calls.filter((s) => s.includes('Doctor.lnk'));
+  assert.equal(doctorCalls.length, 1, 'PowerShell 한 번으로 둘 다');
+  assert.ok(doctorCalls[0].includes(`/d /c ""${start}""`), '인자 = /d /c ""<시작 파일>""');
+  assert.match(doctorCalls[0], /\$sc\.TargetPath = \$cmd/);
+  assert.ok(doctorCalls[0].includes(`'${desk}'`) && doctorCalls[0].includes(`'${programs}'`), '주입한 두 폴더에만');
+  assert.deepEqual(recorded.doctorShortcut, {
+    status: 'created',
+    desktop: { ok: true, path: path.join(desk, 'IRIS Doctor.lnk') },
+    startMenu: { ok: true, path: path.join(programs, 'IRIS Doctor.lnk') },
+  });
+  assert.ok(!pending.some((p) => /Doctor/.test(p.capability)));
+  // 설치 폴더 안에는 Doctor 용 실행기를 따로 만들지 않는다(시작 파일은 부품 안에 있다)
+  assert.deepEqual(fs.readdirSync(root).filter((n) => /doctor/i.test(n)), []);
+  // 「IRIS」 바로가기도 지금까지처럼
+  assert.equal(recorded.desktopShortcut.status, 'created');
+});
+
+test('relay (2.0.66): 연습 실행(IRIS_INSTALLER_NO_USER_ENV=1)에서는 Doctor 바로가기를 만들지 않는다 — PowerShell 도 부르지 않고, 두 번 돌려도 변경 0', async () => {
+  const root = makeSoul('doctor-practice');
+  putDoctor(root);
+  const ctx = makeCtx(root, { lock: DOCTOR_LOCK, desktopDir: path.join(tmp, 'never-d'), startMenuDir: path.join(tmp, 'never-p') });
+  const first = await relay.run(ctx);
+  assert.deepEqual(first.recorded.doctorShortcut, { status: 'skipped', reason: 'IRIS_INSTALLER_NO_USER_ENV=1' });
+  assert.equal(ctx.psCalls.length, 0);
+  assert.ok(!fs.existsSync(path.join(tmp, 'never-d')) && !fs.existsSync(path.join(tmp, 'never-p')));
+  const before = snapshot(root);
+  const again = makeCtx(root, { lock: DOCTOR_LOCK });
+  await relay.run(again);
+  assert.deepEqual(snapshot(root), before);
+  assert.equal(again.psCalls.length, 0);
+});
+
+test('relay (2.0.66): Doctor 부품이 없으면 바로가기를 만들지 않는다 — 이번 판 잠금표에 있는 부품일 때만 「대기 기능」에 한 줄', async () => {
+  const desk = path.join(tmp, 'doctor-absent', 'Desktop');
+  // 잠금표에 있는데 없다 → 대기 기능 한 줄
+  let root = makeSoul('doctor-absent-1');
+  let ctx = makeCtx(root, { lock: DOCTOR_LOCK, env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: desk });
+  let r = await relay.run(ctx);
+  assert.equal(r.recorded.doctorShortcut.status, 'absent');
+  assert.equal(r.pending.filter((p) => /IRIS Doctor/.test(p.capability)).length, 1);
+  assert.ok(!ctx.psCalls.some((s) => s.includes('Doctor.lnk')));
+  // 잠금표에도 없다(옛 꾸러미) → 조용히 넘어간다
+  root = makeSoul('doctor-absent-2');
+  ctx = makeCtx(root, { env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: desk });
+  r = await relay.run(ctx);
+  assert.equal(r.recorded.doctorShortcut.status, 'absent');
+  assert.ok(!r.pending.some((p) => /Doctor/.test(p.capability)));
+});
+
+test('relay (2.0.66): Doctor 바로가기를 못 만들어도 설치는 계속된다 — 「대기 기능」에 한 줄, 실패한 까닭은 감사 대상이 아닌 칸에', async () => {
+  const root = makeSoul('doctor-fail');
+  putDoctor(root);
+  const desk = path.join(tmp, 'doctor-fail', 'Desktop'); const programs = path.join(tmp, 'doctor-fail', 'Programs');
+  // 한 곳만 실패
+  let calls = [];
+  let ctx = makeCtx(root, { lock: DOCTOR_LOCK, env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: desk, startMenuDir: programs, runPs: doctorPs(calls, { desk, programs, fail: ['startmenu'] }) });
+  let r = await relay.run(ctx);
+  assert.equal(r.recorded.doctorShortcut.status, 'partial');
+  assert.deepEqual(r.recorded.doctorShortcut.desktop, { ok: true, path: path.join(desk, 'IRIS Doctor.lnk') });
+  assert.deepEqual(r.recorded.doctorShortcut.startMenu, { ok: false, path: null, cause: 'access denied' });
+  assert.equal(r.pending.filter((p) => /IRIS Doctor/.test(p.capability)).length, 1);
+  assert.ok(fs.existsSync(path.join(root, '소환하기.cmd')), '뒤의 일은 그대로 한다');
+  // PowerShell 이 터져도
+  ctx = makeCtx(root, { lock: DOCTOR_LOCK, env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: desk, startMenuDir: programs, runPs: async (script) => { if (script.includes('Doctor.lnk')) throw new Error('spawn failed'); return { code: 0, out: 'ok', err: '' }; } });
+  r = await relay.run(ctx);
+  assert.equal(r.recorded.doctorShortcut.status, 'failed');
+  assert.equal(r.recorded.doctorShortcut.desktop.path, null);
+  assert.equal(r.pending.filter((p) => /IRIS Doctor/.test(p.capability)).length, 1);
+});
+
+// 2026-11-28 코드 검토(막아야 함): 같은 이름의 바로가기가 이미 있으면 덮지 않는다.
+test('relay (2.0.66): 같은 이름의 다른 바로가기가 이미 있으면 그대로 두고 「대기 기능」에 알린다 — 그 경로를 우리 것으로 기록하지 않는다', async () => {
+  const root = makeSoul('doctor-foreign');
+  putDoctor(root);
+  const desk = path.join(tmp, 'doctor-foreign', 'Desktop'); const programs = path.join(tmp, 'doctor-foreign', 'Programs');
+  const ctx = makeCtx(root, { lock: DOCTOR_LOCK, env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: desk, startMenuDir: programs, runPs: doctorPs([], { desk, programs, words: { desktop: 'FOREIGN' } }) });
+  const { recorded, pending } = await relay.run(ctx);
+  assert.equal(recorded.doctorShortcut.status, 'partial');
+  assert.equal(recorded.doctorShortcut.desktop.ok, false);
+  assert.equal(recorded.doctorShortcut.desktop.foreign, true);
+  assert.equal(recorded.doctorShortcut.desktop.path, null, '남의 바로가기의 경로를 우리 기록에 싣지 않는다');
+  assert.ok(!/[\\/]/.test(recorded.doctorShortcut.desktop.cause), '까닭 글에 경로가 없다');
+  assert.deepEqual(recorded.doctorShortcut.startMenu, { ok: true, path: path.join(programs, 'IRIS Doctor.lnk') });
+  const line = pending.filter((p) => /IRIS Doctor/.test(p.capability));
+  assert.equal(line.length, 1);
+  assert.match(line[0].reason, /같은 이름의 다른 바로가기가 이미 있어 그대로 두었습니다/);
+  assert.ok(fs.existsSync(path.join(root, '소환하기.cmd')), '설치는 계속된다');
+});
+
+test('relay (2.0.66): 이미 이 설치의 바로가기가 있으면 "그대로 둠"으로 기록하고 알릴 것이 없다(되풀이 실행)', async () => {
+  const root = makeSoul('doctor-kept');
+  putDoctor(root);
+  const desk = path.join(tmp, 'doctor-kept', 'Desktop'); const programs = path.join(tmp, 'doctor-kept', 'Programs');
+  const ctx = makeCtx(root, { lock: DOCTOR_LOCK, env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: desk, startMenuDir: programs, runPs: doctorPs([], { desk, programs, words: { desktop: 'KEPT', startmenu: 'KEPT' } }) });
+  const { recorded, pending } = await relay.run(ctx);
+  assert.deepEqual(recorded.doctorShortcut, {
+    status: 'kept',
+    desktop: { ok: true, path: path.join(desk, 'IRIS Doctor.lnk'), kept: true },
+    startMenu: { ok: true, path: path.join(programs, 'IRIS Doctor.lnk'), kept: true },
+  });
+  assert.ok(!pending.some((p) => /Doctor/.test(p.capability)));
+});
+
 test('relay: 루트가 없으면 E-RELAY StageError', async () => {
   await assert.rejects(() => relay.run({ fs }), (err) => {
     assert.ok(isStageError(err));

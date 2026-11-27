@@ -187,7 +187,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
   <section class="card" id="card-locate" hidden>
     <div class="card-head"><span class="mark">②</span><h2>설치 위치</h2><span class="badge" id="badge-locate">대기</span></div>
     <div class="card-body">
-      <p class="hint">모든 것은 <code>C:\IRIS</code> 폴더 하나에 들어갑니다. 바탕화면에는 「IRIS」 바로가기 하나만 만듭니다. 정할 것은 없고, 그 자리를 쓸 수 있는지만 확인합니다.</p>
+      <p class="hint">모든 것은 <code>C:\IRIS</code> 폴더 하나에 들어갑니다. 바탕화면에는 「IRIS」 바로가기와, IRIS가 열리지 않을 때 쓰는 「IRIS Doctor」 바로가기만 만듭니다. 정할 것은 없고, 그 자리를 쓸 수 있는지만 확인합니다.</p>
       <div id="locate-note"></div>
       <div class="acts">
         <button class="ghost" id="btn-locate" hidden>다시 확인</button>
@@ -1665,6 +1665,9 @@ const PENDING_WHY = {
   claude: 'Claude 구독을 고르지 않아 <b>Claude Code</b>는 깔지 않았습니다. 나중에 구독을 더하면 로그인만 하면 됩니다.',
 };
 
+// 「IRIS Doctor」 안내 한 줄(2.0.66) — 바탕화면 바로가기가 실제로 만들어졌을 때만 보인다(완료 보고 · 업데이트 완료 둘 다 같은 글).
+const DOCTOR_HINT = 'IRIS가 열리지 않을 때는 바탕화면의 「IRIS Doctor」를 여세요. 복구용 계정은 거기서 연결합니다.';
+
 async function loadReport() {
   drawBar(100);
   let rep = {};
@@ -1676,10 +1679,17 @@ async function loadReport() {
   const missing = handoff.nameEnMissing || (decisions && decisions.nameEnMissing) || [];
 
   const li = (arr) => '<ul>' + arr.map((x) => '<li>' + (typeof x === 'string' ? esc(x) : esc(JSON.stringify(x))) + '</li>').join('') + '</ul>';
+  // 「IRIS Doctor」 바로가기: 바탕화면과 시작 메뉴를 **각각** 사실대로 말한다(서버가 "기록에 있고 지금도 그 파일이 있다"일 때만 참).
+  // "시작 메뉴에도 …"는 둘 다 있을 때만 · 시작 메뉴에만 있으면 그렇게만 · 안내 한 줄(DOCTOR_HINT)은 바탕화면에 있을 때만.
+  const doctorLnk = !!(rep.doctor && rep.doctor.desktopShortcut === true);
+  const doctorMenu = !!(rep.doctor && rep.doctor.startMenuShortcut === true);
+  const madeOnDesktop = doctorLnk
+    ? '바탕화면에 만든 것은 「IRIS」와 「IRIS Doctor」 바로가기 둘뿐입니다' + (doctorMenu ? '(「IRIS Doctor」는 시작 메뉴에도 있습니다).' : '.')
+    : '바탕화면에 만든 것은 「IRIS」 바로가기 하나뿐입니다' + (doctorMenu ? '(「IRIS Doctor」 바로가기는 시작 메뉴에 있습니다).' : '.');
 
   $('report').innerHTML =
     '<h3>1. 하려던 일</h3><p>이 컴퓨터에 IRIS 한 벌을 설치하고, 비서가 바로 일할 수 있게 폴더·도구·계정 연결까지 마치는 것이었습니다.</p>' +
-    '<h3>2. 기존 자료의 안전</h3><p>설치기는 무엇도 지우거나 덮어쓰지 않았습니다. 이미 있던 파일은 그대로 두고 빠진 것만 채웠습니다. 바탕화면에 만든 것은 「IRIS」 바로가기 하나뿐입니다.</p>' +
+    '<h3>2. 기존 자료의 안전</h3><p>설치기는 무엇도 지우거나 덮어쓰지 않았습니다. 이미 있던 파일은 그대로 두고 빠진 것만 채웠습니다. ' + madeOnDesktop + '</p>' +
     '<h3>3. 결과</h3>' +
     '<p>구독: ' + (subs.length ? esc(subs.join(' · ')) : '없음') + (handoff.leadAgent ? ' · 앞장서는 쪽: ' + esc(handoff.leadAgent === 'chatgpt' ? 'Codex' : 'Claude Code') : '') + '</p>' +
     // 2.0.66: 클로드 1년 열쇠 한 줄(받았으면 만료일, 아니면 어디서 받는지). 클로드를 고르지 않았으면 빈 줄 — renderLongKey 가 채운다.
@@ -1697,6 +1707,7 @@ async function loadReport() {
     (missing.length ? '<p class="sub">영어 이름을 비워 둔 폴더 ' + missing.length + '칸은 비서가 첫 대화에서 채우자고 제안할 것입니다.</p>' : '') +
     '<h3>5. 이제 하실 일</h3>' +
     '<p>아래 <b>「IRIS 열기」</b>를 누르세요. 창이 열리면 비서가 먼저 인사하고 무엇부터 할지 물어봅니다. 그다음부터는 바탕화면의 「IRIS」 아이콘을 두 번 누르면 됩니다. 이 브라우저 탭은 닫으셔도 됩니다.</p>' +
+    (doctorLnk ? '<p class="sub">' + DOCTOR_HINT + '</p>' : '') +
     (rep.markdown ? '<details><summary>설치 기록 전문 보기' + (rep.markdownPath ? ' (' + esc(rep.markdownPath) + ')' : '') + '</summary><pre>' + esc(rep.markdown) + '</pre></details>' : '');
 
   // 2.0.66: 1년 열쇠 — 완료 보고의 한 줄과 그 아래 카드(#longkey-done). 받지 않아도 이 화면은 "설치를 마쳤습니다" 그대로다.
@@ -1766,7 +1777,7 @@ function watchAuto() {
       autoSource.close(); autoSource = null;
       badge('auto', '완료', 'done');
       $('btn-auto-retry').hidden = true;
-      note('auto-note', bar20(100) + '<div class="note ok">업데이트가 끝났습니다. IRIS 창을 엽니다.<br>이 브라우저 탭은 이제 닫으셔도 됩니다.</div>');
+      note('auto-note', bar20(100) + '<div class="note ok">업데이트가 끝났습니다. IRIS 창을 엽니다.<br>이 브라우저 탭은 이제 닫으셔도 됩니다.' + (e.doctorShortcut === true ? '<br>' + DOCTOR_HINT : '') + '</div>');
     }
   };
   setTimeout(() => {

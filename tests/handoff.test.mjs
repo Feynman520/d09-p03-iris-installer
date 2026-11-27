@@ -6,6 +6,7 @@ import {
   faceLauncherContent, writeFaceLauncher,
   writeFirstSessionSpec, defaultSpecFor, launchFace, waitFaceReady,
   finish, faceDirFor, relaunchFace, nodeExeFor,
+  writeDoctorShortcut, doctorStartFile, doctorShortcutName, doctorShortcutArguments,
 } from '../installer/lib/handoff.mjs';
 import { newReceipt, writeReceipt, readReceipt } from '../installer/lib/receipt.mjs';
 import { startServer } from '../installer/server.mjs';
@@ -182,6 +183,230 @@ test('writeFaceLauncher: a failing shortcut is reported, not fatal (the .cmd sti
   assert.ok(fs.existsSync(res.cmdPath));
   assert.equal(res.shortcut.ok, false);
   assert.ok(String(res.shortcut.detail).includes('access denied'));
+});
+
+// ---------------------------------------------------------------------------
+// writeDoctorShortcut -- 2.0.66: the door to IRIS Doctor that works when IRIS itself does not
+// ---------------------------------------------------------------------------
+
+// A soul root that has the Doctor part placed (only the start file matters here).
+function rootWithDoctor(label, { icon = false } = {}) {
+  const root = freshRoot(label);
+  const start = doctorStartFile(root);
+  fs.mkdirSync(path.dirname(start), { recursive: true });
+  fs.writeFileSync(start, '@echo off\r\n');
+  if (icon) {
+    const ico = path.join(faceDirFor(root), 'app', 'iris.ico');
+    fs.mkdirSync(path.dirname(ico), { recursive: true });
+    fs.writeFileSync(ico, 'ico');
+  }
+  return root;
+}
+
+test('doctor shortcut: the name follows the soul name ("IRIS Doctor" on a real install) and the start file sits beside the bundled node', () => {
+  assert.equal(doctorShortcutName('IRIS'), 'IRIS Doctor.lnk');
+  assert.equal(doctorShortcutName('NOVA'), 'NOVA Doctor.lnk');
+  const root = path.join(tmp, 'x', 'IRIS');
+  assert.equal(doctorStartFile(root), path.join(root, '_agent', 'shared', 'tools', 'iris-doctor', 'IRIS Doctor.cmd'));
+  assert.equal(path.dirname(path.dirname(doctorStartFile(root))), path.dirname(path.dirname(nodeExeFor(root))), 'Doctor starts ..\\node\\node.exe');
+  // the argument shape the Doctor start file is tested with: /d (no cmd AutoRun) /c and the path in doubled quotes
+  assert.equal(doctorShortcutArguments('D:\\a b\\IRIS Doctor.cmd'), '/d /c ""D:\\a b\\IRIS Doctor.cmd""');
+});
+
+test('writeDoctorShortcut: desktop + Start menu shortcuts that open cmd.exe /d /c ""<start file>"" from outside the install folder', async () => {
+  const root = rootWithDoctor('doctor-lnk (한글 & 공백)', { icon: true });
+  const desktopDir = path.join(tmp, 'doctor-desktop');
+  const startMenuDir = path.join(tmp, 'doctor-programs');
+  const calls = [];
+  const runPs = async (script) => { calls.push(script); return { code: 0, out: `OK|desktop|${path.join(desktopDir, 'NOVA Doctor.lnk')}\r\nOK|startmenu|${path.join(startMenuDir, 'NOVA Doctor.lnk')}\r\n`, err: '' }; };
+
+  const res = await writeDoctorShortcut(root, 'NOVA', { desktopDir, startMenuDir, runPs });
+  assert.equal(res.present, true);
+  assert.equal(res.startFile, doctorStartFile(root));
+  assert.deepEqual(res.shortcuts, [
+    { where: 'desktop', ok: true, status: 'created', path: path.join(desktopDir, 'NOVA Doctor.lnk'), detail: null },
+    { where: 'startmenu', ok: true, status: 'created', path: path.join(startMenuDir, 'NOVA Doctor.lnk'), detail: null },
+  ]);
+  assert.equal(res.ok, true);
+
+  assert.equal(calls.length, 1, 'one PowerShell run makes both');
+  const ps = calls[0];
+  assert.ok(ps.includes('WScript.Shell') && ps.includes('CreateShortcut'));
+  // target = the real cmd.exe under %SystemRoot%\System32 (asked from Windows, not typed as a drive path)
+  assert.match(ps, /\$cmd = Join-Path \$env:SystemRoot 'System32\\cmd\.exe'/);
+  assert.match(ps, /\$sc\.TargetPath = \$cmd/);
+  assert.ok(!ps.includes(`$sc.TargetPath = '${res.startFile}'`), 'the shortcut must not point at the .cmd itself');
+  // arguments = exactly the shape the Doctor start file expects
+  assert.ok(ps.includes(`$wantArgs = '${doctorShortcutArguments(res.startFile)}'`), ps);
+  assert.match(ps, /\$sc\.Arguments = \$wantArgs/);
+  // an existing shortcut of that name is looked at first and never saved over (2026-11-28 code review)
+  assert.ok(ps.indexOf('if (Test-Path -LiteralPath $lnk)') > 0 && ps.indexOf('if (Test-Path -LiteralPath $lnk)') < ps.indexOf('$sc.Save()'));
+  assert.equal((ps.match(/\$sc\.Save\(\)/g) ?? []).length, 2, 'one Save per place, only in the "nothing there yet" branch');
+  // working folder = the user profile, never the install folder (an open Doctor must not pin the root as its current directory)
+  assert.match(ps, /\$sc\.WorkingDirectory = \[Environment\]::GetFolderPath\('UserProfile'\)/);
+  assert.ok(!ps.includes(`WorkingDirectory = '${root}`), 'the working folder must be outside the install folder');
+  assert.match(ps, /\$sc\.WindowStyle = 1\b/, 'a normal window: the user reads this terminal');
+  assert.match(ps, /\$sc\.Description = 'IRIS Doctor'/);
+  assert.ok(ps.includes(path.join(faceDirFor(root), 'app', 'iris.ico')), 'the IRIS icon when the window part ships one');
+  assert.ok(ps.includes(`'${desktopDir}'`) && ps.includes(`'${startMenuDir}'`), 'both injected folders are used');
+  assert.ok(ps.includes("'NOVA Doctor.lnk'"));
+  // each place is tried on its own: one failing must not stop the other
+  assert.equal((ps.match(/try \{/g) ?? []).length >= 2, true);
+});
+
+test('writeDoctorShortcut: without injected folders it asks Windows where the desktop and the Start menu Programs folder are', async () => {
+  const root = rootWithDoctor('doctor-lnk-ask');
+  const calls = [];
+  const runPs = async (script) => { calls.push(script); return { code: 0, out: 'OK|desktop|X:\\d\\IRIS Doctor.lnk\nOK|startmenu|X:\\p\\IRIS Doctor.lnk\n', err: '' }; };
+  const res = await writeDoctorShortcut(root, 'IRIS', { runPs });
+  assert.match(calls[0], /\[Environment\]::GetFolderPath\('Desktop'\)/);
+  assert.match(calls[0], /\[Environment\]::GetFolderPath\('Programs'\)/);
+  assert.ok(!/IconLocation/.test(calls[0]), 'no icon line when the window part has no icon file');
+  assert.deepEqual(res.shortcuts.map((s) => [s.where, s.ok, s.path]), [['desktop', true, 'X:\\d\\IRIS Doctor.lnk'], ['startmenu', true, 'X:\\p\\IRIS Doctor.lnk']]);
+});
+
+test('writeDoctorShortcut: no Doctor start file -> nothing is made (and PowerShell is not even started)', async () => {
+  const root = freshRoot('doctor-absent');
+  let ran = 0;
+  const res = await writeDoctorShortcut(root, 'IRIS', { desktopDir: path.join(tmp, 'd0'), startMenuDir: path.join(tmp, 'p0'), runPs: async () => { ran += 1; return { code: 0, out: '', err: '' }; } });
+  assert.equal(res.present, false); assert.equal(res.ok, false); assert.deepEqual(res.shortcuts, []);
+  assert.equal(ran, 0);
+});
+
+test('writeDoctorShortcut: a failure is reported per place and never thrown (one may succeed while the other fails)', async () => {
+  const root = rootWithDoctor('doctor-lnk-fail');
+  const d = path.join(tmp, 'd1'); const p = path.join(tmp, 'p1');
+  // one place fails
+  let res = await writeDoctorShortcut(root, 'IRIS', { desktopDir: d, startMenuDir: p, runPs: async () => ({ code: 0, out: `OK|desktop|${path.join(d, 'IRIS Doctor.lnk')}\nFAIL|startmenu|access denied\n`, err: '' }) });
+  assert.equal(res.ok, false);
+  assert.deepEqual(res.shortcuts.map((s) => [s.where, s.ok]), [['desktop', true], ['startmenu', false]]);
+  assert.match(res.shortcuts[1].detail, /access denied/);
+  // PowerShell itself fails / throws / says nothing
+  res = await writeDoctorShortcut(root, 'IRIS', { desktopDir: d, startMenuDir: p, runPs: async () => ({ code: 1, out: '', err: 'blocked by policy' }) });
+  assert.deepEqual(res.shortcuts.map((s) => s.ok), [false, false]); assert.match(res.shortcuts[0].detail, /blocked by policy/);
+  res = await writeDoctorShortcut(root, 'IRIS', { desktopDir: d, startMenuDir: p, runPs: async () => { throw new Error('spawn failed'); } });
+  assert.deepEqual(res.shortcuts.map((s) => s.ok), [false, false]); assert.match(res.shortcuts[0].detail, /spawn failed/);
+  res = await writeDoctorShortcut(root, 'IRIS', { desktopDir: d, startMenuDir: p, runPs: async () => ({ code: 0, out: '', err: '' }) });
+  assert.deepEqual(res.shortcuts.map((s) => s.ok), [false, false]);
+});
+
+test('writeDoctorShortcut: a real run makes two shortcuts whose target and arguments read back exactly (temp folders only)', async () => {
+  const root = rootWithDoctor('doctor real (공백 & 한글)');
+  const desktopDir = path.join(tmp, 'real-desktop'); const startMenuDir = path.join(tmp, 'real-programs');
+  fs.mkdirSync(desktopDir, { recursive: true }); fs.mkdirSync(startMenuDir, { recursive: true });
+  const res = await writeDoctorShortcut(root, 'NOVA', { desktopDir, startMenuDir });
+  assert.equal(res.ok, true, JSON.stringify(res.shortcuts));
+  const sys = process.env.SystemRoot || 'C:\\Windows';
+  for (const s of res.shortcuts) {
+    assert.ok(fs.existsSync(s.path), s.path);
+    assert.equal(path.basename(s.path), 'NOVA Doctor.lnk');
+    assert.ok([desktopDir, startMenuDir].includes(path.dirname(s.path)));
+    // read the shortcut back with the same COM object Windows uses
+    const { spawnSync } = await import('node:child_process');
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:IRIS_T_LNK); [Console]::OutputEncoding = [Text.Encoding]::UTF8; Write-Output ($s.TargetPath + "`n" + $s.Arguments + "`n" + $s.WorkingDirectory + "`n" + $s.WindowStyle)'], { encoding: 'utf8', env: { ...process.env, IRIS_T_LNK: s.path }, windowsHide: true, timeout: 30_000 });
+    const [target, args, cwd, style] = String(r.stdout).split(/\r?\n/);
+    assert.equal(target.toLowerCase(), path.join(sys, 'System32', 'cmd.exe').toLowerCase());
+    assert.equal(args, doctorShortcutArguments(doctorStartFile(root)));
+    assert.ok(cwd && !cwd.toLowerCase().startsWith(root.toLowerCase()), `working folder must be outside the root: ${cwd}`);
+    assert.equal(style, '1');
+  }
+});
+
+// 2026-11-28 code review (must fix): making the shortcut used to open whatever "IRIS Doctor.lnk"
+// was already there, rewrite its properties and save -- a user's own shortcut of that name, or one
+// that opens another install's Doctor, was silently repointed. The three tests below are permanent.
+// They use real PowerShell and real .lnk files, in temp folders only.
+const SYS_CMD = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
+async function psRun(command, env = {}) {
+  const { spawnSync } = await import('node:child_process');
+  return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', env: { ...process.env, ...env }, windowsHide: true, timeout: 30_000 });
+}
+// a .lnk made the way a person (or another installer) would: target + arguments of their choosing
+async function makeLnk(lnk, target, args = '') {
+  fs.mkdirSync(path.dirname(lnk), { recursive: true });
+  const r = await psRun('$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:IRIS_T_LNK); $s.TargetPath = $env:IRIS_T_TARGET; $s.Arguments = $env:IRIS_T_ARGS; $s.Save()', { IRIS_T_LNK: lnk, IRIS_T_TARGET: target, IRIS_T_ARGS: args });
+  assert.equal(r.status, 0, r.stderr);
+  // an old file: a rewrite would show in its time stamp
+  const old = new Date(Date.now() - 3 * 86400_000);
+  fs.utimesSync(lnk, old, old);
+  return { bytes: fs.readFileSync(lnk), mtimeMs: fs.statSync(lnk).mtimeMs };
+}
+async function readLnk(lnk) {
+  const r = await psRun('$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:IRIS_T_LNK); [Console]::OutputEncoding = [Text.Encoding]::UTF8; Write-Output ($s.TargetPath + "`n" + $s.Arguments)', { IRIS_T_LNK: lnk });
+  const [target, args] = String(r.stdout).split(/\r?\n/);
+  return { target, args };
+}
+const sameFile = (lnk, was) => fs.readFileSync(lnk).equals(was.bytes) && fs.statSync(lnk).mtimeMs === was.mtimeMs;
+
+test('writeDoctorShortcut: a user\'s own shortcut of the same name is left exactly as it is (bytes and time) and reported, not overwritten', async () => {
+  const root = rootWithDoctor('doctor keep-user (공백)');
+  const desktopDir = path.join(tmp, 'own-desktop'); const startMenuDir = path.join(tmp, 'own-programs');
+  const other = path.join(tmp, 'own-target', 'my tool.cmd');
+  fs.mkdirSync(path.dirname(other), { recursive: true }); fs.writeFileSync(other, '@echo off\r\n');
+  // the desktop one opens the user's own tool through cmd.exe; the Start menu one opens a file directly
+  const d = await makeLnk(path.join(desktopDir, 'NOVA Doctor.lnk'), SYS_CMD, `/d /c ""${other}""`);
+  const p = await makeLnk(path.join(startMenuDir, 'NOVA Doctor.lnk'), other);
+
+  const res = await writeDoctorShortcut(root, 'NOVA', { desktopDir, startMenuDir });
+  assert.equal(res.ok, false);
+  assert.deepEqual(res.shortcuts.map((s) => [s.where, s.ok, s.status, s.path]), [['desktop', false, 'foreign', null], ['startmenu', false, 'foreign', null]]);
+  assert.ok(sameFile(path.join(desktopDir, 'NOVA Doctor.lnk'), d), 'the desktop shortcut was not touched');
+  assert.ok(sameFile(path.join(startMenuDir, 'NOVA Doctor.lnk'), p), 'the Start menu shortcut was not touched');
+  assert.equal((await readLnk(path.join(desktopDir, 'NOVA Doctor.lnk'))).args, `/d /c ""${other}""`, 'it still opens the user\'s tool');
+  for (const s of res.shortcuts) assert.ok(!/[\\/]/.test(s.detail), 'the reason carries no path');
+  assert.deepEqual(fs.readdirSync(desktopDir), ['NOVA Doctor.lnk']);
+});
+
+test('writeDoctorShortcut: a shortcut that opens ANOTHER install\'s Doctor is left as it is; the place that had none still gets ours', async () => {
+  const root = rootWithDoctor('doctor mine');
+  const otherRoot = rootWithDoctor('doctor mine-old');          // a sibling install whose path starts with ours
+  const desktopDir = path.join(tmp, 'two-desktop'); const startMenuDir = path.join(tmp, 'two-programs');
+  const theirs = await makeLnk(path.join(desktopDir, 'NOVA Doctor.lnk'), SYS_CMD, doctorShortcutArguments(doctorStartFile(otherRoot)));
+
+  const res = await writeDoctorShortcut(root, 'NOVA', { desktopDir, startMenuDir });
+  assert.equal(res.ok, false);
+  assert.deepEqual(res.shortcuts.map((s) => [s.where, s.status]), [['desktop', 'foreign'], ['startmenu', 'created']]);
+  assert.ok(sameFile(path.join(desktopDir, 'NOVA Doctor.lnk'), theirs), 'the other install\'s shortcut was not touched');
+  assert.equal((await readLnk(path.join(desktopDir, 'NOVA Doctor.lnk'))).args, doctorShortcutArguments(doctorStartFile(otherRoot)));
+  assert.equal((await readLnk(path.join(startMenuDir, 'NOVA Doctor.lnk'))).args, doctorShortcutArguments(doctorStartFile(root)), 'ours was made where there was none');
+  // look-alikes are foreign too: the right file inside a longer command, /k, a target that is not cmd.exe
+  const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  for (const [target, args] of [[SYS_CMD, `/d /c ""${doctorStartFile(root)}"" & echo x`], [SYS_CMD, `/k ""${doctorStartFile(root)}""`], [ps, doctorShortcutArguments(doctorStartFile(root))], [SYS_CMD, '']]) {
+    const dir = fs.mkdtempSync(path.join(tmp, 'look-'));
+    const was = await makeLnk(path.join(dir, 'NOVA Doctor.lnk'), target, args);
+    const r = await writeDoctorShortcut(root, 'NOVA', { desktopDir: dir, startMenuDir: path.join(dir, 'programs') });
+    assert.equal(r.shortcuts[0].status, 'foreign', `${path.basename(target)} ${args}`);
+    assert.ok(sameFile(path.join(dir, 'NOVA Doctor.lnk'), was), `${path.basename(target)} ${args}`);
+  }
+});
+
+test('writeDoctorShortcut: when our shortcut is already there nothing is written -- a repeated run leaves bytes and time stamps unchanged', async () => {
+  const root = rootWithDoctor('doctor again (한글 & 공백)', { icon: true });
+  const desktopDir = path.join(tmp, 'again-desktop'); const startMenuDir = path.join(tmp, 'again-programs');
+  const first = await writeDoctorShortcut(root, 'NOVA', { desktopDir, startMenuDir });
+  assert.deepEqual(first.shortcuts.map((s) => s.status), ['created', 'created']);
+  const files = [path.join(desktopDir, 'NOVA Doctor.lnk'), path.join(startMenuDir, 'NOVA Doctor.lnk')];
+  // make them old so that even a byte-identical re-save would show
+  const old = new Date(Date.now() - 2 * 86400_000);
+  const was = files.map((f) => { fs.utimesSync(f, old, old); return { bytes: fs.readFileSync(f), mtimeMs: fs.statSync(f).mtimeMs }; });
+  for (let i = 0; i < 2; i++) {
+    const again = await writeDoctorShortcut(root, 'NOVA', { desktopDir, startMenuDir });
+    assert.equal(again.ok, true);
+    assert.deepEqual(again.shortcuts.map((s) => [s.where, s.status, s.path]), [['desktop', 'kept', files[0]], ['startmenu', 'kept', files[1]]]);
+    files.forEach((f, n) => assert.ok(sameFile(f, was[n]), `${f}: rewritten on run ${i + 2}`));
+  }
+  // ours in another letter case (the user renamed nothing, Windows just reports paths differently) is still ours
+  const upper = path.join(tmp, 'again-upper');
+  await makeLnk(path.join(upper, 'NOVA Doctor.lnk'), SYS_CMD.toUpperCase(), doctorShortcutArguments(doctorStartFile(root).toUpperCase()));
+  const r = await writeDoctorShortcut(root, 'NOVA', { desktopDir: upper, startMenuDir });
+  assert.equal(r.shortcuts[0].status, 'kept');
+});
+
+test('writeDoctorShortcut: KEPT and FOREIGN answers are told apart (fake PowerShell)', async () => {
+  const root = rootWithDoctor('doctor words');
+  const res = await writeDoctorShortcut(root, 'IRIS', { desktopDir: 'X:\\d', startMenuDir: 'X:\\p', runPs: async () => ({ code: 0, out: 'KEPT|desktop|X:\\d\\IRIS Doctor.lnk\nFOREIGN|startmenu|X:\\p\\IRIS Doctor.lnk\n', err: '' }) });
+  assert.deepEqual(res.shortcuts.map((s) => [s.where, s.ok, s.status, s.path]), [['desktop', true, 'kept', 'X:\\d\\IRIS Doctor.lnk'], ['startmenu', false, 'foreign', null]]);
+  assert.equal(res.ok, false);
 });
 
 // ---------------------------------------------------------------------------

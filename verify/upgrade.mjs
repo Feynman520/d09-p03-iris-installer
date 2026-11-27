@@ -20,6 +20,9 @@
 //                 ⓚ 업데이트 전 코덱스 대화(연결 이름 openai)가 업데이트 뒤 IRIS 창의 재개 호환으로 지금 연결 이름에 맞춰진다(2.0.54)
 //                 ⓛ 업데이트 전에 깔려 있던 선택 모듈(메신저 등)이 새 판 잠금표에 없어도 한 바이트도 달라지지 않는다 — 판·공식 표시·
 //                    로그인 state(2.0.64, 메신저를 설치 패키지에서 뺀 판부터. 옛 판이 메신저를 동봉한 2.0.63 이하에서 올 때 실제로 잰다)
+//                 ⓜ IRIS Doctor(새 판이 2.0.66 이상이면 잠금표에 그 부품이 **반드시** 있어야 한다 — 없으면 실패): 부품이 제자리에 있고 지문 목록과 한 바이트도 다르지 않다 ·
+//                    옛 판에 없던 부품이면 `.prev` 가 없다 · 동봉 node 로 통신 없이 뜬다(자체 확인 · 판 출력 — 모델 호출 0) ·
+//                    연습 실행이므로 바로가기는 "만들지 않았음"으로 기록돼 있다 · 설치기가 Doctor 의 집을 만들지 않았다
 //
 // 안전 규칙(verify/e2e.mjs 와 같다): 저장소 밖에 쓰는 곳은 C:\IRIS-upg 하나뿐이며 finally 에서 지운다.
 // 진짜 C:\IRIS·바탕화면·HKCU\Environment·사용자 프로필은 건드리지 않는다(IRIS_INSTALLER_NO_USER_ENV=1 +
@@ -44,6 +47,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { extractZip } from '../lib/zip.mjs';
 import { driveInstall, getJson } from './offline.mjs';
+import { doctorBundleProblems, doctorPartRequired, DOCTOR_PART_ID, DOCTOR_FIRST_PACKAGE_VERSION } from './doctor-bundle.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LAST_BUILD_JSON = path.join(ROOT_DIR, '_build', 'out', 'last-build.json');
@@ -523,6 +527,11 @@ async function main() {
       ['dash', path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'teamclaude-dash', 'server.mjs')],
       ['teamclaude', path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'teamclaude', 'node_modules', '@karpeleslab', 'teamclaude', 'src', 'index.js')],
       ['updater', path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'updater', 'apply.mjs')],
+      // IRIS Doctor(2.0.66): 실행 입구와 검진 일꾼(따로 뜨는 자식). 새 판 잠금표에 그 부품이 있을 때만(옛 판끼리의 쌍을 다시 잴 때는 없다).
+      ...(nextLock?.parts?.['iris-doctor'] ? [
+        ['iris-doctor', path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'iris-doctor', 'iris-doctor.mjs')],
+        ['iris-doctor worker', path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'iris-doctor', 'lib', 'worker.mjs')],
+      ] : []),
     ];
     for (const [name, file] of entries) {
       const r = fs.existsSync(file) ? nodeChecks(file) : { ok: false, detail: '파일 없음' };
@@ -555,6 +564,65 @@ async function main() {
       // 새 판 zip 의 dash 부품에 lib.mjs 가 들어 있으면 설치 뒤에도 있어야 한다(2.0.31 대시보드 묶음 검사).
       const hasLibInZip = fs.readFileSync(path.join(ZIP_NEXT, 'lock.json'), 'utf8').includes('"dash"');
       if (hasLibInZip && cmpVer(nextVersion, '2.0.31') >= 0) check('③ⓔ 대시보드 lib.mjs 가 놓였다', fs.existsSync(dashLib));
+    }
+
+    // ③ⓜ IRIS Doctor(2.0.66) ----------------------------------------------------
+    // 새 판이 이 부품이 처음 실린 판(doctor-bundle.mjs DOCTOR_FIRST_PACKAGE_VERSION) 이상이면 잠금표에 부품이 **반드시** 있어야 한다
+    // — 없으면 실패다(전에는 "잠금표에 없으면 통째로 건너뜀"이라, 나중 판에서 그 줄이 빠져도 이 항목이 조용히 사라졌다).
+    // 그보다 옛 판끼리의 쌍을 다시 잴 때만 건너뛴다. 판 = 새 판 잠금표의 package.version(없으면 zip 이름의 판).
+    const doctorPackageVersion = nextLock?.package?.version ?? nextVersion;
+    if (doctorPartRequired(doctorPackageVersion)) {
+      check(`③ⓜ 새 판(${doctorPackageVersion})의 잠금표에 ${DOCTOR_PART_ID} 부품이 있다(${DOCTOR_FIRST_PACKAGE_VERSION} 부터 반드시)`, !!nextLock?.parts?.[DOCTOR_PART_ID],
+        nextLock?.parts?.[DOCTOR_PART_ID] ? String(nextLock.parts[DOCTOR_PART_ID].dest) : '잠금표에 그 부품이 없다');
+    }
+    if (nextLock?.parts?.['iris-doctor']) {
+      const doctorDir = path.join(SOUL_ROOT, ...String(nextLock.parts['iris-doctor'].dest).split('/'));
+      const doctorEntry = path.join(doctorDir, 'iris-doctor.mjs');
+      const bundledNode = path.join(SOUL_ROOT, '_agent', 'shared', 'tools', 'node', 'node.exe');
+      // ① 제자리 + 지문: 풀기 단계가 놓은 폴더가 지문 목록과 한 바이트도 다르지 않다(목록 밖 파일 · 링크 · 시험 파일 0, 시작 파일 ASCII + CRLF).
+      //    Doctor 는 시작할 때마다 같은 대조를 하고, 다르면 그 실행에서 치료를 시작하지 않는다 — 업데이트가 그런 Doctor 를 남기면 안 된다.
+      const bundleProblems = doctorBundleProblems(doctorDir);
+      check('③ⓜ IRIS Doctor 부품이 제자리에 있고 지문 목록과 같다', bundleProblems.length === 0, bundleProblems.length ? bundleProblems.slice(0, 5).join(' / ') : path.relative(SOUL_ROOT, doctorDir));
+      for (const ps1 of ['lib\\start-check.ps1', 'lib\\treat\\job-keeper.ps1']) {
+        const f = path.join(doctorDir, ps1);
+        const r = fs.existsSync(f) ? psParses(f) : { ok: false, detail: '파일 없음' };
+        check(`③ⓔ iris-doctor ${ps1} 이 PowerShell 로 파싱된다`, r.ok, r.detail);
+      }
+      // ② 옛 판에 없던 부품이면 옮겨 둘 옛 사본이 없다 — `.prev` 가 생겼다면 처음 놓는 부품을 두 번 놓았거나 남의 폴더를 옮긴 것이다.
+      //    (옛 판에도 있었고 판이 바뀐 때에는 `.prev` 가 정상이므로 그때는 재지 않는다.)
+      if (!prevLock?.parts?.['iris-doctor']) {
+        const strayPrev = fs.readdirSync(path.dirname(doctorDir)).filter((n) => /^iris-doctor\.prev/i.test(n));
+        check('③ⓜ 처음 놓인 Doctor 부품 옆에 .prev 가 없다', strayPrev.length === 0, strayPrev.join(', '));
+      }
+      // ③ 통신 없이 뜬다 — 동봉 node 로 **두 명령만** 부른다:
+      //      selftest   시작 파일이 "이 node 로 Doctor 가 뜨는가"를 볼 때 부르는 것: node 판을 보고 프로그램 파일을 전부 불러와 본다(통신 0 · 쓰기 0)
+      //      --version  판을 찍고 끝난다(통신 0 · 쓰기 0)
+      //    다른 명령은 부르지 않는다. 까닭: probe · login · 치료 = 중계기를 거치지 않는 실제 호출(모델 · 로그인) /
+      //    diagnose · checkup = 통신 없이 돌려도 이 PC 의 3456 · 3458 을 두드려 본다(게이트는 살아 있는 중계기 · 창에 닿지 않는다) /
+      //    link summary · link auto = Doctor 의 집(_agent\doctor)을 만든다(게이트는 연습 루트에 그 집을 만들지 않는다 — 아래 ⑤).
+      //    환경은 윈도우 기본 변수만 넘긴다(이 개발 PC 의 IRIS_ROOT · 설정 폴더 · 열쇠가 섞이지 않게).
+      const sys = process.env.SystemRoot || 'C:\\Windows';
+      const doctorEnv = { SystemRoot: sys, windir: sys, ComSpec: path.join(sys, 'System32', 'cmd.exe'), PATHEXT: '.COM;.EXE;.BAT;.CMD', PATH: `${path.join(sys, 'System32')};${sys}`, TEMP: os.tmpdir(), TMP: os.tmpdir(), USERPROFILE: STATE_DIR, LOCALAPPDATA: STATE_DIR, APPDATA: STATE_DIR };
+      const runDoctor = (...a) => (fs.existsSync(doctorEntry) && fs.existsSync(bundledNode)
+        ? spawnSync(bundledNode, [doctorEntry, ...a], { encoding: 'utf8', env: doctorEnv, cwd: os.tmpdir(), windowsHide: true, timeout: 60000 }) : null);
+      const self = runDoctor('selftest');
+      check('③ⓜ IRIS Doctor 가 동봉 node 로 뜬다(자체 확인 — 통신 0)', !!self && self.status === 0 && /IRIS-DOCTOR-SELFTEST-OK/.test(String(self.stdout)),
+        self ? `exit ${self.status} ${String(self.stdout).trim().slice(0, 80)}` : '실행 입구나 동봉 node 가 없다');
+      const ver = runDoctor('--version');
+      let wantVersion = null;
+      try { wantVersion = readJson(path.join(doctorDir, 'manifest.json')).version; } catch { /* ①에서 이미 실패 */ }
+      check('③ⓜ IRIS Doctor 가 말하는 판 = 지문 목록의 판', !!ver && ver.status === 0 && String(ver.stdout).trim() === `iris-doctor ${wantVersion}`, ver ? String(ver.stdout).trim().slice(0, 60) : '(실행 못 함)');
+      // ④ 바로가기: 게이트는 연습 실행(IRIS_INSTALLER_NO_USER_ENV=1)이라 바탕화면 · 시작 메뉴에 만들지 않는다 — 그 사실이 영수증에 적혀 있어야 한다.
+      //    (실행기 단계가 이 부품 때문에 다시 돌았다는 뜻이기도 하다 — 실제 PC 에서는 이때 바로가기가 생긴다.)
+      const doctorShortcut = receiptAfter?.setup?.relay?.recorded?.doctorShortcut ?? null;
+      check('③ⓜ 연습 실행이라 「IRIS Doctor」 바로가기는 "만들지 않았음"으로 기록돼 있다', doctorShortcut?.status === 'skipped' && !doctorShortcut?.desktop && !doctorShortcut?.startMenu,
+        doctorShortcut ? JSON.stringify(doctorShortcut).slice(0, 160) : '실행기 단계의 기록에 doctorShortcut 이 없다(실행기 단계가 다시 돌지 않았다)');
+      // ⑤ 설치기는 Doctor 의 집에 쓰지 않는다 · 연습 실행에서는 손 없는 계정 준비(link auto)도 부르지 않는다.
+      check('③ⓜ 업데이트가 Doctor 의 집(_agent\\doctor)을 만들지 않았다', !fs.existsSync(path.join(SOUL_ROOT, '_agent', 'doctor')));
+      let serverLog = serverOut;
+      try { serverLog += fs.readFileSync(path.join(STATE_DIR, 'IRIS-Installer', 'server.log'), 'utf8'); } catch { /* 콘솔 출력만으로 본다 */ }
+      check('③ⓜ 연습 실행에서는 Doctor 계정 준비를 부르지 않았다고 기록했다', /doctor prepare \(update\): not called \((rehearsal|offline)\)/.test(serverLog),
+        (serverLog.match(/doctor prepare[^\r\n]*/) ?? ['기록 줄이 없다'])[0].slice(0, 120));
     }
 
     // ③ⓕ 인수 문서 ------------------------------------------------------------
