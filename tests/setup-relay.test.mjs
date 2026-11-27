@@ -270,11 +270,11 @@ function putDoctor(root) {
   return start;
 }
 // 진짜 PowerShell 대신: 「IRIS」 바로가기 호출에는 그냥 ok, Doctor 호출에는 만든 두 경로를 답한다.
-function doctorPs(calls, { desk, programs, name = 'IRIS', fail = [] }) {
+function doctorPs(calls, { desk, programs, name = 'IRIS', fail = [], words = {} }) {
   return async (script) => {
     calls.push(script);
     if (!script.includes('Doctor.lnk')) return { code: 0, out: 'ok', err: '' };
-    const line = (where, dir) => (fail.includes(where) ? `FAIL|${where}|access denied` : `OK|${where}|${path.join(dir, `${name} Doctor.lnk`)}`);
+    const line = (where, dir) => (fail.includes(where) ? `FAIL|${where}|access denied` : `${words[where] ?? 'OK'}|${where}|${path.join(dir, `${name} Doctor.lnk`)}`);
     return { code: 0, out: `${line('desktop', desk)}\r\n${line('startmenu', programs)}\r\n`, err: '' };
   };
 }
@@ -355,6 +355,39 @@ test('relay (2.0.66): Doctor 바로가기를 못 만들어도 설치는 계속�
   assert.equal(r.recorded.doctorShortcut.status, 'failed');
   assert.equal(r.recorded.doctorShortcut.desktop.path, null);
   assert.equal(r.pending.filter((p) => /IRIS Doctor/.test(p.capability)).length, 1);
+});
+
+// 2026-11-28 코드 검토(막아야 함): 같은 이름의 바로가기가 이미 있으면 덮지 않는다.
+test('relay (2.0.66): 같은 이름의 다른 바로가기가 이미 있으면 그대로 두고 「대기 기능」에 알린다 — 그 경로를 우리 것으로 기록하지 않는다', async () => {
+  const root = makeSoul('doctor-foreign');
+  putDoctor(root);
+  const desk = path.join(tmp, 'doctor-foreign', 'Desktop'); const programs = path.join(tmp, 'doctor-foreign', 'Programs');
+  const ctx = makeCtx(root, { lock: DOCTOR_LOCK, env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: desk, startMenuDir: programs, runPs: doctorPs([], { desk, programs, words: { desktop: 'FOREIGN' } }) });
+  const { recorded, pending } = await relay.run(ctx);
+  assert.equal(recorded.doctorShortcut.status, 'partial');
+  assert.equal(recorded.doctorShortcut.desktop.ok, false);
+  assert.equal(recorded.doctorShortcut.desktop.foreign, true);
+  assert.equal(recorded.doctorShortcut.desktop.path, null, '남의 바로가기의 경로를 우리 기록에 싣지 않는다');
+  assert.ok(!/[\\/]/.test(recorded.doctorShortcut.desktop.cause), '까닭 글에 경로가 없다');
+  assert.deepEqual(recorded.doctorShortcut.startMenu, { ok: true, path: path.join(programs, 'IRIS Doctor.lnk') });
+  const line = pending.filter((p) => /IRIS Doctor/.test(p.capability));
+  assert.equal(line.length, 1);
+  assert.match(line[0].reason, /같은 이름의 다른 바로가기가 이미 있어 그대로 두었습니다/);
+  assert.ok(fs.existsSync(path.join(root, '소환하기.cmd')), '설치는 계속된다');
+});
+
+test('relay (2.0.66): 이미 이 설치의 바로가기가 있으면 "그대로 둠"으로 기록하고 알릴 것이 없다(되풀이 실행)', async () => {
+  const root = makeSoul('doctor-kept');
+  putDoctor(root);
+  const desk = path.join(tmp, 'doctor-kept', 'Desktop'); const programs = path.join(tmp, 'doctor-kept', 'Programs');
+  const ctx = makeCtx(root, { lock: DOCTOR_LOCK, env: { ...process.env, IRIS_INSTALLER_NO_USER_ENV: '' }, desktopDir: desk, startMenuDir: programs, runPs: doctorPs([], { desk, programs, words: { desktop: 'KEPT', startmenu: 'KEPT' } }) });
+  const { recorded, pending } = await relay.run(ctx);
+  assert.deepEqual(recorded.doctorShortcut, {
+    status: 'kept',
+    desktop: { ok: true, path: path.join(desk, 'IRIS Doctor.lnk'), kept: true },
+    startMenu: { ok: true, path: path.join(programs, 'IRIS Doctor.lnk'), kept: true },
+  });
+  assert.ok(!pending.some((p) => /Doctor/.test(p.capability)));
 });
 
 test('relay: 루트가 없으면 E-RELAY StageError', async () => {

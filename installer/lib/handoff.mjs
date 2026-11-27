@@ -236,7 +236,20 @@ export function doctorShortcutArguments(startFile) { return `/d /c ""${startFile
 
 /**
  * writeDoctorShortcut(root, name, { desktopDir, startMenuDir, runPs })
- *   -> { present, startFile, ok, shortcuts: [{ where: 'desktop'|'startmenu', ok, path, detail }] }
+ *   -> { present, startFile, ok, shortcuts: [{ where: 'desktop'|'startmenu', ok, status, path, detail }] }
+ *      status: 'created'  there was none and it was made
+ *              'kept'     a shortcut of that name already opens THIS install's Doctor -- nothing was
+ *                         written (not even re-saved: a repeated run changes no file)
+ *              'foreign'  a shortcut of that name is there and opens something else (the user's own,
+ *                         or another install's Doctor) -- left exactly as it is, never overwritten
+ *              'failed'   it could not be made
+ *      ok = created or kept.
+ *
+ * "This install's" is judged the way the uninstaller judges it (installer\uninstall.ps1
+ * Test-DoctorLnk): the normalized target is %SystemRoot%\System32\cmd.exe AND the arguments are
+ * exactly /d /c ""<path>"" with <path>, normalized, equal to this root's Doctor start file. The file
+ * name alone proves nothing. A shortcut that cannot be read counts as foreign (it is not ours to
+ * replace).
  *
  * Never throws and never fails the install: a place that could not be written
  * is reported (the start file in the install folder still works). When the
@@ -250,30 +263,51 @@ export async function writeDoctorShortcut(root, name, { desktopDir = null, start
   if (!fs.existsSync(startFile)) return { present: false, startFile, ok: false, shortcuts: [] };
   const lnkName = doctorShortcutName(name);
   const icoPath = path.join(faceDirFor(root), 'app', 'iris.ico');
-  const iconLine = fs.existsSync(icoPath) ? [`    $sc.IconLocation = ${psQuote(`${icoPath},0`)}`] : [];
+  const iconLine = fs.existsSync(icoPath) ? [`      $sc.IconLocation = ${psQuote(`${icoPath},0`)}`] : [];
   // One place at a time, each in its own try: the desktop can be read-only
   // (school image) while the Start menu is fine, or the other way round.
   const place = (where, dirExpr) => [
     'try {',
     `    $dir = ${dirExpr}`,
     '    if (-not $dir) { throw \'folder not found\' }',
-    '    if (-not (Test-Path -LiteralPath $dir)) { [void][IO.Directory]::CreateDirectory($dir) }',
     `    $lnk = Join-Path $dir ${psQuote(lnkName)}`,
-    '    $sc = $shell.CreateShortcut($lnk)',
-    '    $sc.TargetPath = $cmd',
-    `    $sc.Arguments = ${psQuote(doctorShortcutArguments(startFile))}`,
-    '    $sc.WorkingDirectory = [Environment]::GetFolderPath(\'UserProfile\')',
-    '    $sc.WindowStyle = 1',
-    '    $sc.Description = \'IRIS Doctor\'',
+    '    if (Test-Path -LiteralPath $lnk) {',
+    // Something of that name is already there. Read it (CreateShortcut on an existing file only
+    // loads it) and decide whose it is; in neither case is it saved.
+    '      $mine = $false',
+    '      try { $old = $shell.CreateShortcut($lnk); $mine = (Test-Mine ([string]$old.TargetPath) ([string]$old.Arguments)) } catch { $mine = $false }',
+    `      if ($mine) { Write-Output ('KEPT|${where}|' + $lnk) } else { Write-Output ('FOREIGN|${where}|' + $lnk) }`,
+    '    } else {',
+    '      if (-not (Test-Path -LiteralPath $dir)) { [void][IO.Directory]::CreateDirectory($dir) }',
+    '      $sc = $shell.CreateShortcut($lnk)',
+    '      $sc.TargetPath = $cmd',
+    '      $sc.Arguments = $wantArgs',
+    '      $sc.WorkingDirectory = [Environment]::GetFolderPath(\'UserProfile\')',
+    '      $sc.WindowStyle = 1',
+    '      $sc.Description = \'IRIS Doctor\'',
     ...iconLine,
-    '    $sc.Save()',
-    `    Write-Output ('OK|${where}|' + $lnk)`,
+    '      $sc.Save()',
+    `      Write-Output ('OK|${where}|' + $lnk)`,
+    '    }',
     `} catch { Write-Output ('FAIL|${where}|' + $_.Exception.Message) }`,
   ];
   const script = [
     '$ErrorActionPreference = \'Stop\'',
     '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
     '$cmd = Join-Path $env:SystemRoot \'System32\\cmd.exe\'',
+    `$start = ${psQuote(startFile)}`,
+    `$wantArgs = ${psQuote(doctorShortcutArguments(startFile))}`,
+    // Same normalization as the uninstaller: full path, no trailing backslash, letter case ignored.
+    'function Get-Norm([string]$p) { if (-not $p) { return $null }; $f = [IO.Path]::GetFullPath($p); if ($f.Length -gt 3) { $f = $f.TrimEnd(\'\\\') }; return $f }',
+    'function Test-Mine([string]$target, [string]$arguments) {',
+    '  try {',
+    '    $t = Get-Norm $target',
+    '    if (-not $t -or -not [string]::Equals($t, (Get-Norm $cmd), [StringComparison]::OrdinalIgnoreCase)) { return $false }',
+    '    $m = [regex]::Match($arguments, \'^\\s*/d\\s+/c\\s+""([^"]+)""\\s*$\', [Text.RegularExpressions.RegexOptions]::IgnoreCase)',
+    '    if (-not $m.Success) { return $false }',
+    '    return [string]::Equals((Get-Norm $m.Groups[1].Value), (Get-Norm $start), [StringComparison]::OrdinalIgnoreCase)',
+    '  } catch { return $false }',
+    '}',
     '$shell = New-Object -ComObject WScript.Shell',
     ...place('desktop', desktopDir ? psQuote(desktopDir) : '[Environment]::GetFolderPath(\'Desktop\')'),
     ...place('startmenu', startMenuDir ? psQuote(startMenuDir) : '[Environment]::GetFolderPath(\'Programs\')'),
@@ -284,8 +318,8 @@ export async function writeDoctorShortcut(root, name, { desktopDir = null, start
   try {
     const r = await runPs(script);
     for (const line of String(r?.out ?? '').split(/\r?\n/)) {
-      const m = /^(OK|FAIL)\|(desktop|startmenu)\|(.*)$/.exec(line.trim());
-      if (m) found.set(m[2], { ok: m[1] === 'OK', text: m[3].trim() });
+      const m = /^(OK|KEPT|FOREIGN|FAIL)\|(desktop|startmenu)\|(.*)$/.exec(line.trim());
+      if (m) found.set(m[2], { word: m[1], text: m[3].trim() });
     }
     if (r?.code !== 0) failure = String(r?.err || r?.out || `powershell exit ${r?.code}`).trim();
   } catch (err) {
@@ -293,8 +327,11 @@ export async function writeDoctorShortcut(root, name, { desktopDir = null, start
   }
   const shortcuts = ['desktop', 'startmenu'].map((where) => {
     const hit = found.get(where);
-    if (hit?.ok) return { where, ok: true, path: hit.text, detail: null };
-    return { where, ok: false, path: null, detail: hit?.text || failure || 'no answer from PowerShell' };
+    if (hit?.word === 'OK') return { where, ok: true, status: 'created', path: hit.text, detail: null };
+    if (hit?.word === 'KEPT') return { where, ok: true, status: 'kept', path: hit.text, detail: null };
+    // A foreign shortcut's path is not reported as ours: nothing of ours is there.
+    if (hit?.word === 'FOREIGN') return { where, ok: false, status: 'foreign', path: null, detail: 'a shortcut of that name is already there and opens something else; it was left as it is' };
+    return { where, ok: false, status: 'failed', path: null, detail: hit?.text || failure || 'no answer from PowerShell' };
   });
   return { present: true, startFile, ok: shortcuts.every((s) => s.ok), shortcuts };
 }

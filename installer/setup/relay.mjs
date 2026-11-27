@@ -291,15 +291,30 @@ export async function run(ctx) {
     // 실패한 까닭(윈도우의 오류 글 — 경로가 섞일 수 있다)은 `cause` 칸에 둔다: 설치 검사 6 의 "폴더 밖 쓰기" 감사는
     // 기록 속 경로처럼 보이는 글을 모두 보는데, `cause` 는 읽은 것 · 까닭이라 감사 대상이 아니다(checks.mjs recordedPaths).
     // `path` 에는 실제로 만든 바로가기의 경로만 들어간다 — 검사 6 이 그 둘(바탕화면 · 시작 메뉴의 그 이름)만 허용한다.
-    const one = (where) => { const s = by(where); return s.ok ? { ok: true, path: s.path } : { ok: false, path: null, cause: s.detail ?? null }; };
+    // 자리마다 넷 가운데 하나다(handoff.mjs writeDoctorShortcut): created 새로 만듦 · kept 이미 이 설치의 것이라 쓰지 않음 ·
+    // foreign 같은 이름의 **다른 것**(사용자가 만든 것 · 다른 설치본)이 있어 그대로 둠 · failed 만들지 못함.
+    // foreign 의 경로는 기록하지 않는다 — 거기 있는 것은 우리 것이 아니다(삭제기도 지우지 않는다).
+    const one = (where) => {
+      const s = by(where);
+      if (s.ok) return { ok: true, path: s.path, ...(s.status === 'kept' ? { kept: true } : {}) };
+      return { ok: false, path: null, ...(s.status === 'foreign' ? { foreign: true } : {}), cause: s.detail ?? null };
+    };
+    const allKept = d.ok && (d.shortcuts ?? []).every((s) => s.status === 'kept');
     recorded.doctorShortcut = {
-      status: d.ok ? 'created' : (made > 0 ? 'partial' : 'failed'),
+      status: d.ok ? (allKept ? 'kept' : 'created') : (made > 0 ? 'partial' : 'failed'),
       desktop: one('desktop'),
       startMenu: one('startmenu'),
     };
     if (!d.ok) {
-      pending.push({ capability: '「IRIS Doctor」 바로가기', reason: '바로가기를 만들지 못했습니다(설치 폴더의 IRIS Doctor 시작 파일은 그대로 씁니다)' });
-      log(`[relay] IRIS Doctor 바로가기 ${made}/2 — 바탕화면: ${by('desktop').ok ? 'ok' : by('desktop').detail} · 시작 메뉴: ${by('startmenu').ok ? 'ok' : by('startmenu').detail}`);
+      const foreign = (d.shortcuts ?? []).some((s) => s.status === 'foreign');
+      pending.push({
+        capability: '「IRIS Doctor」 바로가기',
+        reason: foreign
+          ? '같은 이름의 다른 바로가기가 이미 있어 그대로 두었습니다(덮어쓰지 않습니다 — 설치 폴더의 IRIS Doctor 시작 파일은 그대로 씁니다)'
+          : '바로가기를 만들지 못했습니다(설치 폴더의 IRIS Doctor 시작 파일은 그대로 씁니다)',
+      });
+      const say = (where) => { const s = by(where); return s.ok ? (s.status ?? 'ok') : (s.status === 'foreign' ? 'foreign(left as it is)' : s.detail); };
+      log(`[relay] IRIS Doctor 바로가기 ${made}/2 — 바탕화면: ${say('desktop')} · 시작 메뉴: ${say('startmenu')}`);
     }
   }
 
