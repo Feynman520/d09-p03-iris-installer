@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { applyPatches } from '../build/patch-teamclaude.mjs';
-import { splitLines, diffLines, deriveReplaceRules, extendRules } from '../build/make-teamclaude-rules.mjs';
+import { splitLines, diffLines, deriveReplaceRules, extendRules, planRules } from '../build/make-teamclaude-rules.mjs';
+
+const TOOL = fileURLToPath(new URL('../build/make-teamclaude-rules.mjs', import.meta.url));
 
 const NL = String.fromCharCode(10);
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-mkrules-test-'));
@@ -166,4 +170,105 @@ test('extendRules appends on top of existing rules and the real patcher then rep
   const again = extendRules(next, { pristineDir: pristine, patchedDir: path.join(tmp, 'proof', ...PKG), targetDir: target });
   assert.deepEqual(again.summary, []);
   assert.equal(JSON.stringify(again.rules), JSON.stringify(next));
+});
+
+// ---------------------------------------------------------------------------
+// A target that LACKS a file (2026-11-27 review finding)
+// ---------------------------------------------------------------------------
+// Rules can change a file and add a file, never remove one. "One file deleted
+// from the target + another file edited" used to print a warning and still
+// save rules for the edit -- rules that do not reproduce the target. The tool
+// must refuse instead: no plan, nothing written, the leftover file named.
+
+const P = 'node_modules/@karpeleslab/teamclaude/';
+const PKG_PARTS = ['node_modules', '@karpeleslab', 'teamclaude'];
+
+// A tiny pristine "npm --prefix" folder, the rules that already apply to it,
+// and a target folder made by `shape(put)`.
+function leftoverFixture(name, shape) {
+  const root = path.join(tmp, name);
+  const put = (dir, rel, text) => { fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); fs.writeFileSync(path.join(dir, rel), text); };
+  const pristinePrefix = path.join(root, 'pristine');
+  const pristine = path.join(pristinePrefix, ...PKG_PARTS);
+  put(pristine, 'package.json', lines('{ "name": "x" }'));
+  put(pristine, 'src/keep.js', lines('one();', 'two();', 'three();'));
+  put(pristine, 'src/upstream-only.js', lines('upstream();'));
+  const rules = { files: [{ path: `${P}src/made-by-rule.js`, create: lines('export const v = 1;') }] };
+  const target = path.join(root, 'target');
+  put(target, 'package.json', lines('{ "name": "x" }'));
+  shape((rel, text) => put(target, rel, text));
+  const rulesFile = path.join(root, 'rules.json');
+  fs.writeFileSync(rulesFile, `${JSON.stringify(rules, null, 2)}${NL}`);
+  const workDir = path.join(root, 'work');
+  fs.mkdirSync(workDir, { recursive: true });
+  return { pristinePrefix, rules, target, rulesFile, workDir };
+}
+
+test('planRules refuses a target that lacks a pristine file, even though another file has a perfectly good change', async () => {
+  const fx = leftoverFixture('gone-pristine', (put) => {
+    put('src/keep.js', lines('one();', 'two(2);', 'three();')); // an ordinary edit ...
+    put('src/made-by-rule.js', lines('export const v = 1;'));
+    // ... and src/upstream-only.js is simply not there
+  });
+  await assert.rejects(
+    planRules({ rules: fx.rules, pristinePrefix: fx.pristinePrefix, targetDir: fx.target, workDir: fx.workDir }),
+    (e) => /a rule cannot delete a file/.test(e.message) && e.message.includes('src/upstream-only.js') && /no rules were written/.test(e.message),
+  );
+});
+
+test('planRules refuses a target that lacks a file an existing create rule makes', async () => {
+  const fx = leftoverFixture('gone-created', (put) => {
+    put('src/keep.js', lines('one();', 'two(2);', 'three();'));
+    put('src/upstream-only.js', lines('upstream();'));
+    // src/made-by-rule.js (created by the current rules) is not in the target
+  });
+  await assert.rejects(
+    planRules({ rules: fx.rules, pristinePrefix: fx.pristinePrefix, targetDir: fx.target, workDir: fx.workDir }),
+    (e) => /a rule cannot delete a file/.test(e.message) && e.message.includes('src/made-by-rule.js'),
+  );
+});
+
+test('planRules accepts the same target once nothing is missing (the refusal is about the missing file only)', async () => {
+  const fx = leftoverFixture('nothing-gone', (put) => {
+    put('src/keep.js', lines('one();', 'two(2);', 'three();'));
+    put('src/upstream-only.js', lines('upstream();'));
+    put('src/made-by-rule.js', lines('export const v = 1;'));
+  });
+  const { rules: next, summary } = await planRules({ rules: fx.rules, pristinePrefix: fx.pristinePrefix, targetDir: fx.target, workDir: fx.workDir });
+  assert.deepEqual(summary.map((s) => `${s.file}: ${s.action}`), ['src/keep.js: new replace entry']);
+  assert.equal(next.files.length, 2);
+});
+
+test('the tool itself: --write on a target that lacks a file exits 1, names the file and leaves rules.json byte-for-byte alone', () => {
+  const runTool = (fx, ...extra) => spawnSync(process.execPath, [TOOL, '--target', fx.target, '--pristine', fx.pristinePrefix, '--rules', fx.rulesFile, ...extra], { encoding: 'utf8' });
+
+  const bad = leftoverFixture('cli-gone', (put) => {
+    put('src/keep.js', lines('one();', 'two(2);', 'three();'));
+    put('src/made-by-rule.js', lines('export const v = 1;'));
+  });
+  const before = fs.readFileSync(bad.rulesFile);
+  for (const extra of [['--write'], []]) { // saving and preview alike
+    const r = runTool(bad, ...extra);
+    assert.equal(r.status, 1, `expected exit 1 (${extra.join(' ') || 'preview'}):\n${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, /a rule cannot delete a file/);
+    assert.match(r.stderr, /src\/upstream-only\.js/);
+    assert.doesNotMatch(r.stdout, /new replace entry|wrote |preview only/, 'no plan may be printed for rules that cannot be right');
+    assert.ok(fs.readFileSync(bad.rulesFile).equals(before), 'rules.json was touched');
+  }
+
+  // Control: the very same edit, with the file present, IS written -- so the
+  // refusal above is not just a tool that never writes.
+  const good = leftoverFixture('cli-ok', (put) => {
+    put('src/keep.js', lines('one();', 'two(2);', 'three();'));
+    put('src/upstream-only.js', lines('upstream();'));
+    put('src/made-by-rule.js', lines('export const v = 1;'));
+  });
+  const preview = runTool(good);
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.match(preview.stdout, /preview only/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(good.rulesFile, 'utf8')), good.rules, 'a preview must not write');
+  const saved = runTool(good, '--write');
+  assert.equal(saved.status, 0, saved.stderr);
+  const written = JSON.parse(fs.readFileSync(good.rulesFile, 'utf8'));
+  assert.deepEqual(written.files.map((f) => f.path), [`${P}src/made-by-rule.js`, `${P}src/keep.js`]);
 });

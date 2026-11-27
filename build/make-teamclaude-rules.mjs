@@ -10,12 +10,17 @@
 // folder shaped like the installed package (package.json, src/, *.test.mjs),
 // e.g. the relay working copy or a patched install. It is only ever READ.
 //
+// It fails (exit 1, rules file untouched, with or without --write) when the
+// target LACKS a file that pristine + rules produces: rules can change and add
+// files but not remove one, so such a target cannot be reproduced at all.
+//
 // What it does, in the order build/patch-teamclaude.mjs applies rules:
 //   1. takes a pristine install (npm install -g --prefix <temp>, or --pristine),
 //      applies the CURRENT rules to a copy of it;
 //   2. compares that tree with <target>, file by file;
-//   3. for every file that differs it appends rules on top of the existing
-//      ones -- nothing already in rules.json is rewritten:
+//   3. for every file that differs it adds to the existing rules. No existing
+//      `replace` rule is ever rewritten or reordered; the one thing changed in
+//      place is the text of an existing `create` entry (third line below):
 //        - a file with a `replace` entry   -> more `replace` rules at the end
 //        - a pristine file with no entry   -> a new `replace` entry
 //        - a file with a `create` entry    -> its `create` text is renewed
@@ -211,7 +216,11 @@ function readText(file) {
 
 // Pure planning step: `patchedDir` is pristine + current rules, `pristineDir`
 // is pristine alone, `targetDir` is what the result must equal. All three are
-// package folders. Returns the new rules object and a per-file summary.
+// package folders. Returns the new rules object, a per-file summary, and
+// `notInTarget`: files the rules produce that the target does not have. The
+// returned rules can NOT fix those (see refuseLeftovers) -- a caller that
+// means to save the rules must treat a non-empty list as failure, which
+// planRules does.
 export function extendRules(rules, { pristineDir, patchedDir, targetDir }) {
   const next = JSON.parse(JSON.stringify(rules));
   const byPath = new Map(next.files.map((f) => [f.path, f]));
@@ -251,6 +260,60 @@ export function extendRules(rules, { pristineDir, patchedDir, targetDir }) {
   return { rules: next, summary, notInTarget };
 }
 
+// The rule format can change a file and add a file; it has NO way to remove
+// one. So a file that pristine + rules produces and the target does not have
+// can never be made to match, and rules written anyway would be rules that do
+// not reproduce the target -- while the changes to the OTHER files made the
+// run look like a success. That is refused here, by name, before any proof.
+function refuseLeftovers(leftover) {
+  if (!leftover.length) return;
+  throw new Error(
+    `the target does not have ${leftover.length === 1 ? 'this file' : 'these files'}, but pristine + rules would still `
+    + `produce ${leftover.length === 1 ? 'it' : 'them'}: ${leftover.join(', ')} -- a rule cannot delete a file `
+    + '(build/patch-teamclaude.mjs has only replace and create), so no rules were written. '
+    + 'Put the file back in the target, or extend the rule format and its tests first.',
+  );
+}
+
+// Everything between "here are the current rules" and "here are rules proven
+// to reproduce the target", with no printing and no writing to the rules
+// file. `pristinePrefix` is an npm --prefix folder holding the pristine
+// install; `workDir` is scratch space this may fill (two copies of it).
+// Throws unless pristine + the returned rules equals `targetDir` exactly:
+// same set of files, same bytes.
+export async function planRules({ rules, pristinePrefix, targetDir, workDir }) {
+  const pkgOf = (prefix) => path.join(prefix, ...PKG_PREFIX.split('/').filter(Boolean));
+
+  const patchedPrefix = path.join(workDir, 'patched');
+  fs.cpSync(pristinePrefix, patchedPrefix, { recursive: true });
+  await applyPatches(patchedPrefix, rules, () => {});
+
+  const { rules: next, summary, notInTarget } = extendRules(rules, {
+    pristineDir: pkgOf(pristinePrefix),
+    patchedDir: pkgOf(patchedPrefix),
+    targetDir,
+  });
+  refuseLeftovers(notInTarget);
+
+  // Proof: apply the NEW rules to a second pristine copy and compare the two
+  // folders both ways. (The leftover check above already covers "only in the
+  // result"; it is repeated here on the real result so the guarantee does not
+  // rest on the planning step having listed the right folder.)
+  const proofPrefix = path.join(workDir, 'proof');
+  fs.cpSync(pristinePrefix, proofPrefix, { recursive: true });
+  await applyPatches(proofPrefix, next, () => {});
+  const made = listFiles(pkgOf(proofPrefix));
+  const wanted = listFiles(targetDir);
+  const wantedSet = new Set(wanted);
+  refuseLeftovers(made.filter((rel) => !wantedSet.has(rel)));
+  const stillDifferent = wanted.filter((rel) => {
+    const file = path.join(pkgOf(proofPrefix), rel);
+    return !fs.existsSync(file) || !fs.readFileSync(file).equals(fs.readFileSync(path.join(targetDir, rel)));
+  });
+  if (stillDifferent.length) throw new Error(`new rules do not reproduce the target: ${stillDifferent.join(', ')}`);
+  return { rules: next, summary };
+}
+
 function parseArgs(argv) {
   const out = { write: false, version: '1.1.16', rules: path.join(ROOT_DIR, 'patches', 'teamclaude', 'rules.json') };
   for (let i = 0; i < argv.length; i++) {
@@ -280,32 +343,13 @@ async function main() {
         shell: process.platform === 'win32',
       });
     }
-    const pkgOf = (prefix) => path.join(prefix, ...PKG_PREFIX.split('/').filter(Boolean));
     const rules = JSON.parse(fs.readFileSync(args.rules, 'utf8'));
-
-    const patchedPrefix = path.join(scratch, 'patched');
-    fs.cpSync(pristinePrefix, patchedPrefix, { recursive: true });
-    await applyPatches(patchedPrefix, rules, () => {});
-
-    const { rules: next, summary, notInTarget } = extendRules(rules, {
-      pristineDir: pkgOf(pristinePrefix),
-      patchedDir: pkgOf(patchedPrefix),
-      targetDir: args.target,
-    });
-
-    // Proof before anything is written: pristine + NEW rules == target.
-    const proofPrefix = path.join(scratch, 'proof');
-    fs.cpSync(pristinePrefix, proofPrefix, { recursive: true });
-    await applyPatches(proofPrefix, next, () => {});
-    const stillDifferent = listFiles(args.target).filter((rel) => {
-      const made = path.join(pkgOf(proofPrefix), rel);
-      return !fs.existsSync(made) || !fs.readFileSync(made).equals(fs.readFileSync(path.join(args.target, rel)));
-    });
-    if (stillDifferent.length) throw new Error(`new rules do not reproduce the target: ${stillDifferent.join(', ')}`);
+    // Throws -- and so nothing below is printed as a plan or written -- unless
+    // pristine + the new rules is the target, file for file, in BOTH directions.
+    const { rules: next, summary } = await planRules({ rules, pristinePrefix, targetDir: args.target, workDir: scratch });
 
     for (const s of summary) console.log(`${s.action.padEnd(24)} ${s.file}${s.rules ? ` (+${s.rules})` : ''}`);
     if (!summary.length) console.log('nothing to add: pristine + rules already equals the target');
-    if (notInTarget.length) console.log(`WARNING: the rules produce files the target does not have (left as they are): ${notInTarget.join(', ')}`);
 
     // Not a gate, only a prompt to look: rules.json is exempt from the e-mail
     // rule of the repository scan because it quotes upstream text.
