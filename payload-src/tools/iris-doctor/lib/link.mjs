@@ -121,11 +121,14 @@ export function commitClaude({ root, now = Date.now(), expect }) {
 export function discardClaude({ root }) { try { fs.rmSync(doctorPaths(root).claudeNext, { force: true }); } catch {} }
 
 /** 코덱스 전용 폴더를 마련한다(로그인은 사용자가 브라우저에서 — 여기서는 설정 파일과 카드 틀만). 있는 폴더 · 설정은 건드리지 않는다. */
+const codexCardFrame = (now) => JSON.stringify({ v: 1, kind: 'codex', source: 'own-login', linkedAt: null, lastOkAt: null, lastFailAt: null, credit: 'unknown', billingAckAt: null, preparedAt: new Date(now).toISOString() }, null, 2);
+// 이 함수는 **사용자가 직접 연결할 때**(link codex · login codex)의 것이다: 읽히지 않는 카드는 "없음"으로 보고 새 틀로 바꾼다
+// (깨진 연결은 다시 연결하면 고쳐진다는 약속). 손 없는 준비(autoPrepareCodex)는 이 함수를 쓰지 않는다 — 있는 카드 파일을 덮지 않아야 한다.
 export function prepareCodexHome({ root, now = Date.now() }) {
   const p = ensureHome(root);
   const cfg = path.join(p.codexHome, 'config.toml');
   if (!fs.existsSync(cfg)) writeAtomic(cfg, CODEX_CONFIG);
-  if (!readCard(root, 'codex')) writeAtomic(p.codexCard, JSON.stringify({ v: 1, kind: 'codex', source: 'own-login', linkedAt: null, lastOkAt: null, lastFailAt: null, credit: 'unknown', billingAckAt: null, preparedAt: new Date(now).toISOString() }, null, 2));
+  if (!readCard(root, 'codex')) writeAtomic(p.codexCard, codexCardFrame(now));
   return p;
 }
 
@@ -165,8 +168,14 @@ export async function autoPrepareCodex({ root, now = Date.now() }) {
   const r = await withLinkLock(root, ({ recovered }) => {
     if (recovered === 'failed') return { prepared: false, why: 'stuck' };
     if (ready()) return { prepared: false, why: 'ready' };
-    prepareCodexHome({ root, now });
-    return { prepared: true, why: 'prepared' };
+    // **빠진 파일만** 만든다 — "있는가"만 보고 "읽히는가"는 보지 않는다. 카드 파일이 있으면 깨졌든 모양이 다르든 한 바이트도 바꾸지 않는다
+    // (읽히지 않는 카드를 새 틀로 바꾸는 것은 사용자가 직접 다시 연결할 때의 일이다 — prepareCodexHome. 2026-11-28 코드 검토 지적).
+    // 설정 파일도 같다: 있으면 내용이 우리 세 줄과 달라도 손대지 않는다(무엇이 들었는지는 실행 전 자기 점검이 본다).
+    const cfg = path.join(p.codexHome, 'config.toml');
+    let made = false;
+    if (!fs.existsSync(cfg)) { writeAtomic(cfg, CODEX_CONFIG); made = true; }
+    if (!fs.existsSync(p.codexCard)) { writeAtomic(p.codexCard, codexCardFrame(now)); made = true; }
+    return made ? { prepared: true, why: 'prepared' } : { prepared: false, why: 'ready' };
   }, { now });
   return r?.busy ? { prepared: false, why: 'busy' } : r;
 }

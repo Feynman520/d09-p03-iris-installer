@@ -1,6 +1,6 @@
 {
   "name": "iris-doctor",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "files": [
     {
       "path": "IRIS Doctor.cmd",
@@ -54,7 +54,7 @@
     },
     {
       "path": "lib/diagnose.mjs",
-      "sha256": "b70235a25caea7c93c138439addd417ca1177e8fa64c6e17c60bfbfeffbc7ce1",
+      "sha256": "10e3026d9411e9d6b77b3dab57f3d9c365f872cc6dedc58718f618c8006d2f5f",
       "size": 4153
     },
     {
@@ -79,8 +79,8 @@
     },
     {
       "path": "lib/link.mjs",
-      "sha256": "2c398f3b295a1978d631ce6e35a927bc2335b3cbb66105f315886cb4c142852f",
-      "size": 20374
+      "sha256": "dfe772210d2ad959461f0582d2acfa528f71ecb38ec1cbd914ad328b2f00fb89",
+      "size": 21574
     },
     {
       "path": "lib/lock.mjs",
