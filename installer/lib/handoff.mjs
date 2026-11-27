@@ -211,6 +211,95 @@ export async function writeFaceLauncher(root, name, { desktopDir = null, runPs =
 }
 
 // ---------------------------------------------------------------------------
+// IRIS Doctor shortcuts (2.0.66)
+// ---------------------------------------------------------------------------
+
+// IRIS Doctor is what a user opens when IRIS itself is stuck, so its door must
+// not depend on the IRIS window: a desktop shortcut and a Start menu shortcut,
+// both named "<name> Doctor" ("IRIS Doctor" on a real install -- the IRIS
+// window and Doctor's own guide text already say "the IRIS Doctor shortcut on
+// the desktop or in the Start menu").
+//
+// Shape (fixed by the Doctor start file, which is tested with exactly this):
+//   target     %SystemRoot%\System32\cmd.exe
+//   arguments  /d /c ""<root>\_agent\shared\tools\iris-doctor\IRIS Doctor.cmd""
+//              (/d = skip cmd AutoRun; doubled quotes survive special characters)
+//   start in   the user's profile folder -- NOT the install folder: an open
+//              Doctor terminal would otherwise hold the root as its current
+//              directory and block an update or the uninstaller from moving it
+//   window     normal (the user reads this terminal)
+export const DOCTOR_START_FILE = 'IRIS Doctor.cmd';
+export function doctorDirFor(root) { return path.join(toolsDir(root), 'iris-doctor'); }
+export function doctorStartFile(root) { return path.join(doctorDirFor(root), DOCTOR_START_FILE); }
+export function doctorShortcutName(name) { return `${name} Doctor.lnk`; }
+export function doctorShortcutArguments(startFile) { return `/d /c ""${startFile}""`; }
+
+/**
+ * writeDoctorShortcut(root, name, { desktopDir, startMenuDir, runPs })
+ *   -> { present, startFile, ok, shortcuts: [{ where: 'desktop'|'startmenu', ok, path, detail }] }
+ *
+ * Never throws and never fails the install: a place that could not be written
+ * is reported (the start file in the install folder still works). When the
+ * Doctor part is not there (no start file) nothing is made -- `present:false`.
+ * `desktopDir` / `startMenuDir` are injectable so tests and rehearsals write
+ * into temp folders; when null the script asks Windows itself (the desktop is
+ * often redirected to OneDrive).
+ */
+export async function writeDoctorShortcut(root, name, { desktopDir = null, startMenuDir = null, runPs = defaultRunPs } = {}) {
+  const startFile = doctorStartFile(root);
+  if (!fs.existsSync(startFile)) return { present: false, startFile, ok: false, shortcuts: [] };
+  const lnkName = doctorShortcutName(name);
+  const icoPath = path.join(faceDirFor(root), 'app', 'iris.ico');
+  const iconLine = fs.existsSync(icoPath) ? [`    $sc.IconLocation = ${psQuote(`${icoPath},0`)}`] : [];
+  // One place at a time, each in its own try: the desktop can be read-only
+  // (school image) while the Start menu is fine, or the other way round.
+  const place = (where, dirExpr) => [
+    'try {',
+    `    $dir = ${dirExpr}`,
+    '    if (-not $dir) { throw \'folder not found\' }',
+    '    if (-not (Test-Path -LiteralPath $dir)) { [void][IO.Directory]::CreateDirectory($dir) }',
+    `    $lnk = Join-Path $dir ${psQuote(lnkName)}`,
+    '    $sc = $shell.CreateShortcut($lnk)',
+    '    $sc.TargetPath = $cmd',
+    `    $sc.Arguments = ${psQuote(doctorShortcutArguments(startFile))}`,
+    '    $sc.WorkingDirectory = [Environment]::GetFolderPath(\'UserProfile\')',
+    '    $sc.WindowStyle = 1',
+    '    $sc.Description = \'IRIS Doctor\'',
+    ...iconLine,
+    '    $sc.Save()',
+    `    Write-Output ('OK|${where}|' + $lnk)`,
+    `} catch { Write-Output ('FAIL|${where}|' + $_.Exception.Message) }`,
+  ];
+  const script = [
+    '$ErrorActionPreference = \'Stop\'',
+    '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
+    '$cmd = Join-Path $env:SystemRoot \'System32\\cmd.exe\'',
+    '$shell = New-Object -ComObject WScript.Shell',
+    ...place('desktop', desktopDir ? psQuote(desktopDir) : '[Environment]::GetFolderPath(\'Desktop\')'),
+    ...place('startmenu', startMenuDir ? psQuote(startMenuDir) : '[Environment]::GetFolderPath(\'Programs\')'),
+  ].join('\n');
+
+  const found = new Map();
+  let failure = null;
+  try {
+    const r = await runPs(script);
+    for (const line of String(r?.out ?? '').split(/\r?\n/)) {
+      const m = /^(OK|FAIL)\|(desktop|startmenu)\|(.*)$/.exec(line.trim());
+      if (m) found.set(m[2], { ok: m[1] === 'OK', text: m[3].trim() });
+    }
+    if (r?.code !== 0) failure = String(r?.err || r?.out || `powershell exit ${r?.code}`).trim();
+  } catch (err) {
+    failure = String(err?.message ?? err);
+  }
+  const shortcuts = ['desktop', 'startmenu'].map((where) => {
+    const hit = found.get(where);
+    if (hit?.ok) return { where, ok: true, path: hit.text, detail: null };
+    return { where, ok: false, path: null, detail: hit?.text || failure || 'no answer from PowerShell' };
+  });
+  return { present: true, startFile, ok: shortcuts.every((s) => s.ok), shortcuts };
+}
+
+// ---------------------------------------------------------------------------
 // ③ 첫 세션 spec + Face 실행
 // ---------------------------------------------------------------------------
 

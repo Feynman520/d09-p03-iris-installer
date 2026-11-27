@@ -22,6 +22,8 @@ import { collect } from '../build/collect.mjs';
 import { sanitize } from '../build/sanitize.mjs';
 import { loadRules } from '../build/rules.mjs';
 import { isStageError } from '../installer/lib/errors.mjs';
+import { planUpdateReset, RELAY_PARTS, KEEP_DONE } from '../installer/lib/update-plan.mjs';
+import { doctorStartFile, DOCTOR_START_FILE } from '../installer/lib/handoff.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK = JSON.parse(fs.readFileSync(path.join(REPO, 'lock.json'), 'utf8'));
@@ -426,4 +428,51 @@ test('T4 풀기: 압축 안의 묶음이 지문 목록과 다르면(빌드가 �
   const state = JSON.parse(fs.readFileSync(unpack.statePath(ctx.root), 'utf8'));
   assert.equal(state.parts['iris-doctor'].verified, false);
   assert.match(state.parts['iris-doctor'].detail, /바뀜 1/);
+});
+
+// ---------------------------------------------------------------------------
+// T5 · T6 — 바깥 입구가 가리키는 자리 · 이미 설치된 PC 가 업데이트로 바로가기를 받는다
+// (바로가기의 모양 = tests/handoff.test.mjs · 실행기 단계 = tests/setup-relay.test.mjs · 설치 검사 6 = tests/setup-checks.test.mjs)
+// ---------------------------------------------------------------------------
+
+test('T5 바로가기가 여는 시작 파일 = 풀기 단계가 놓는 자리의 그 파일(사본에 실제로 있다)', () => {
+  const root = path.join(tmp, 'where', 'IRIS');
+  const placed = path.join(root, ...LOCK.parts['iris-doctor'].dest.split('/'));
+  assert.equal(doctorStartFile(root), path.join(placed, DOCTOR_START_FILE));
+  assert.ok(fs.existsSync(path.join(COPY, DOCTOR_START_FILE)), '사본에 그 이름의 시작 파일이 있다');
+  assert.ok(unpack.DOCTOR_REQUIRED.includes(DOCTOR_START_FILE), '부품 검증기가 꼭 있어야 할 파일로 본다');
+});
+
+// 영수증: 2.0.65 까지의 설치(Doctor 부품 기록 없음) — 다른 부품은 이번 판과 같다.
+function receiptWithout(partIds, manifest) {
+  const parts = {};
+  for (const [id, p] of Object.entries(LOCK.parts)) {
+    if (partIds.includes(id)) continue;
+    parts[id] = { identity: { version: manifest.parts[id]?.version ?? p.version ?? null, sha256: manifest.parts[id]?.sha256 ?? p.sha256 ?? null, tail: String(p.dest).split('/').filter(Boolean).pop() ?? null, commit: p.commit ?? null }, verified: true };
+  }
+  const done = { status: 'done' };
+  return { schema: 2, setup: { unpack: { ...done, recorded: { parts } }, env: done, skeleton: done, structure: done, venv: done, adapters: done, relay: done, ontology: done, checks: done } };
+}
+const MANIFEST_NOW = { schema: 2, parts: Object.fromEntries(Object.entries(LOCK.parts).map(([id, p]) => [id, { file: p.file, version: p.version ?? null, sha256: p.sha256 ?? `sha-${id}`, dest: p.dest }])) };
+
+test('T6 업데이트 계획: Doctor 가 없던 설치(2.0.65 까지)에 새 판을 얹으면 그 부품이 "바뀜"이고 실행기 단계가 되돌려진다 → 바로가기가 생긴다', () => {
+  assert.ok(RELAY_PARTS.includes('iris-doctor'), 'RELAY_PARTS 에 iris-doctor 가 없으면 이미 설치된 PC 에는 바로가기가 생기지 않는다');
+  const plan = planUpdateReset({ receipt: receiptWithout(['iris-doctor'], MANIFEST_NOW), lock: LOCK, manifest: MANIFEST_NOW });
+  assert.deepEqual(plan.changed, ['iris-doctor']);
+  assert.ok(plan.reset.includes('relay'), JSON.stringify(plan));
+  assert.match(plan.reasons.relay, /iris-doctor/);
+  assert.ok(plan.reset.includes('unpack'), '부품을 놓는 단계는 늘 다시 돈다');
+  // 사람 쪽 단계와 파이썬 환경은 그대로(Doctor 는 파이썬을 쓰지 않는다)
+  for (const keep of [...KEEP_DONE, 'venv']) assert.ok(!plan.reset.includes(keep), `${keep} 는 되돌리지 않는다`);
+});
+
+test('T6 업데이트 계획: Doctor 가 이미 같은 판으로 놓여 있으면 실행기 단계를 되돌리지 않는다 · Doctor 의 판이 바뀌면 되돌린다', () => {
+  const same = planUpdateReset({ receipt: receiptWithout([], MANIFEST_NOW), lock: LOCK, manifest: MANIFEST_NOW });
+  assert.deepEqual(same.changed, []);
+  assert.ok(!same.reset.includes('relay'));
+  const receipt = receiptWithout([], MANIFEST_NOW);
+  receipt.setup.unpack.recorded.parts['iris-doctor'].identity.sha256 = 'sha-older-doctor';
+  const bumped = planUpdateReset({ receipt, lock: LOCK, manifest: MANIFEST_NOW });
+  assert.deepEqual(bumped.changed, ['iris-doctor']);
+  assert.ok(bumped.reset.includes('relay'));
 });
