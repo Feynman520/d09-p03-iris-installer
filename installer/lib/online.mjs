@@ -1082,8 +1082,27 @@ export function resetRelayJobs() { relayJobs.clear(); }
 // keeps dripping inside the idle limit would otherwise never end).
 export const RELAY_STATUS_MAX_BYTES = 1024 * 1024;
 
+/**
+ * 2.0.67: how many of the relay's accounts belong to which provider -- counts only, no names.
+ * The relay's status list marks each account with `provider` ('anthropic' | 'codex' | 'google' …).
+ * A line without one (an older relay, or the unpatched upstream program) is counted the way the relay
+ * itself resolves a missing provider: as 'anthropic'. Anything that is neither of the two providers
+ * this installer signs in goes to `other`.
+ */
+export function countLiveByProvider(accounts) {
+  const out = { anthropic: 0, codex: 0, other: 0 };
+  for (const a of Array.isArray(accounts) ? accounts : []) {
+    const p = typeof a?.provider === 'string' && a.provider ? a.provider : 'anthropic';
+    if (p === 'anthropic' || p === 'codex') out[p] += 1; else out.other += 1;
+  }
+  return out;
+}
+
 export function relayHealth(port = RELAY_PORT, {
   timeoutMs = 3000, totalTimeoutMs = Math.max(timeoutMs * 5, 15_000), maxBytes = RELAY_STATUS_MAX_BYTES, httpGet = http.get,
+  // 2.0.67: also return `liveByProvider` (countLiveByProvider). Asked for by startRelay only, so the plain
+  // answer keeps its shape for every other reader.
+  byProvider = false,
 } = {}) {
   return new Promise((resolve) => {
     let settled = false;
@@ -1117,7 +1136,8 @@ export function relayHealth(port = RELAY_PORT, {
             const j = JSON.parse(Buffer.concat(chunks).toString('utf8'));
             // 2026-09-18 TC-02: 실행 중계기가 실제로 실은 계정 수도 돌려준다(파일 계정 수와 대조하기 위해). 이름·토큰은 안 남긴다.
             const liveAccounts = j && Array.isArray(j.accounts) ? j.accounts.length : null;
-            finish({ ok: res.statusCode === 200 && j && typeof j === 'object' && ('activity' in j || 'accounts' in j), status: res.statusCode, liveAccounts });
+            const extra = byProvider && liveAccounts != null ? { liveByProvider: countLiveByProvider(j.accounts) } : {};
+            finish({ ok: res.statusCode === 200 && j && typeof j === 'object' && ('activity' in j || 'accounts' in j), status: res.statusCode, liveAccounts, ...extra });
           } catch {
             finish({ ok: false, status: res.statusCode });
           }
@@ -1169,7 +1189,8 @@ export async function startRelay({
     proxy = { alive: false, started: false, detail: String(err?.message ?? err) };
   }
 
-  const health = proxy?.alive ? await healthFn(port) : { ok: false, status: null };
+  // `byProvider`: 계정 목록을 공급자별 수로도 받는다(2.0.67 — 아래 대조). 이름 · 열쇠는 넘어오지 않는다.
+  const health = proxy?.alive ? await healthFn(port, { byProvider: true }) : { ok: false, status: null };
   if (!proxy?.alive || !health?.ok) {
     const why = proxy?.detail ?? null;
     log(`relay failed alive=${proxy?.alive === true} health=${health?.ok === true}${why ? ` detail=${JSON.stringify(why)}` : ''}`);
@@ -1202,23 +1223,41 @@ export async function startRelay({
   // 로 하고, 파일 수와 어긋나면 실패로 돌려준다(그 중계기는 우리 설정을 읽고 있지 않다는 뜻).
   const liveAccounts = Number.isInteger(health?.liveAccounts) ? health.liveAccounts : null;
   const accounts = liveAccounts ?? fileAccounts;
-  // 2.0.67: 대조는 양쪽을 같은 잣대로 한다. 실행 중계기는 공급자를 가리지 않고 **전부** 세는데(relayHealth) 위의
-  // `fileAccounts` 는 클로드 + 챗지피티만 세어, 셋째 공급자(구글)의 계정이 설정 파일에 한 줄이라도 있으면 같은 파일을
-  // 읽는 중계기인데도 늘 어긋났다. 그래서 견줄 때만 설정 파일의 **계정 줄 전체 수**를 쓴다(배열 길이만 읽는다).
-  // 파일을 읽지 못해 그 수를 모르면(null) 지금까지의 수로 견준다. 공급자별 세기 · 로그인 완료 판정 · 목록이 없을 때
-  // 돌려주는 수(`fileAccounts`)는 바꾸지 않았다.
-  const fileAll = await countAllAccountsFn({ teamclaudeConfigPath: configPath });
-  const fileTotal = Number.isInteger(fileAll) ? fileAll : fileAccounts;
-  if (liveAccounts != null && liveAccounts !== fileTotal) {
-    log(`relay mismatch: live=${liveAccounts} file=${fileTotal} (the relay on port ${port} is not reading our config)`);
+  // 2.0.67: 대조는 양쪽을 **같은 잣대**로 한다 — 이 설치기가 로그인시키는 두 공급자(클로드 · 챗지피티)의 계정 수끼리.
+  //   실행 중계기의 목록에는 공급자를 가리지 않고 전부 들어 있다(구글 포함). 2.0.66 까지는 그 전체 수를 파일의 클로드 + 챗지피티
+  //   수와 견줘, 셋째 공급자의 계정이 실려 있으면 같은 파일을 읽는 중계기인데도 늘 어긋났다.
+  //   파일의 **전체 줄 수**와 견주는 것도 맞지 않다(2026-11-28 코드 검토로 중계기를 읽어 확인): 중계기는 시작할 때 **쓸 열쇠가 있는
+  //   줄만** 싣는다(중계기 `resolve-accounts.js` — 열쇠 없는 oauth 줄 · 읽히지 않는 importFrom · 로그인 없는 구글 폴더 · 키 없는 apikey ·
+  //   모르는 type 은 건너뜀). 구글 계정의 열쇠는 그 프로그램의 폴더에 따로 있어, 그 로그인이 사라지면 줄은 파일에 남아도 중계기는
+  //   싣지 않는다 — 전체 줄 수로 견주면 그 PC 에서 거짓 실패가 난다. 꺼 둔(disabled) 줄은 싣고 센다. 중복 줄은 싣을 때 걸러내지 않는다.
+  //   그래서: ① 두 공급자의 수는 2.0.66 과 **똑같이** 정확히 같아야 한다(중계기 쪽에서 그 두 공급자만 센다는 것만 다르다)
+  //           ② 그 밖의 공급자는 "파일에 적힌 것보다 많이 실려 있지 않다"만 본다(적게 실린 것은 위 까닭으로 정상일 수 있다).
+  //   중계기가 공급자별 수를 주지 않으면(목록의 수만 온 경우) 2.0.66 의 견줌 그대로다.
+  //   알려진 한계(2.0.13 부터 그대로): 클로드 · 챗지피티 줄이 열쇠를 잃어 중계기가 싣지 못한 PC 는 ① 에서 어긋난다 — 같은 수라는 것이
+  //   같은 파일이라는 증명이 아니듯, 다른 수라는 것도 늘 다른 프로그램이라는 뜻은 아니다. 로그인 완료 판정은 이 대조와 따로다.
+  const by = health?.liveByProvider && Number.isInteger(health.liveByProvider.anthropic) && Number.isInteger(health.liveByProvider.codex)
+    ? health.liveByProvider : null;
+  const liveKnown = by ? by.anthropic + by.codex : liveAccounts;
+  const liveOther = by && Number.isInteger(by.other) ? by.other : 0;
+  const fileAll = by ? await countAllAccountsFn({ teamclaudeConfigPath: configPath }) : null;
+  const fileOther = Number.isInteger(fileAll) ? Math.max(0, fileAll - fileAccounts) : null; // null = 모른다(파일을 읽지 못함) → ② 는 보지 않는다
+  const knownMismatch = liveAccounts != null && liveKnown !== fileAccounts;
+  const otherExcess = liveAccounts != null && !knownMismatch && fileOther != null && liveOther > fileOther;
+  if (knownMismatch || otherExcess) {
+    const shownLive = knownMismatch ? liveKnown : liveAccounts;
+    const shownFile = knownMismatch ? fileAccounts : fileAll;
+    log(`relay mismatch: live=${shownLive} file=${shownFile}${by ? ` (live anthropic+codex=${liveKnown} other=${liveOther}; file claude+chatgpt=${fileAccounts} other=${fileOther ?? '?'})` : ''} (the relay on port ${port} is not reading our config)`);
     patchReceipt(root, (r) => {
       r.online = r.online ?? {};
       r.online.relay = { state: 'failed', accounts: liveAccounts, code: CODES.relay };
     }, deps);
     return {
       ok: false, state: 'failed', accounts: liveAccounts, code: CODES.relay,
-      message: `포트 ${port} 의 중계기가 우리 설정 파일을 읽고 있지 않습니다(중계기 계정 ${liveAccounts}개, 설정 파일 ${fileTotal}개). 다른 중계 프로그램이 먼저 떠 있는 PC 일 수 있습니다 — 그 프로그램을 끄고 「계정 연결 다시 시도」를 눌러 주세요.`,
-      detail: { alive: true, started: proxy.started === true, status: health?.status ?? null, liveAccounts, fileAccounts: fileTotal, port },
+      message: `포트 ${port} 의 중계기가 우리 설정 파일을 읽고 있지 않습니다(중계기 계정 ${shownLive}개, 설정 파일 ${shownFile}개). 다른 중계 프로그램이 먼저 떠 있는 PC 일 수 있습니다 — 그 프로그램을 끄고 「계정 연결 다시 시도」를 눌러 주세요.`,
+      detail: {
+        alive: true, started: proxy.started === true, status: health?.status ?? null, liveAccounts, fileAccounts, port,
+        ...(by ? { liveByProvider: { anthropic: by.anthropic, codex: by.codex, other: liveOther }, fileOther } : {}),
+      },
     };
   }
   log(`relay ok started=${proxy.started === true} accounts=${accounts}${liveAccounts == null ? ' (file count; relay gave no list)' : ''}`);

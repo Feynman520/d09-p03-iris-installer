@@ -708,11 +708,13 @@ export async function countProviderAccounts({ teamclaudeConfigPath, provider } =
  * provider and whether or not they are switched off. Reads ONLY the array
  * length -- never an entry, never a token.
  *
- * This is the yardstick for ONE question: "is the relay on the port reading
- * this very file?" (online.mjs startRelay). The running relay reports every
- * account it carries, so the file side has to be counted the same way; a
- * per-provider sum leaves out any provider this installer does not sign in
- * itself. It is not a sign-in test -- countProviderAccounts() stays that.
+ * Used for ONE thing: online.mjs startRelay subtracts the Claude + ChatGPT
+ * count from it to get "how many lines of any OTHER provider are on file",
+ * and refuses a relay that carries more of those than the file has. It is
+ * NOT compared with the relay's total: the relay loads only lines that have
+ * a usable credential when it starts (its resolve-accounts.js), so a line
+ * can be on file and not in the relay. It is not a sign-in test either --
+ * countProviderAccounts() stays that.
  *
  * @returns {Promise<number|null>} null = the file could not be read (unknown)
  */
