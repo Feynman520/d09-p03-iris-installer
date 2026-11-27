@@ -91,6 +91,11 @@ label.pick .sub { display: block; }
 .login-choice .lc-label { font-weight: 600; }
 .login-choice label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .login-choice .lc-note { flex-basis: 100%; color: var(--ink-2); font-size: 12px; }
+.longkey { border: 1px dashed var(--line-2); border-radius: 8px; padding: 12px 13px; margin-top: 12px; }
+.longkey h4 { margin: 0 0 6px; font-size: 14px; }
+.longkey p.sub { margin: 0 0 4px; font-size: 13px; color: var(--ink-2); }
+.longkey .acts { margin-top: 10px; }
+.longkey .open-link { display: inline-block; margin: 4px 0 6px; font-size: 13px; }
 .stage { display: grid; grid-template-columns: 22px max-content minmax(0, 1fr); gap: 10px; font-size: 13.5px; padding: 3px 0; align-items: baseline; }
 .stage > span:nth-child(2) { white-space: nowrap; }
 .stage .dt { color: var(--ink-3); font-size: 12px; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; text-align: right; }
@@ -323,6 +328,7 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
     <div class="card-head"><span class="mark">⑧</span><h2>설치를 마쳤습니다</h2><span class="badge done" id="badge-done">완료</span></div>
     <div class="card-body">
       <div class="report" id="report"></div>
+      <div id="longkey-done"></div>
       <div id="done-note"></div>
       <div class="acts">
         <button class="go" id="btn-open-face">IRIS 열기</button>
@@ -1366,6 +1372,110 @@ function renderOnlineRows(on) {
 }
 let relayNoteShown = false;
 
+// ---------------------------------------------------------------------------
+// 「1년 열쇠 받기(권장)」 카드 — 2.0.66. 클로드 로그인이 끝난 뒤(계정이 옮겨 담긴 뒤)에만 나온다.
+// 건너뛰어도 · 실패해도 설치는 그대로 끝난다: 이 카드의 상태는 다음 화면으로 넘어가는 판정에 쓰이지 않는다.
+// 글은 장담하지 않는다("1년 동안 … 나오지 않습니다" 같은 말을 쓰지 않는다 — 열쇠는 폐기될 수 있다).
+// 자리는 둘이다: ⑦ 의 클로드 로그인 상자 아래(#longkey-claude)와 ⑧ 완료 화면(#longkey-done) — 클로드만 고른 설치는
+// 로그인이 끝나면 곧 ⑧ 로 넘어가므로, 같은 카드를 ⑧ 에서도 누를 수 있어야 한다.
+// ---------------------------------------------------------------------------
+const LONGKEY_TITLE = '1년 열쇠 받기(권장)';
+const LONGKEY_BODY = '유효 기간이 긴 열쇠를 받아 다시 로그인하는 일을 줄입니다. 브라우저 승인을 한 번 더 합니다. 열쇠가 폐기되면 다시 연결하면 됩니다.';
+const LONGKEY_SKIP_NOTE = '받지 않아도 설치는 그대로 끝납니다. 나중에 IRIS 설정 → 계정 · 보안 → 1년 열쇠 받기에서 받을 수 있습니다.';
+const LONGKEY_LATER_TEXT = '1년 열쇠는 나중에 받기로 했습니다. IRIS 설정 → 계정 · 보안 → 1년 열쇠 받기에서 받을 수 있습니다.';
+const LONGKEY_WAIT_NOTE = '이 승인을 하지 않아도 지금 로그인과 설치는 그대로입니다.';
+const LONGKEY_HOW = 'IRIS 설정 → 계정 · 보안 → 1년 열쇠 받기';
+
+function longKeyShown(lk) { return !!(lk && lk.offered === true); }
+function longKeyBusy(lk) { return !!lk && (lk.state === 'starting' || lk.state === 'approve'); }
+function longKeyDay(v) {
+  if (v == null || v === '') return '';
+  const d = new Date(typeof v === 'number' ? v : (/^\d+$/.test(String(v)) ? Number(v) : String(v)));
+  if (!Number.isFinite(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+// 카드 하나의 글(순수 함수 — tests/ui-longkey.test.mjs 가 떼어 돌린다). 낼 수 없으면 빈 글.
+function longKeyCardHtml(lk) {
+  if (!longKeyShown(lk)) return '';
+  const btn = (act, text, cls) => '<button class="' + cls + '" data-lk="' + act + '">' + esc(text) + '</button>';
+  let inner;
+  if (lk.state === 'done') {
+    inner = '<p class="sub"><span class="ok">✓</span> ' + esc(lk.message || '1년 열쇠를 받았습니다. 열쇠가 폐기되면 다시 연결하면 됩니다.') + '</p>';
+  } else if (longKeyBusy(lk)) {
+    // 승인 주소 링크 — 서버가 준 주소만, 그것도 Claude 승인 주소일 때만 건다.
+    const link = typeof lk.url === 'string' && /^https:\/\/claude\.ai\/oauth\/authorize\?/.test(lk.url)
+      ? '<a class="open-link" target="_blank" rel="noopener" href="' + esc(lk.url) + '">브라우저가 열리지 않았으면 여기를 누르세요 ↗</a>' : '';
+    inner = '<p class="sub"><span class="warn">…</span> ' + esc(lk.message || '브라우저에 뜬 화면에서 「승인(Authorize)」을 한 번 눌러 주세요.') + '</p>' + link +
+      '<p class="sub">' + esc(LONGKEY_WAIT_NOTE) + '</p>';
+  } else if (lk.state === 'partial' || lk.state === 'failed') {
+    inner = '<p class="sub">' + (lk.state === 'failed' ? '<span class="bad">✗</span> ' : '<span class="warn">!</span> ') + esc(lk.message || '1년 열쇠 받기를 끝내지 못했습니다. 지금 로그인은 그대로 쓸 수 있습니다.') + '</p>' +
+      '<div class="acts">' + btn('get', '다시 받기', 'ghost') + '</div>';
+  } else if (lk.skipped) {
+    inner = '<p class="sub">' + esc(LONGKEY_LATER_TEXT) + '</p><div class="acts">' + btn('get', '지금 받기', 'ghost') + '</div>';
+  } else {
+    inner = '<p class="sub">' + esc(LONGKEY_BODY) + '</p><p class="sub">' + esc(LONGKEY_SKIP_NOTE) + '</p>' +
+      '<div class="acts">' + btn('get', '받기', 'go') + btn('later', '나중에', 'ghost') + '</div>';
+  }
+  return '<div class="longkey"><h4>' + esc(LONGKEY_TITLE) + '</h4>' + inner + '</div>';
+}
+// ⑧ 완료 보고의 한 줄: 받았으면 "1년 열쇠 · 만료일", 아니면 어디서 받는지. 클로드를 고르지 않았으면 줄이 없다.
+// lk = 서버의 지금 상태, hk = 인수 문서의 claudeLongKey(이 설치기를 다시 열었을 때는 이것만 있다).
+function longKeyReportLine(lk, hk, subs) {
+  if (!Array.isArray(subs) || !subs.includes('claude')) return '';
+  if (lk && lk.state === 'done') return '1년 열쇠 · 만료 ' + (longKeyDay(lk.expiresAt) || '날짜 모름');
+  if (longKeyBusy(lk)) return '1년 열쇠: 브라우저 승인을 기다리는 중입니다.';
+  if (lk && lk.reason === 'already') return '1년 열쇠를 이미 쓰고 있습니다.';
+  if ((lk && lk.state === 'partial') || (hk && hk.state === 'partial')) return '1년 열쇠: 한 자리에만 넣었습니다 — ' + LONGKEY_HOW + '에서 마저 받을 수 있습니다.';
+  if (hk && hk.state === 'received') return '1년 열쇠 · 만료 ' + (longKeyDay(hk.expiresAt) || '날짜 모름');
+  return '1년 열쇠: 아직 받지 않았습니다 — ' + LONGKEY_HOW + '.';
+}
+
+let longKeyLast = null;            // 서버가 마지막으로 준 상태
+let longKeyReport = null;          // ⑧ 에서 { hk, subs } — 완료 보고의 한 줄을 다시 쓰는 데 쓴다
+function renderLongKey(lk) {
+  longKeyLast = lk || null;
+  const html = longKeyCardHtml(longKeyLast);
+  for (const id of ['longkey-claude', 'longkey-done']) {
+    const el = $(id);
+    if (!el) continue;
+    // 글이 같으면 다시 그리지 않는다 — 1초마다 갈아 끼우면 누르는 순간의 단추 · 링크가 사라진다.
+    if (el._lkHtml !== html) { el.innerHTML = html; el._lkHtml = html; }
+    if (!el._lkWired) { el._lkWired = true; el.addEventListener('click', onLongKeyClick); }
+  }
+  const line = $('report-longkey');
+  if (line && longKeyReport) line.textContent = longKeyReportLine(longKeyLast, longKeyReport.hk, longKeyReport.subs);
+  if (longKeyBusy(longKeyLast)) watchLongKey();
+}
+// 한 번 묻고 그린다. 승인을 기다리는 동안만 되묻기가 이어진다(다른 되묻기와 같은 고리 — 실패가 이어지면 간격을 넓힌다).
+async function longKeyTick() {
+  let status; let body;
+  try { ({ status, body } = await api('/api/online/longkey')); } catch { return 'error'; }
+  if (status >= 500) return 'error';
+  if (!body || !body.longKey) return 'stop';   // 이 길이 없는 서버(옛 판 · 가짜)면 카드를 내지 않는다
+  renderLongKey(body.longKey);
+  return longKeyBusy(body.longKey) ? 'ok' : 'stop';
+}
+const longKeyPoll = createPoller(longKeyTick, 'longkey-conn');
+function watchLongKey() { longKeyPoll.start(); }
+function refreshLongKey() { return longKeyTick(); }
+async function onLongKeyClick(e) {
+  const b = e.target && e.target.closest ? e.target.closest('button[data-lk]') : null;
+  if (!b || b.disabled) return;
+  b.disabled = true;   // 두 번 눌러도 한 번만(서버도 하나만 띄운다)
+  const later = b.getAttribute('data-lk') === 'later';
+  let body = null;
+  try { ({ body } = await api(later ? '/api/online/longkey/skip' : '/api/online/longkey', {})); } catch { /* 아래에서 다시 묻는다 */ }
+  if (body && body.longKey) {
+    // 띄우지 못했으면(서버가 까닭 한 문장을 준다) 그 글을 카드에 보인다 — 로그인 · 설치는 그대로다.
+    const refused = !later && body.ok === false && body.message && !longKeyBusy(body.longKey) && body.longKey.state === 'idle';
+    renderLongKey(refused ? Object.assign({}, body.longKey, { offered: true, state: 'failed', message: body.message }) : body.longKey);
+  } else {
+    b.disabled = false;
+    refreshLongKey();
+  }
+}
+
 function renderLoginBoxes(on) {
   const logins = (on && on.logins) || {};
   const providers = Object.keys(logins).filter((p) => (logins[p] || {}).state !== 'not-needed');
@@ -1391,6 +1501,8 @@ function renderLoginBoxes(on) {
           '<button class="ghost" id="btn-reopen-' + esc(p) + '" hidden>다시 로그인</button>' +
           (p === 'claude' ? '<button class="ghost" id="btn-redl-claude" hidden>Claude Code 다시 받기</button>' : '') +
         '</div>' +
+        // 2.0.66: 「1년 열쇠 받기(권장)」 카드 자리 — 클로드 상자에만, 로그인이 끝난 뒤에만 채워진다(renderLongKey).
+        (p === 'claude' ? '<div id="longkey-claude"></div>' : '') +
       '</div>').join('');
     for (const p of providers) {
       $('btn-login-' + p).onclick = () => startLogin(p);
@@ -1484,6 +1596,8 @@ async function onlineTick() {
   if (!on || typeof on !== 'object') return 'error';
   renderOnlineRows(on);
   renderLoginBoxes(on);
+  // 2.0.66: 1년 열쇠 카드(클로드 로그인이 끝난 뒤에만 서버가 offered:true 로 준다). 아래의 넘어가기 판정은 이 카드를 보지 않는다.
+  if (on.longKey) renderLongKey(on.longKey);
 
   const logins = on.logins || {};
   const needed = Object.keys(logins).filter((p) => (logins[p] || {}).state !== 'not-needed');
@@ -1565,6 +1679,8 @@ async function loadReport() {
     '<h3>2. 기존 자료의 안전</h3><p>설치기는 무엇도 지우거나 덮어쓰지 않았습니다. 이미 있던 파일은 그대로 두고 빠진 것만 채웠습니다. 바탕화면에 만든 것은 「IRIS」 바로가기 하나뿐입니다.</p>' +
     '<h3>3. 결과</h3>' +
     '<p>구독: ' + (subs.length ? esc(subs.join(' · ')) : '없음') + (handoff.leadAgent ? ' · 앞장서는 쪽: ' + esc(handoff.leadAgent === 'chatgpt' ? 'Codex' : 'Claude Code') : '') + '</p>' +
+    // 2.0.66: 클로드 1년 열쇠 한 줄(받았으면 만료일, 아니면 어디서 받는지). 클로드를 고르지 않았으면 빈 줄 — renderLongKey 가 채운다.
+    '<p id="report-longkey"></p>' +
     '<p>만든 작업 폴더 ' + folders.length + '칸' + (folders.length ? ':' : '') + '</p>' + (folders.length ? li(folders) : '') +
     (handoff.checks ? '<p>검사: ' + esc(typeof handoff.checks === 'string' ? handoff.checks : JSON.stringify(handoff.checks)) + '</p>' : '') +
     '<h3>4. 남은 일의 뜻</h3>' +
@@ -1579,6 +1695,11 @@ async function loadReport() {
     '<h3>5. 이제 하실 일</h3>' +
     '<p>아래 <b>「IRIS 열기」</b>를 누르세요. 창이 열리면 비서가 먼저 인사하고 무엇부터 할지 물어봅니다. 그다음부터는 바탕화면의 「IRIS」 아이콘을 두 번 누르면 됩니다. 이 브라우저 탭은 닫으셔도 됩니다.</p>' +
     (rep.markdown ? '<details><summary>설치 기록 전문 보기' + (rep.markdownPath ? ' (' + esc(rep.markdownPath) + ')' : '') + '</summary><pre>' + esc(rep.markdown) + '</pre></details>' : '');
+
+  // 2.0.66: 1년 열쇠 — 완료 보고의 한 줄과 그 아래 카드(#longkey-done). 받지 않아도 이 화면은 "설치를 마쳤습니다" 그대로다.
+  longKeyReport = { hk: handoff.claudeLongKey || null, subs: handoff.subscriptions || chosenSubs || [] };
+  renderLongKey(longKeyLast);
+  refreshLongKey();
 }
 
 $('btn-open-face').onclick = async () => {
