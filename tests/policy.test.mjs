@@ -112,6 +112,31 @@ test('policy: root-AGENTS.md carries every required section, in order', () => {
   }
 });
 
+// 2.0.65: rules a new PC must start with (2026-11-27 owner decision -- "ship every general rule, guidance text included").
+// The planner rules name real iris-planner flags; if the sibling IRIS window repository is present, each flag must exist
+// in its help text, so a renamed flag cannot leave the shipped guidance pointing at nothing.
+test('policy: root-AGENTS.md carries the planner rules, the 10-minute report rule and the Korean-name rule', () => {
+  const text = read('root-AGENTS.md');
+  const headings = text.split('\n').filter((l) => /^#{1,2} /.test(l));
+  assert.ok(headings.includes('## 플래너 등록·끝냄 표시'), 'missing the planner section');
+  for (const needle of ['iris-planner list', '--step', '--asked', '--why', '--undone', '--start', '--end']) {
+    assert.ok(text.includes(needle), `planner section must mention: ${needle}`);
+  }
+  assert.ok(text.includes('10분마다'), 'missing the 10-minute progress report rule');
+  assert.ok(text.includes('일 전체가 끝날 때까지 남은 시간'), 'the report rule must ask for the time left for the whole job');
+  assert.ok(text.includes('한글 자리는 최대한 한글로'), 'missing the Korean-name rule');
+  assert.ok(text.includes('아래 12종으로 닫혀 있다') && text.includes('| 특별 프로젝트 |'), 'tag table must list the 12 kinds of the shipped ontology spec');
+  const siblings = path.resolve(HERE, '..', '..');
+  const face = fs.readdirSync(siblings).find((n) => n.startsWith('P01-'));
+  const helpFile = face ? path.join(siblings, face, 'bin', 'iris-planner.mjs') : null;
+  if (helpFile && fs.existsSync(helpFile)) {
+    const help = fs.readFileSync(helpFile, 'utf8');
+    for (const flag of ['--step', '--asked', '--why', '--undone', '--start', '--end', '--note', '--title']) {
+      assert.ok(help.includes(flag), `iris-planner no longer knows ${flag} -- fix the shipped planner rules`);
+    }
+  }
+});
+
 test('policy: root-AGENTS.md has the self-improve markers around its empty rule section', () => {
   const text = read('root-AGENTS.md');
   const begin = text.indexOf('<!-- self-improve:begin');
