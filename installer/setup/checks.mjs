@@ -680,6 +680,11 @@ export async function checkDesktop(ctx, opts = {}) {
   // 다만 바탕화면이 옮겨진 PC(OneDrive 등)에서 조회까지 실패하면 그 한 경로로는 정상 설치가 멈춘다. 그래서 대비 경로를 하나 더 둔다:
   // 실행기 단계가 **같은 물음으로** 만들어 기록한 「IRIS」 바로가기가 놓인 바로 그 폴더(그 기록이 2.0.65 의 규칙으로 허용될 때만).
   // 두 바로가기는 같은 폴더에 놓이므로 이것도 "한 폴더와의 완전 일치"다 — 이름이 Desktop 인 아무 폴더가 아니다.
+  // 허용은 둘을 구별해 읽는다(2026-11-28 두 번째 코드 검토 1-3):
+  //   ⓐ 윈도우가 알려 준 자리 — 바탕화면 조회(dirLower) · 시작 메뉴 조회(programsLower)의 답과 완전 일치. 평소의 허용은 이것뿐이다.
+  //   ⓑ 기록을 믿는 대비 자리 — 바탕화면 조회가 실패했을 때만: <프로필>\Desktop 과, 기록된 「IRIS」 바로가기의 폴더.
+  //      ⓑ의 둘째는 2.0.65 의 느슨한 규칙(isAllowedShortcut)이 받아 준 기록에 기댄다: 기록 자체가 `…\backup\Desktop\IRIS.lnk` 였다면
+  //      그 옆의 Doctor 바로가기도 허용된다. "윈도우가 확인한 자리"가 아니라 "설치기가 전에 적은 자리"다.
   let programsLower;
   const fallbackDesktops = [];
   if (homeLower) fallbackDesktops.push(path.join(homeLower, 'desktop'));
