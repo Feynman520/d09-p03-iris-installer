@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { collect, treeHash, listFiles } from '../build/collect.mjs';
+import { execFileSync } from 'node:child_process';
+import { collect, treeHash, listFiles, partSource } from '../build/collect.mjs';
 import { extractZip, zipDir } from '../lib/zip.mjs';
 import { sha256File } from '../lib/manifest.mjs';
 import { OFFLINE_ENV } from '../lib/net.mjs';
@@ -135,9 +136,10 @@ test('dir kind zips with excludes; url without sha256 throws', async () => {
 // 2.0.65 -- two lock.json edits checked against the real lock file, offline (dir parts only):
 //   * gen-image became a two-file bundle: `dir` + `include` must stage exactly gen-image.py and
 //     codex-ready.py (not the iris-auth folder or the notes file that live beside them);
-//   * the face part drops daemon/agents/AGENTS.md (an internal instruction file for developers).
-//     A plain exclude name only matches the first path segment, so the nested file is listed by path.
-test('2.0.65: the real gen-image part stages exactly its two files; the real face exclude list drops daemon/agents/AGENTS.md', async () => {
+//   * the face part drops the window repository's internal instruction files (AGENTS.md / CLAUDE.md,
+//     written for developers). A plain exclude name only matches the first path segment, so each
+//     nested one (app/, daemon/, daemon/agents/) is listed by path.
+test('2.0.65: the real gen-image part stages exactly its two files; the real face exclude list drops every AGENTS.md / CLAUDE.md', async () => {
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const real = JSON.parse(fs.readFileSync(path.join(repo, 'lock.json'), 'utf8'));
 
@@ -150,14 +152,20 @@ test('2.0.65: the real gen-image part stages exactly its two files; the real fac
     assert.ok(fs.readFileSync(path.join(genOut, f)).equals(fs.readFileSync(path.join(repo, 'payload-src', 'tools', f))), `${f} must be staged byte-for-byte`);
   }
 
-  assert.ok(real.parts.face.exclude.includes('daemon/agents/AGENTS.md'));
+  for (const p of ['app/AGENTS.md', 'daemon/AGENTS.md', 'daemon/agents/AGENTS.md']) assert.ok(real.parts.face.exclude.includes(p), `face exclude lacks ${p}`);
   const src = path.join(tmp, 'face-src');
   writeTree(src, {
     'package.json': '{"name":"iris-face","version":"0.0.0"}',
     'AGENTS.md': 'root instructions',
+    'CLAUDE.md': '@AGENTS.md',
+    'app/AGENTS.md': 'internal instructions',
+    'app/app.js': '1',
+    'daemon/AGENTS.md': 'internal instructions',
     'daemon/agents/AGENTS.md': 'internal instructions',
     'daemon/agents/claude.mjs': 'export {};',
     'daemon/server.mjs': 'export {};',
+    'scripts/AGENTS.md': 'internal instructions',
+    '_archive/old/CLAUDE.md': '@AGENTS.md',
   });
   const f = dirs('face-exclude');
   const rf = await collect({
@@ -168,10 +176,47 @@ test('2.0.65: the real gen-image part stages exactly its two files; the real fac
   });
   const faceOut = path.join(tmp, 'face-out');
   await extractZip(path.join(rf.payloadDir, 'face/iris-face.zip'), faceOut);
-  assert.ok(!fs.existsSync(path.join(faceOut, 'daemon/agents/AGENTS.md')), 'the internal instruction file must not ship');
-  assert.ok(fs.existsSync(path.join(faceOut, 'daemon/agents/claude.mjs')), 'its sibling code files still ship');
-  assert.ok(fs.existsSync(path.join(faceOut, 'daemon/server.mjs')));
-  assert.ok(!fs.existsSync(path.join(faceOut, 'AGENTS.md')), 'the root one was already excluded by name');
+  const shipped = listFiles(faceOut);
+  assert.deepEqual(shipped.filter((f) => /(^|\/)(AGENTS|CLAUDE)\.md$/.test(f)), [], 'no internal instruction file may ship, at any depth');
+  assert.deepEqual(shipped.sort(), ['app/app.js', 'daemon/agents/claude.mjs', 'daemon/server.mjs', 'package.json'], 'the code beside them still ships');
+});
+
+// The decision (2026-11-27): the shipped IRIS window carries none of the window repository's
+// AGENTS.md / CLAUDE.md. A plain exclude name only covers the top level, so every nested one must be
+// listed by path -- and a new one added to that repository later would silently ship again. This test
+// reads the sibling checkout's tracked file list and fails when one is not covered.
+test('2.0.65: every AGENTS.md / CLAUDE.md tracked in the IRIS window repository is excluded from the face part', async (t) => {
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const real = JSON.parse(fs.readFileSync(path.join(repo, 'lock.json'), 'utf8'));
+  const faceSrc = partSource('face', real.parts.face);
+  let tracked;
+  try {
+    tracked = execFileSync('git', ['-C', faceSrc, 'ls-files', '-z'], { encoding: 'buffer', stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString('utf8').split('\0').filter(Boolean);
+  } catch {
+    t.skip('the IRIS window checkout is not beside this repository (or is not a git checkout)');
+    return;
+  }
+  const instructions = tracked.filter((f) => /(^|\/)(AGENTS|CLAUDE)\.md$/.test(f));
+  assert.ok(instructions.length > 0, 'expected at least the root AGENTS.md in the window repository');
+
+  // Rebuild just those paths (plus one neighbour each) and run them through the real exclude list.
+  const src = path.join(tmp, 'face-tracked-src');
+  const files = { 'package.json': '{"name":"iris-face","version":"0.0.0"}' };
+  for (const f of instructions) {
+    files[f] = 'instructions';
+    files[`${path.posix.dirname(f) === '.' ? '' : `${path.posix.dirname(f)}/`}keep-me.txt`] = 'neighbour';
+  }
+  writeTree(src, files);
+  const d = dirs('face-tracked');
+  const r = await collect({
+    lock: { package: { version: '0' }, parts: { 'face-like': { kind: 'dir', source: src, exclude: real.parts.face.exclude, file: 'face/iris-face.zip' } } },
+    ...d, log: () => {},
+  });
+  const out = path.join(tmp, 'face-tracked-out');
+  await extractZip(path.join(r.payloadDir, 'face/iris-face.zip'), out);
+  const leaked = listFiles(out).filter((f) => /(^|\/)(AGENTS|CLAUDE)\.md$/.test(f));
+  assert.deepEqual(leaked, [], `add these to lock.json parts.face.exclude (by path): ${leaked.join(', ')}`);
 });
 
 test('cacheDir inside stageDir throws before stageDir is wiped', async () => {

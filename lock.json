@@ -141,12 +141,12 @@
     "face": {
       "kind": "dir",
       "source": "../P01-아이리스 페이스(IRIS-Face) 〖Local App〗",
-      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "modules", "daemon/__pycache__", "daemon/agents/AGENTS.md", ".stack", "out"],
+      "exclude": ["node_modules", "state", "docs", "_archive", ".git", ".playwright-mcp", ".superpowers", "AGENTS.md", "CLAUDE.md", "scripts", "modules", "daemon/__pycache__", "app/AGENTS.md", "daemon/AGENTS.md", "daemon/agents/AGENTS.md", ".stack", "out"],
       "npmCi": true,
       "file": "face/iris-face.zip",
       "dest": "_agent/shared/tools/face",
       "license": "MIT",
-      "note": "판은 P01 package.json 에서 빌드 때 읽어 manifest 에 넣는다(손으로 적지 않는다). exclude 에서 '/' 가 없는 이름은 맨 위 칸만 가린다(AGENTS.md = 뿌리의 것) -- 안쪽 파일은 경로 앞머리로 적는다. 2.0.65: daemon/agents/AGENTS.md(만드는 사람용 내부 지침 글)를 제품 묶음에서 뺀다."
+      "note": "판은 P01 package.json 에서 빌드 때 읽어 manifest 에 넣는다(손으로 적지 않는다). exclude 에서 '/' 가 없는 이름은 맨 위 칸만 가린다(AGENTS.md = 뿌리의 것) -- 안쪽 파일은 경로 앞머리로 적는다. 2.0.65: 창 저장소 안의 내부 지침 글(AGENTS.md · CLAUDE.md -- 만드는 사람용)을 제품 묶음에서 전부 뺀다: app/AGENTS.md · daemon/AGENTS.md · daemon/agents/AGENTS.md(뿌리의 둘과 scripts · _archive 안의 것은 이미 빠져 있다). 창 코드는 이 파일들을 읽지 않는다(읽는 AGENTS.md 는 사용자의 작업 폴더 것). 창 저장소에 지침 글이 새로 생기면 여기에 한 줄을 더한다 -- tests/collect.test.mjs 가 옆 폴더의 추적 파일 목록으로 빠진 것을 잡는다."
     },
     "dash": {
       "kind": "dir",
