@@ -845,6 +845,124 @@ test('startRelay: 실행 중계기의 계정 수가 설정 파일과 다르면 �
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+// 2.0.67 — 계정 수 대조는 양쪽을 같은 잣대(전체 계정 수)로 센다.
+// 실행 중계기는 공급자를 가리지 않고 전부 세는데 설정 파일 쪽은 클로드 + 챗지피티만 세어,
+// 셋째 공급자(구글)의 계정이 하나라도 있으면 같은 설정 파일을 읽는 중계기인데도 늘 "어긋남"으로 실패했다.
+// 아래 시험은 진짜 설정 파일을 임시 폴더에 쓰고 진짜 세기 함수로 돈다(세기 함수를 주입하지 않는다).
+function relayCountCase(name, accounts, liveAccounts) {
+  const root = tmpRoot(name);
+  const cfg = path.join(root, 'tc.json');
+  fs.writeFileSync(cfg, JSON.stringify({ proxy: { port: 3456, apiKey: 'test-only' }, accounts }), 'utf8');
+  return {
+    root, cfg,
+    run: () => startRelay({
+      root,
+      resolveConfigPathFn: () => cfg,
+      ensureProxyFn: async () => ({ alive: true, started: false }),
+      healthFn: async () => ({ ok: true, status: 200, liveAccounts }),
+    }),
+    done: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+const CLAUDE_ACC = (n = 1) => ({ name: `claude-${n}@localhost`, type: 'oauth', refreshToken: 'test-only' });
+const CODEX_ACC = (n = 1) => ({ name: `codex-${n}`, type: 'oauth', provider: 'codex', importFrom: 'X:\\nowhere' });
+const GOOGLE_ACC = (n = 1) => ({ name: `g${n}`, type: 'oauth', provider: 'google', source: 'agy', importFrom: 'X:\\nowhere' });
+
+test('startRelay: 클로드 1 + 구글 2 · 실행 중계기 3 → 통과 (셋째 공급자가 있어도 같은 설정 파일이면 어긋남이 아니다, 2.0.67)', async () => {
+  const c = relayCountCase('relaygoogle', [CLAUDE_ACC(), GOOGLE_ACC(1), GOOGLE_ACC(2)], 3);
+  const r = await c.run();
+  assert.deepEqual({ ok: r.ok, state: r.state, accounts: r.accounts }, { ok: true, state: 'done', accounts: 3 });
+  assert.deepEqual(readReceipt(c.root).online.relay, { state: 'done', accounts: 3, code: null });
+  c.done();
+});
+
+test('startRelay: 클로드만 · 코덱스만 · 둘 다 — 실행 중계기와 수가 같으면 통과 (지금까지와 같다, 2.0.67)', async () => {
+  for (const [name, accounts] of [
+    ['relayonlyclaude', [CLAUDE_ACC()]],
+    ['relayonlycodex', [CODEX_ACC()]],
+    ['relayboth', [CLAUDE_ACC(), CODEX_ACC()]],
+    ['relaybothmany', [CLAUDE_ACC(1), CLAUDE_ACC(2), CODEX_ACC(1), CODEX_ACC(2), CODEX_ACC(3)]],
+  ]) {
+    const c = relayCountCase(name, accounts, accounts.length);
+    const r = await c.run();
+    assert.deepEqual({ ok: r.ok, state: r.state, accounts: r.accounts }, { ok: true, state: 'done', accounts: accounts.length }, name);
+    c.done();
+  }
+});
+
+test('startRelay: 꺼 둔(disabled) 계정이 섞여도 잣대는 그대로 — 설정 파일의 계정 줄 수와 견준다 (2.0.67)', async () => {
+  const accounts = [CLAUDE_ACC(1), { ...CLAUDE_ACC(2), disabled: true }, CODEX_ACC(1), { ...GOOGLE_ACC(1), disabled: true }];
+  const same = relayCountCase('relaydisabled', accounts, 4);
+  assert.equal((await same.run()).ok, true, '줄 수가 같으면 통과');
+  same.done();
+  const fewer = relayCountCase('relaydisabled2', accounts, 2);
+  const r = await fewer.run();
+  assert.equal(r.ok, false, '줄 수가 다르면 지금까지처럼 실패(꺼 둔 계정을 빼고 세지 않는다)');
+  assert.match(r.message, /중계기 계정 2개, 설정 파일 4개/);
+  fewer.done();
+});
+
+test('startRelay: 실행 5 · 설정 파일 1 → 여전히 실패 — 다른 중계 프로그램이 3456 을 쓰는 PC 판정을 잃지 않는다 (2.0.67)', async () => {
+  const c = relayCountCase('relayforeign5', [CODEX_ACC()], 5);
+  const r = await c.run();
+  assert.equal(r.ok, false);
+  assert.equal(r.code, CODES.relay);
+  assert.match(r.message, /우리 설정 파일을 읽고 있지 않습니다\(중계기 계정 5개, 설정 파일 1개\)/);
+  assert.deepEqual(r.detail, { alive: true, started: false, status: 200, liveAccounts: 5, fileAccounts: 1, port: 3456 });
+  assert.equal(readReceipt(c.root).online.relay.state, 'failed');
+  c.done();
+  // 구글 계정이 있는 설정이어도 같다: 실행 1 · 설정 파일 3 → 실패(전체 수로 견준다).
+  const g = relayCountCase('relayforeign1', [CLAUDE_ACC(), GOOGLE_ACC(1), GOOGLE_ACC(2)], 1);
+  const rg = await g.run();
+  assert.equal(rg.ok, false);
+  assert.match(rg.message, /중계기 계정 1개, 설정 파일 3개/);
+  g.done();
+});
+
+test('startRelay: 실행 중계기가 목록을 안 주면 설정 파일 수로 — 그 수는 지금까지처럼 클로드 + 챗지피티 (2.0.67)', async () => {
+  const c = relayCountCase('relaynolist', [CLAUDE_ACC(), CODEX_ACC()], null);
+  const r = await c.run();
+  assert.deepEqual({ ok: r.ok, state: r.state, accounts: r.accounts }, { ok: true, state: 'done', accounts: 2 });
+  c.done();
+  const g = relayCountCase('relaynolistg', [CLAUDE_ACC(), GOOGLE_ACC(1), GOOGLE_ACC(2)], null);
+  const rg = await g.run();
+  assert.deepEqual({ ok: rg.ok, state: rg.state, accounts: rg.accounts }, { ok: true, state: 'done', accounts: 1 }, '목록이 없을 때의 수는 바꾸지 않았다');
+  g.done();
+});
+
+test('startRelay: 구글 계정만 있는 설정 — 대조는 통과하지만 로그인 완료 판정은 그대로다 (2.0.67)', async () => {
+  const c = relayCountCase('relaygoogleonly', [GOOGLE_ACC(1), GOOGLE_ACC(2)], 2);
+  const r = await c.run();
+  assert.deepEqual({ ok: r.ok, state: r.state, accounts: r.accounts }, { ok: true, state: 'done', accounts: 2 });
+  // 공급자별 세기와 그것을 쓰는 로그인 완료 판정은 구글 계정을 어느 쪽에도 세지 않는다(바꾸지 않았다).
+  const { countProviderAccounts, relayStatus, countAllAccounts } = await import('../installer/lib/login.mjs');
+  assert.equal(await countProviderAccounts({ teamclaudeConfigPath: c.cfg, provider: 'claude' }), 0);
+  assert.equal(await countProviderAccounts({ teamclaudeConfigPath: c.cfg, provider: 'chatgpt' }), 0);
+  assert.equal(await relayStatus({ teamclaudeConfigPath: c.cfg, provider: 'claude', accountsBefore: 0 }), 'pending');
+  assert.equal(await relayStatus({ teamclaudeConfigPath: c.cfg, provider: 'chatgpt', accountsBefore: 0 }), 'pending');
+  assert.equal(await countAllAccounts({ teamclaudeConfigPath: c.cfg }), 2);
+  c.done();
+});
+
+test('startRelay: 전체 세기는 대조에만 쓰인다 — 공급자별 세기는 지금까지처럼 클로드 · 챗지피티 차례로 한 번씩 (2.0.67)', async () => {
+  const root = tmpRoot('relaycountorder');
+  const counted = [];
+  const all = [];
+  const r = await startRelay({
+    root,
+    resolveConfigPathFn: () => path.join(root, 'tc.json'),
+    ensureProxyFn: async () => ({ alive: true, started: false }),
+    healthFn: async () => ({ ok: true, status: 200, liveAccounts: 4 }),
+    countAccountsFn: async ({ provider }) => { counted.push(provider); return 1; },
+    countAllAccountsFn: async (a) => { all.push(Object.keys(a).sort().join(',')); return 4; },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.accounts, 4);
+  assert.deepEqual(counted, ['claude', 'chatgpt']);
+  assert.deepEqual(all, ['teamclaudeConfigPath'], '전체 세기에는 설정 파일 자리만 넘긴다');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('startRelay: will not start -> E-ONLINE-RELAY', async () => {
   const root = tmpRoot('relayfail');
   const r = await startRelay({

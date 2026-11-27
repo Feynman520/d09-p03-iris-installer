@@ -704,6 +704,29 @@ export async function countProviderAccounts({ teamclaudeConfigPath, provider } =
 }
 
 /**
+ * How many account entries the relay's config file holds, whatever their
+ * provider and whether or not they are switched off. Reads ONLY the array
+ * length -- never an entry, never a token.
+ *
+ * This is the yardstick for ONE question: "is the relay on the port reading
+ * this very file?" (online.mjs startRelay). The running relay reports every
+ * account it carries, so the file side has to be counted the same way; a
+ * per-provider sum leaves out any provider this installer does not sign in
+ * itself. It is not a sign-in test -- countProviderAccounts() stays that.
+ *
+ * @returns {Promise<number|null>} null = the file could not be read (unknown)
+ */
+export async function countAllAccounts({ teamclaudeConfigPath } = {}) {
+  let config;
+  try {
+    config = readJsonFile(teamclaudeConfigPath);
+  } catch {
+    return null;
+  }
+  return Array.isArray(config?.accounts) ? config.accounts.length : 0;
+}
+
+/**
  * Poll TeamClaude's config file for that provider's account count. `done`
  * once the count passes `accountsBefore` -- i.e. at least one new account of
  * this provider joined. Reads ONLY counts -- never tokens.

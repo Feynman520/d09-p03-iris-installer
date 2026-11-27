@@ -40,7 +40,7 @@ import { assertInside } from './paths.mjs';
 import { defaultNpmInstall } from './install.mjs';
 import {
   startPipedLogin, pipedLoginInfo, cliLoginStatus, relayImport, relayStatus,
-  countProviderAccounts, resolveTeamclaudeConfigPath, ensureRelayConfigDefaults,
+  countProviderAccounts, countAllAccounts, resolveTeamclaudeConfigPath, ensureRelayConfigDefaults,
 } from './login.mjs';
 import { ensureProxy } from './proxy.mjs';
 import { tlsTrustCode } from './systemca.mjs';
@@ -1143,6 +1143,7 @@ export async function startRelay({
   ensureProxyFn = ensureProxy,
   healthFn = relayHealth,
   countAccountsFn = countProviderAccounts,
+  countAllAccountsFn = countAllAccounts,
   resolveConfigPathFn = resolveTeamclaudeConfigPath,
   ensureRelayConfigDefaultsFn = ensureRelayConfigDefaults,
   readReceiptFn = readReceipt, writeReceiptFn = writeReceipt,
@@ -1201,16 +1202,23 @@ export async function startRelay({
   // 로 하고, 파일 수와 어긋나면 실패로 돌려준다(그 중계기는 우리 설정을 읽고 있지 않다는 뜻).
   const liveAccounts = Number.isInteger(health?.liveAccounts) ? health.liveAccounts : null;
   const accounts = liveAccounts ?? fileAccounts;
-  if (liveAccounts != null && liveAccounts !== fileAccounts) {
-    log(`relay mismatch: live=${liveAccounts} file=${fileAccounts} (the relay on port ${port} is not reading our config)`);
+  // 2.0.67: 대조는 양쪽을 같은 잣대로 한다. 실행 중계기는 공급자를 가리지 않고 **전부** 세는데(relayHealth) 위의
+  // `fileAccounts` 는 클로드 + 챗지피티만 세어, 셋째 공급자(구글)의 계정이 설정 파일에 한 줄이라도 있으면 같은 파일을
+  // 읽는 중계기인데도 늘 어긋났다. 그래서 견줄 때만 설정 파일의 **계정 줄 전체 수**를 쓴다(배열 길이만 읽는다).
+  // 파일을 읽지 못해 그 수를 모르면(null) 지금까지의 수로 견준다. 공급자별 세기 · 로그인 완료 판정 · 목록이 없을 때
+  // 돌려주는 수(`fileAccounts`)는 바꾸지 않았다.
+  const fileAll = await countAllAccountsFn({ teamclaudeConfigPath: configPath });
+  const fileTotal = Number.isInteger(fileAll) ? fileAll : fileAccounts;
+  if (liveAccounts != null && liveAccounts !== fileTotal) {
+    log(`relay mismatch: live=${liveAccounts} file=${fileTotal} (the relay on port ${port} is not reading our config)`);
     patchReceipt(root, (r) => {
       r.online = r.online ?? {};
       r.online.relay = { state: 'failed', accounts: liveAccounts, code: CODES.relay };
     }, deps);
     return {
       ok: false, state: 'failed', accounts: liveAccounts, code: CODES.relay,
-      message: `포트 ${port} 의 중계기가 우리 설정 파일을 읽고 있지 않습니다(중계기 계정 ${liveAccounts}개, 설정 파일 ${fileAccounts}개). 다른 중계 프로그램이 먼저 떠 있는 PC 일 수 있습니다 — 그 프로그램을 끄고 「계정 연결 다시 시도」를 눌러 주세요.`,
-      detail: { alive: true, started: proxy.started === true, status: health?.status ?? null, liveAccounts, fileAccounts, port },
+      message: `포트 ${port} 의 중계기가 우리 설정 파일을 읽고 있지 않습니다(중계기 계정 ${liveAccounts}개, 설정 파일 ${fileTotal}개). 다른 중계 프로그램이 먼저 떠 있는 PC 일 수 있습니다 — 그 프로그램을 끄고 「계정 연결 다시 시도」를 눌러 주세요.`,
+      detail: { alive: true, started: proxy.started === true, status: health?.status ?? null, liveAccounts, fileAccounts: fileTotal, port },
     };
   }
   log(`relay ok started=${proxy.started === true} accounts=${accounts}${liveAccounts == null ? ' (file count; relay gave no list)' : ''}`);
