@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { applyPatches } from '../build/patch-teamclaude.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iris-patch-'));
@@ -222,6 +222,45 @@ test('applyPatches on a fresh pristine install reproduces the live TeamClaude in
     }
   }
   assert.deepEqual(noEvidence, [], `the installer's patch check would reject: ${noEvidence.join(', ')}`);
+
+  // 7. The relay's own tests travel in the rules (the package-root
+  //    *.test.js / *.test.mjs files). Run them here, on exactly the bytes a
+  //    build would ship -- the byte comparison above says "same as the live
+  //    install", this says "and that code passes its own tests".
+  //
+  //    They only use loopback servers on free ports, temp folders and fake
+  //    tokens. The environment below makes that true even by accident: no
+  //    Windows balloon, no wake guard (the one part that would look at the
+  //    login servers after a sleep), and the two default file locations --
+  //    the relay config and the Google stop file -- pointed into scratch so
+  //    nothing can land next to this PC's real relay config. The live relay
+  //    on its own port is never contacted.
+  await t.test("the relay's own tests pass on the patched pristine install", () => {
+    const relayScratch = path.join(scratch, 'relay-tests');
+    fs.mkdirSync(relayScratch, { recursive: true });
+    const env = {
+      ...process.env,
+      TEAMCLAUDE_NOTIFY: '0',
+      TEAMCLAUDE_WAKE_GUARD: '0',
+      TEAMCLAUDE_CONFIG: path.join(relayScratch, 'teamclaude.json'),
+      IRIS_GATE_GOOGLE_HALT_FILE: path.join(relayScratch, 'google-halt.json'),
+    };
+    // Set by the test runner we are inside; a nested runner that inherits it
+    // reports to its parent instead of deciding its own exit code.
+    delete env.NODE_TEST_CONTEXT;
+    const run = spawnSync(process.execPath, ['--test', '--test-timeout=120000'], {
+      cwd: madeRoot, env, encoding: 'utf8', timeout: 150_000, windowsHide: true,
+    });
+    const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+    const count = (label) => Number((out.match(new RegExp(`^ℹ ${label} (\\d+)$`, 'm')) ?? [])[1] ?? NaN);
+    assert.equal(run.status, 0, `relay tests failed (exit ${run.status}${run.error ? `, ${run.error.message}` : ''}):\n${out.slice(-3000)}`);
+    assert.equal(count('fail'), 0, out.slice(-3000));
+    // every test file the rules carry was actually picked up and run
+    const carried = rules.files.map((f) => f.path.slice(PKG_PREFIX.length)).filter((rel) => /^[^/]+\.test\.m?js$/.test(rel));
+    assert.ok(carried.length >= 9, `expected the relay test files in the rules, found ${carried.length}`);
+    assert.ok(count('pass') >= carried.length, `only ${count('pass')} relay test(s) ran for ${carried.length} test file(s)`);
+    t.diagnostic(`relay tests: ${count('pass')} passed across ${carried.length} file(s)`);
+  });
 });
 
 test('teamclaude-manage.ps1 copy stays ASCII-only', () => {
