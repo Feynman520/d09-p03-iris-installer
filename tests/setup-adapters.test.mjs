@@ -161,10 +161,11 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   // 2.0.65: 로그인 열쇠 알림 — 동봉 node 로 부품 iris-auth 의 status.mjs --hook 을 부른다(따로 둔 항목, 10초 제한)
   assert.equal(start[1].matcher, 'startup|resume|clear|compact');
   assert.equal(start[1].hooks.length, 1);
-  assert.ok(start[1].hooks[0].command.includes(`& "${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" "${under(root, `${LOCK.parts['iris-auth'].dest}/status.mjs`)}" --hook; exit $LASTEXITCODE`));
+  // 알리기만 하는 훅이라 어떤 경우에도 종료 코드 0 · 오류 글 없음(`try { … 2>$null } catch { }; exit 0`) — 세션 시작 화면에 오류 줄을 남기지 않는다.
+  assert.ok(start[1].hooks[0].command.endsWith(`try { & "${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" "${under(root, `${LOCK.parts['iris-auth'].dest}/status.mjs`)}" --hook 2>$null } catch { }; exit 0`));
   assert.equal(start[1].hooks[0].timeout, 10);
   // Node 를 띄우는 자리: 윈도우 인증서 목록도 믿게 — 비어 있을 때만 채운다(사용자가 정한 값은 덮지 않는다)
-  assert.ok(start[1].hooks[0].command.startsWith("if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; & "));
+  assert.ok(start[1].hooks[0].command.startsWith("if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; try { & "));
   // 2.0.42: 안 끈 배경 명령 가드(클로드 전용 Stop 훅, matcher 없음)
   const stop = settings.hooks.Stop;
   assert.equal(stop.length, 1);
@@ -179,10 +180,14 @@ test('adapters: 빈 루트 -> 클로드 설정 5파일 + 코덱스 설정 2파�
   for (const group of [...pre, ...start, ...stop]) {
     for (const h of group.hooks) {
       assert.equal(h.shell, 'powershell', `훅 실행 껍데기: ${h.command}`);
-      assert.ok(h.command.endsWith('; exit $LASTEXITCODE'), `종료 코드 전달: ${h.command}`);
       assert.ok(!/^"/.test(h.command), `파워셸에서 "a" "b" 꼴은 문법 오류: ${h.command}`);
     }
   }
+  // 막는 훅 넷은 스크립트의 종료 코드를 그대로 넘긴다(차단 2 가 살아야 한다). 알리기만 하는 훅(2.0.65)만 늘 0 이다.
+  for (const group of [...pre, start[0], ...stop]) {
+    for (const h of group.hooks) assert.ok(h.command.endsWith('; exit $LASTEXITCODE'), `종료 코드 전달: ${h.command}`);
+  }
+  assert.ok(!start[1].hooks[0].command.includes('$LASTEXITCODE'), '알림 훅은 프로그램의 종료 코드를 넘기지 않는다');
 
   // 플러그인 4종이 켜져 있고 document-skills 는 없다
   assert.deepEqual(Object.keys(settings.enabledPlugins).sort(), [
@@ -654,6 +659,18 @@ test('adapters(2.0.65): 옛 꼴로 남은 우리 알림 훅(시간 제한 · 껍
   assert.equal(after[0].hooks[0].command, wanted.command);
   assert.equal(after[0].hooks[0].shell, 'powershell');
   assert.equal(after[0].hooks[0].timeout, 10);
+
+  // 꼴만 다른 것도 간다: 종료 코드를 그대로 넘기던 꼴(`…; exit $LASTEXITCODE` — 실패 때 오류 한 줄이 남는다) → 늘 0 인 꼴.
+  const s1 = readJson(sPath);
+  const mine = s1.hooks.SessionStart.find((e) => JSON.stringify(e).includes('status.mjs'));
+  mine.hooks[0].command = `if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; & "${path.join(root, '_agent', 'shared', 'tools', 'node', 'node.exe')}" "${path.join(root, '_agent', 'shared', 'tools', 'iris-auth', 'status.mjs')}" --hook; exit $LASTEXITCODE`;
+  fs.writeFileSync(sPath, `${JSON.stringify(s1, null, 2)}\n`);
+  await adapters.run(ctx);
+  const s2 = readJson(sPath);
+  const again = s2.hooks.SessionStart.filter((e) => JSON.stringify(e).includes('status.mjs'));
+  assert.equal(again.length, 1);
+  assert.equal(again[0].hooks[0].command, wanted.command);
+  assert.ok(again[0].hooks[0].command.endsWith('} catch { }; exit 0'));
 });
 
 test('adapters(업데이트): 플러그인은 새 판 캐시를 가리키고, 사람이 바꾼 source 는 그대로 둔다', async () => {

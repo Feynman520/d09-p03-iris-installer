@@ -433,18 +433,26 @@ async function runRelaySurvey(ctx, { fs, root, log }) {
 // 파워셸 고정이면 Git Bash 가 있든 없든 같다. `-Command` 는 끝난 명령의 종료 코드를 1/0 으로 뭉개므로
 // 차단(2)이 살아 있게 `; exit $LASTEXITCODE` 를 붙인다(실측: 없으면 1, 있으면 2).
 export const CLAUDE_HOOK_SHELL = 'powershell';
-const psRun = (exe, ...args) => `& ${[exe, ...args].map((a) => (/[\\/:\s]/.test(a) ? `"${a}"` : a)).join(' ')}; exit $LASTEXITCODE`;
+const psCall = (exe, ...args) => `& ${[exe, ...args].map((a) => (/[\\/:\s]/.test(a) ? `"${a}"` : a)).join(' ')}`;
+// 막는 훅(일괄 종료 막기 · 경로 보호 · 신선도 점검 · 남은 배경 작업): 스크립트의 종료 코드를 그대로 넘긴다 — 차단(2)이 살아야 한다.
+const psRun = (exe, ...args) => `${psCall(exe, ...args)}; exit $LASTEXITCODE`;
+// 알리기만 하는 훅: **어떤 경우에도 종료 코드 0, 오류 줄 없음.** 세션 시작 화면에 오류 한 줄을 남기면 안 된다.
+//   · `2>$null` = 프로그램이 낸 오류 글(스크립트 없음 · 불러오기 실패 때 node 가 내는 글)을 버린다.
+//   · `try { } catch { }` = 프로그램 자체를 못 띄운 경우(node 없음)에 파워셸이 내는 오류 글을 막는다.
+//   · `exit 0` = 프로그램이 몇 번으로 끝났든 0.
+// 프로그램의 표준 출력(알림 한 줄)은 그대로 나간다(실측: 한글 UTF-8 글자가 바뀌지 않는다).
+const psRunQuiet = (exe, ...args) => `try { ${psCall(exe, ...args)} 2>$null } catch { }; exit 0`;
 
 // 로그인 열쇠 알림 훅(2.0.65) — 세션이 시작될 때 부품 `iris-auth` 의 `status.mjs --hook` 을 한 번 부른다.
 // IRIS 열쇠가 곧 끝나거나 끝났을 때만 한 줄을 내고, 알릴 것이 없으면 아무것도 내지 않는다(이 PC 의 파일만 읽는다).
 //   · Node 를 띄우는 자리라 윈도우 인증서 목록도 믿게 한다(정적 검사 ㉒) — 값이 비어 있을 때만 채운다.
-//   · 알림일 뿐이다: 스크립트가 없거나 깨져 있어도 세션 시작을 막지 않는다(막는 종료 코드 2 를 내지 않는다 — 시험이 묶음).
+//   · 알림일 뿐이다: 스크립트가 없거나 깨져 있거나 node 가 없어도 종료 코드 0 · 오류 글 없음(psRunQuiet — 시험이 실제 파워셸로 잰다).
 //   · 클로드 전용. 코덱스 hooks.json 에는 넣지 않는다(코덱스 훅을 바꾸면 첫 실행 신뢰 확인에 닿는다).
 export const AUTH_NOTICE_TIMEOUT_SEC = 10;
 export const PS_TRUST_SYSTEM_CA = "if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }";
 export const authToolDir = (root) => path.join(root, '_agent', 'shared', 'tools', 'iris-auth');
 export function authNoticeHookCommand(node, script) {
-  return `${PS_TRUST_SYSTEM_CA}; ${psRun(node, script, '--hook')}`;
+  return `${PS_TRUST_SYSTEM_CA}; ${psRunQuiet(node, script, '--hook')}`;
 }
 
 // `authDir` = 잠금표가 정한 `iris-auth` 부품 폴더(없으면 기본 자리).

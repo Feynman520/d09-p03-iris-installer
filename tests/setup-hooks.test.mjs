@@ -198,8 +198,14 @@ test('알림 훅: 클로드 SessionStart 에 따로 둔 항목 하나 — 파워
   assert.equal(h.shell, 'powershell');
   assert.equal(h.timeout, 10);
   assert.equal(h.timeout, adapters.AUTH_NOTICE_TIMEOUT_SEC);
-  assert.equal(h.command, `if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; & "${NODE}" "${path.win32.join(TOOLS, 'iris-auth', 'status.mjs')}" --hook; exit $LASTEXITCODE`);
+  // 알리기만 하는 훅: 프로그램의 오류 글은 버리고(2>$null), 프로그램을 못 띄워도 조용히(try/catch), 늘 0 으로 끝난다(exit 0).
+  assert.equal(h.command, `if (-not $env:NODE_USE_SYSTEM_CA) { $env:NODE_USE_SYSTEM_CA = '1' }; try { & "${NODE}" "${path.win32.join(TOOLS, 'iris-auth', 'status.mjs')}" --hook 2>$null } catch { }; exit 0`);
   assert.ok(!/^"/.test(h.command), '파워셸에서 "a" "b" 꼴은 문법 오류');
+  // 막는 훅 넷은 그대로 스크립트의 종료 코드를 넘긴다 — 차단(2)이 살아야 한다.
+  for (const e of [...groups.PreToolUse, groups.SessionStart[0], ...groups.Stop]) {
+    assert.ok(e.hooks[0].command.endsWith('; exit $LASTEXITCODE'), e.hooks[0].command);
+    assert.ok(!e.hooks[0].command.includes('2>$null') && !e.hooks[0].command.includes('try {'), '막는 훅의 오류 글은 숨기지 않는다');
+  }
   // 잠금표가 부품 자리를 바꾸면 그 자리를 따른다.
   const moved = adapters.claudeHookGroups(ROOT, { authDir: path.win32.join(TOOLS, 'iris-auth', '2.0') });
   assert.ok(moved.SessionStart[1].hooks[0].command.includes(path.win32.join(TOOLS, 'iris-auth', '2.0', 'status.mjs')));
@@ -243,23 +249,27 @@ function runHookCommand(command, env) {
   return { code: r.status, out: r.stdout ?? '', err: r.stderr ?? '' };
 }
 
-test('알림 훅: 알릴 것이 없으면 조용히 0 — 열쇠가 곧 끝나면 한 줄', () => {
+test('알림 훅: 알릴 것이 없으면 조용히 0 — 열쇠가 곧 끝나면 표준 출력 한 줄(표준 오류는 늘 비어 있다)', () => {
   const a = makeAuthRoot('run-quiet');
   const quiet = runHookCommand(adapters.authNoticeHookCommand(process.execPath, a.script), a.env);
-  assert.equal(quiet.code, 0, quiet.err);
+  assert.equal(quiet.code, 0);
   assert.equal(quiet.out, '');
+  assert.equal(quiet.err, '');
 
   fs.writeFileSync(a.env.IRIS_LONGKEY_FILE, JSON.stringify({ token: 'T', expiresAt: Date.now() + 86400000 }));
   const due = runHookCommand(adapters.authNoticeHookCommand(process.execPath, a.script), a.env);
-  assert.equal(due.code, 0, due.err);
-  assert.match(due.out, /^\[IRIS 인증\] /);
+  assert.equal(due.code, 0);
+  assert.equal(due.err, '');
+  assert.match(due.out, /^\[IRIS 인증\] .*IRIS 1년 열쇠.*사용자에게 알릴 것\.\r?\n$/, '한글 알림 글이 글자 그대로 나온다(오류 글을 버리는 처리가 표준 출력을 건드리지 않는다)');
   assert.equal(due.out.trim().split(/\r?\n/).length, 1);
 });
 
-test('알림 훅: 어떤 실패에도 세션 시작을 막는 종료 코드(2)를 내지 않고, 멈추지 않고 끝난다', () => {
+// 알림 훅이 새 PC 의 세션 시작 화면에 오류 한 줄을 남기면 안 된다(2026-11-27 결정).
+// 실패의 종류와 상관없이: 종료 코드 0 · 표준 오류 비어 있음 · 표준 출력 비어 있음.
+test('알림 훅: 어떤 실패에도 종료 코드 0 · 오류 글 없음 · 출력 없음 — 멈추지 않고 끝난다', () => {
   const blocks = (r, what) => {
-    assert.notEqual(r.code, 2, `${what}: 종료 코드 2 는 "막음"이다`);
-    assert.ok(r.code === 0 || r.code === 1, `${what}: 종료 코드 ${r.code}`);
+    assert.equal(r.code, 0, `${what}: 종료 코드는 늘 0 (받은 값 ${r.code})`);
+    assert.equal(r.err, '', `${what}: 표준 오류에 아무것도 내지 않는다`);
     assert.equal(r.out, '', `${what}: 세션에 끼어드는 글(표준 출력)을 내지 않는다`);
   };
 
@@ -273,6 +283,10 @@ test('알림 훅: 어떤 실패에도 세션 시작을 막는 종료 코드(2)�
   const badLib = makeAuthRoot('fail-syntax');
   fs.writeFileSync(path.join(badLib.tool, 'lib.mjs'), 'export function collect( {');
   blocks(runHookCommand(adapters.authNoticeHookCommand(process.execPath, badLib.script), badLib.env), 'lib.mjs 문법 오류');
+  // 스크립트가 막는 종료 코드(2)나 다른 값으로 끝나도, 오류 글을 내도 훅은 0 이고 조용하다.
+  const loud = makeAuthRoot('fail-loud');
+  fs.writeFileSync(loud.script, "process.stderr.write('boom\\n'); process.exit(2);\n");
+  blocks(runHookCommand(adapters.authNoticeHookCommand(process.execPath, loud.script), loud.env), '스크립트가 2 로 끝남');
 
   // ③ 읽기 오류: 읽는 파일이 전부 깨져 있고, 상태 파일을 쓸 폴더도 없다 → 그래도 정상 종료(0).
   const junk = makeAuthRoot('fail-read');
@@ -282,13 +296,10 @@ test('알림 훅: 어떤 실패에도 세션 시작을 막는 종료 코드(2)�
   fs.writeFileSync(path.join(junk.home, '.config', 'iris-auth-status.json'), '[[[');
   fs.writeFileSync(path.join(junk.home, 'claude', '.credentials.json'), 'null');
   fs.writeFileSync(junk.env.IRIS_LONGKEY_FILE, '{"token":');
-  const r3 = runHookCommand(adapters.authNoticeHookCommand(process.execPath, junk.script), junk.env);
-  assert.equal(r3.code, 0, r3.err);
-  assert.equal(r3.out, '');
+  blocks(runHookCommand(adapters.authNoticeHookCommand(process.execPath, junk.script), junk.env), '읽는 파일이 깨짐');
   const noDir = makeAuthRoot('fail-nodir');
   fs.rmSync(path.join(noDir.home, '.config'), { recursive: true, force: true });
-  const r3b = runHookCommand(adapters.authNoticeHookCommand(process.execPath, noDir.script), noDir.env);
-  assert.equal(r3b.code, 0, r3b.err);
+  blocks(runHookCommand(adapters.authNoticeHookCommand(process.execPath, noDir.script), noDir.env), '상태 파일을 쓸 폴더가 없음');
 
   // ④ node 자체가 없다(런타임 부품이 빠졌다).
   const noNode = makeAuthRoot('fail-nonode');
@@ -304,7 +315,7 @@ test('알림 훅: 훅 방식(--hook)은 이 PC 의 파일만 읽는다 — 풍�
   assert.ok(!/\bfetch\(|node:https?|node:net\b/.test(src), '네트워크를 쓰지 않는다');
   assert.ok(!/\bfetch\(|node:https?|node:net\b|child_process/.test(fs.readFileSync(path.join(AUTH_SRC, 'lib.mjs'), 'utf8')));
   const cmd = adapters.claudeHookGroups(ROOT).SessionStart[1].hooks[0].command;
-  assert.ok(cmd.includes(' --hook;') && !cmd.includes('--notify'));
+  assert.ok(cmd.includes(' --hook 2>$null }') && !cmd.includes('--notify'));
 });
 
 test('알림 훅: NODE_USE_SYSTEM_CA 는 비어 있을 때만 1 로 채운다(사용자가 정한 값은 덮지 않는다)', () => {
